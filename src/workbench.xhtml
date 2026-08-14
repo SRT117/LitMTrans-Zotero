@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LitMTrans</title>
+  <link rel="stylesheet" href="chrome://litmtrans/content/src/workbench.css" />
+  <link rel="stylesheet" href="chrome://litmtrans/content/assets/vendor/katex/katex.min.css" />
+  <script src="chrome://litmtrans/content/src/ported-core.js"></script>
+  <script src="chrome://litmtrans/content/src/utils.js"></script>
+  <script src="chrome://litmtrans/content/assets/vendor/katex/katex.min.js"></script>
+  <script src="chrome://litmtrans/content/src/markdown.js"></script>
+  <script src="chrome://litmtrans/content/src/mindmap.js"></script>
+  <script src="chrome://litmtrans/content/src/mindmap-v2.js"></script>
+  <script src="chrome://litmtrans/content/src/flowchart.js"></script>
+  <script src="chrome://litmtrans/content/src/diagram-viewer.js"></script>
+  <script defer="defer" src="chrome://litmtrans/content/src/workbench.js"></script>
+</head>
+<body>
+  <div id="app" class="app-shell" data-view="layout">
+    <header class="topbar">
+      <div class="identity">
+        <img class="identity-icon" src="chrome://litmtrans/content/assets/icon.ico" alt="" />
+        <div class="identity-copy">
+          <div class="identity-line">
+            <h1 id="document-title">LitMTrans</h1>
+            <span id="document-state" class="status-chip status-neutral">正在连接Zotero…</span>
+          </div>
+          <div id="document-subtitle" class="document-subtitle">附件</div>
+        </div>
+      </div>
+
+      <div class="toolbar" role="toolbar" aria-label="文档操作">
+        <button id="translate-button" class="button button-primary" type="button" title="翻译当前阅读模式；首次使用会自动解析文献" aria-label="翻译当前阅读模式">
+          <span class="button-icon">译</span>
+        </button>
+        <button id="manual-translate-button" class="button" type="button" title="将翻译命令复制给任意AI，再粘贴回答渲染" aria-label="手动翻译">
+          <span class="button-icon">手</span>
+        </button>
+        <button id="stop-button" class="button button-danger" type="button" hidden="hidden" title="停止当前操作">
+          <span class="button-icon">■</span><span>停止</span>
+        </button>
+        <span class="toolbar-divider" aria-hidden="true"></span>
+        <button id="export-pdf-button" class="icon-button" type="button" title="导出当前显示的译文为PDF" aria-label="导出当前显示的译文为PDF">导出</button>
+        <button id="clean-reader-button" class="icon-button" type="button" title="隐藏对话侧栏" aria-label="隐藏对话侧栏">专注阅读</button>
+        <button id="system-messages-button" class="icon-button" type="button" title="查看任务和系统消息" aria-label="查看消息">消息</button>
+        <button id="settings-button" class="icon-button" type="button" title="设置" aria-label="设置">⚙</button>
+      </div>
+    </header>
+
+    <div class="progress-row" aria-live="polite">
+      <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+      <div id="progress-label" class="progress-label">就绪</div>
+      <button id="log-toggle" class="link-button" type="button">任务进度</button>
+    </div>
+
+    <section id="log-drawer" class="log-drawer" hidden="hidden" aria-label="任务进度">
+      <div class="log-header">
+        <div class="log-title"><strong>任务进度</strong></div>
+        <div class="log-actions">
+          <button id="log-clear" class="link-button" type="button">清空</button>
+          <button id="log-close" class="icon-button small" type="button" aria-label="关闭任务进度" title="关闭">×</button>
+        </div>
+      </div>
+      <div id="log-content" class="log-content"></div>
+    </section>
+
+    <main class="main-grid">
+      <section class="reader-workspace" aria-label="原文与译文阅读区">
+        <div class="reader-toolbar">
+          <div class="segmented-control" role="group" aria-label="阅读模式">
+            <button id="stream-mode-button" class="segment" type="button" data-mode="stream">流式阅读</button>
+            <button id="layout-mode-button" class="segment active" type="button" data-mode="layout">排版阅读</button>
+          </div>
+          <div class="segmented-control reader-view-control" role="group" aria-label="阅读栏">
+            <button id="both-panes-button" class="segment active" type="button">双栏</button>
+            <button id="source-only-button" class="segment" type="button">只看原文</button>
+            <button id="translation-only-button" class="segment" type="button">只看译文</button>
+          </div>
+          <button id="clean-reader-ai-button" class="icon-button clean-only-control" type="button" title="显示对话侧栏" aria-label="显示对话侧栏">显示对话侧栏</button>
+          <label class="compact-check"><input id="sync-scroll-check" type="checkbox" checked="checked" /> 同步滚动</label>
+          <label id="reader-font-control" class="font-control">正文 <input id="reader-font-input" type="number" step="any" value="" placeholder="自动" title="留空时显示并使用自动排版得到的正文字号" /> pt</label>
+          <div class="reader-ai-actions" role="group" aria-label="AI阅读视图">
+            <button id="key-points-button" class="link-button" type="button" title="根据自定义要求提炼全文要点">要点提炼</button>
+            <button id="paper-mindmap-button" class="link-button" type="button" title="建立整篇论文的知识结构图">思维导图</button>
+            <button id="paper-logic-flow-button" class="link-button" type="button" title="重建论文的研究逻辑与证据链">思路流程</button>
+          </div>
+          <button id="swap-panes-button" class="link-button" type="button" title="交换左右栏">交换左右</button>
+        </div>
+
+        <div id="reader-split" class="reader-split">
+          <article id="source-pane" class="document-pane pane-source">
+            <div id="source-scroll" class="document-scroll" tabindex="0">
+              <div id="source-placeholder" class="empty-state">
+                <div class="empty-mark">M</div>
+                <h2>开始翻译当前附件</h2>
+                <p>首次翻译会自动提取正文、公式、表格、图片与页面布局；结果只保存在本机Zotero配置目录。</p>
+                <button id="empty-parse-button" class="button button-primary" type="button">开始翻译</button>
+              </div>
+              <iframe id="source-pdf" class="source-pdf" title="Zotero Reader原始PDF" hidden="hidden"></iframe>
+              <div id="source-content" class="markdown-body" hidden="hidden"></div>
+              <div id="source-layout" class="layout-document" hidden="hidden"></div>
+            </div>
+          </article>
+
+          <div id="split-handle" class="split-handle" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+          <article id="translation-pane" class="document-pane pane-translation">
+            <div id="translation-scroll" class="document-scroll" tabindex="0">
+              <div id="translation-placeholder" class="empty-state">
+                <div class="empty-mark">译</div>
+                <h2>尚无译文</h2>
+                <p>点击“翻译”即可翻译当前阅读模式。</p>
+              </div>
+              <div id="translation-content" class="markdown-body" hidden="hidden"></div>
+              <div id="translation-layout" class="layout-document" hidden="hidden"></div>
+            </div>
+          </article>
+        </div>
+        <div id="native-pdf-selection-toolbar" class="native-pdf-selection-toolbar" hidden="hidden">
+          <button id="native-pdf-ask-button" type="button">询问AI</button>
+        </div>
+      </section>
+
+      <div id="sidebar-split-handle" class="sidebar-split-handle" role="separator" aria-label="调整对话侧栏宽度" aria-orientation="vertical" aria-valuemin="240" aria-valuemax="640" aria-valuenow="350" tabindex="0"></div>
+
+      <aside class="ai-sidebar" aria-label="文献对话">
+        <div class="embedded-ai-topbar">
+          <button id="chat-navigator-button" class="button" type="button" title="查看并跳转到已发送的问题" hidden="hidden">对话定位</button>
+        </div>
+
+        <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
+          <div id="chat-empty" class="chat-empty">
+            <p>询问文献的方法、公式、结果和局限，也可以在阅读器中选中文字后发送到这里。</p>
+          </div>
+        </div>
+        <div id="chat-navigator-popup" class="chat-navigator-popup" hidden="hidden" aria-label="用户消息导航"></div>
+
+        <form id="chat-form" class="chat-composer">
+          <div id="selection-chip" class="selection-chip" hidden="hidden">
+            <div class="selection-chip-label">本轮引用（按添加顺序）</div>
+            <div id="selection-text" class="selection-text"></div>
+            <button id="clear-selection-button" class="selection-clear" type="button" aria-label="移除全部引用" title="移除全部引用">×</button>
+          </div>
+          <div id="chat-document-preview" class="chat-document-preview" hidden="hidden" aria-label="本轮附加文档"></div>
+          <div id="chat-image-preview" class="chat-image-preview" hidden="hidden" aria-label="待发送图片"></div>
+          <textarea id="chat-input" rows="4" placeholder="输入问题，也可以直接粘贴图片。按Ctrl+Enter发送"></textarea>
+          <div class="composer-footer">
+            <div class="composer-tools">
+              <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/jp2,image/svg+xml" multiple="multiple" hidden="hidden" />
+              <button id="chat-document-button" class="button button-quiet" type="button" title="添加完整文件；发送后会保留在当前文献对话历史中">添加文件</button>
+              <button id="remove-pending-documents-button" class="button button-quiet" type="button">移除本轮文件</button>
+              <button id="clear-chat-button" class="button button-quiet" type="button">清空历史</button>
+            </div>
+            <button id="chat-send-button" class="button button-primary" type="submit">发送</button>
+            <span id="context-status" class="context-status">本轮将附上当前文献全文</span>
+          </div>
+        </form>
+      </aside>
+    </main>
+  </div>
+
+  <dialog id="long-document-translation-dialog" class="modal long-document-translation-modal">
+    <form method="dialog" class="modal-card">
+      <header class="modal-header">
+        <div><h2>长文档翻译建议</h2></div>
+      </header>
+      <div class="long-document-translation-body">
+        当前所译文档超过150页，建议将翻译模式切换为<strong>分块翻译</strong>继续全文连续翻译。
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="no" type="submit">否</button><button class="button button-primary" value="yes" type="submit">是</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="manual-translation-dialog" class="modal manual-translation-modal">
+    <form method="dialog" class="modal-card manual-translation-card">
+      <header class="modal-header">
+        <div><h2>手动翻译</h2><p>将翻译命令粘贴给任意AI，将回答复制到右侧窗口渲染文献。</p></div>
+        <button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button>
+      </header>
+      <div class="manual-translation-body">
+        <section class="manual-translation-panel">
+          <label for="manual-translation-command">发送给AI的命令</label>
+          <div id="manual-translation-command-tabs" class="manual-translation-tabs" role="tablist" aria-label="翻译命令轮次"></div>
+          <textarea id="manual-translation-command" readonly="readonly" spellcheck="false" aria-label="发送给AI的翻译命令"></textarea>
+          <button id="copy-manual-translation-command" class="button" type="button">复制命令</button>
+        </section>
+        <section class="manual-translation-panel">
+          <label for="manual-translation-response">AI的回答</label>
+          <div id="manual-translation-response-tabs" class="manual-translation-tabs" role="tablist" aria-label="翻译回答轮次"></div>
+          <textarea id="manual-translation-response" placeholder="将AI的回答粘贴到这里" spellcheck="false" aria-label="AI的翻译回答"></textarea>
+          <button id="render-manual-translation" class="button button-primary" type="button">开始渲染</button>
+        </section>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="chat-parse-before-send-dialog" class="modal">
+    <form method="dialog" class="modal-card">
+      <header class="modal-header">
+        <div><h2>需要先解析文献</h2></div>
+      </header>
+      <div class="long-document-translation-body">
+        这篇文献尚未解析。文献问答需要先提取正文、图片和页面结构；解析完成后将自动发送当前问题。
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="cancel" type="submit">取消</button><button class="button button-primary" value="parse" type="submit">立即解析</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="mineru-token-dialog" class="modal mineru-token-modal">
+    <form method="dialog" class="modal-card compact">
+      <header class="modal-header">
+        <div><h2 id="mineru-token-dialog-title">配置MinerU访问令牌</h2><p id="mineru-token-dialog-description">解析文献前需要先填写访问令牌。</p></div>
+      </header>
+      <div class="mineru-token-dialog-body">
+        <label for="mineru-token-input">MinerU访问令牌</label>
+        <input id="mineru-token-input" type="password" autocomplete="off" placeholder="请粘贴MinerU访问令牌" />
+        <p class="settings-note">还没有令牌？前往<a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token">MinerU令牌官网</a>获取。</p>
+        <p id="mineru-token-error" class="mineru-token-error" role="alert" hidden="hidden"></p>
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="cancel" type="submit">稍后处理</button><button id="save-mineru-token-and-parse" class="button button-primary" type="button">保存并继续解析</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="chat-model-settings-dialog" class="modal settings-modal">
+    <form method="dialog" class="modal-card">
+      <header class="modal-header">
+        <div><h2>对话模型设置</h2><p>这些设置只用于文献对话，不会改变翻译模型。</p></div>
+        <button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button>
+      </header>
+      <div class="settings-grid">
+        <section class="settings-section">
+          <h3>对话模型</h3>
+          <div class="field-with-action"><label>服务商<select id="embedded-chat-provider"></select></label><button id="embedded-provider-cards-button" class="button" type="button">记忆卡片</button></div>
+          <label>API密钥<input id="embedded-chat-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
+          <label>API地址<input id="embedded-chat-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+          <div class="field-with-action"><label>模型<select id="embedded-chat-model"></select></label><button id="embedded-refresh-chat-models" class="button" type="button">刷新模型列表</button></div>
+          <div class="reasoning-settings-row">
+            <label>思考模式<select id="embedded-chat-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
+            <label>思考强度<input id="embedded-chat-reasoning-effort" list="reasoning-effort-list" value="default" /></label>
+          </div>
+          <label class="inline-check"><input id="embedded-chat-show-reasoning" type="checkbox" /> 显示该模型的思考过程</label>
+          <label class="inline-check"><input id="embedded-chat-render-markdown" type="checkbox" checked="checked" /> 使用Markdown显示回答</label>
+          <span id="embedded-chat-api-key-state" class="settings-note"></span>
+        </section>
+        <section class="settings-section">
+          <h3>图片模型</h3>
+          <div id="embedded-chat-image-group" class="conditional-settings" hidden="hidden">
+            <p class="settings-note conditional-settings-note">当前模型支持图片生成或编辑，可设置输出尺寸、画质和格式。</p>
+            <label>图片尺寸<input id="embedded-chat-image-size" type="text" list="chat-image-size-list" placeholder="auto / 1024x1024" /></label>
+            <label>图片画质<select id="embedded-chat-image-quality"><option value="auto">auto</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+            <label>图片格式<select id="embedded-chat-image-format"><option value="png">png</option><option value="jpeg">jpeg</option><option value="webp">webp</option></select></label>
+          </div>
+          <p id="embedded-chat-image-note" class="settings-note">当前模型不是图片模型。</p>
+        </section>
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="cancel" type="submit">取消</button><button id="save-embedded-chat-settings" class="button button-primary" type="button">保存</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="modal settings-modal">
+    <form method="dialog" class="modal-card" id="settings-form">
+      <header class="modal-header">
+        <div><h2>LitMTrans设置</h2><button id="open-token-guide-button" class="token-guide-link" type="button">点击查看令牌创建指南</button></div>
+        <button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button>
+      </header>
+      <div class="settings-grid">
+        <section class="settings-section mineru-settings-section settings-card-mineru">
+          <div class="settings-section-heading">
+            <div>
+              <h3>Mineru 文献解析</h3>
+              <p>请配置访问令牌，用于解析文献内容，是必要的设置内容。</p>
+            </div>
+          </div>
+          <div class="mineru-settings-fields">
+            <label>
+              <span class="mineru-token-label-line"><span>MinerU访问令牌</span><a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token">获取访问令牌</a></span>
+              <input id="setting-mineru-token" type="password" autocomplete="off" placeholder="未配置" />
+            </label>
+            <input id="setting-mineru-model" type="hidden" value="vlm" />
+          </div>
+        </section>
+
+        <section class="settings-section translation-model-section settings-card-model">
+          <h3>翻译模型设置</h3>
+          <label class="inline-check shared-model-toggle"><input id="setting-chat-uses-translation-model" type="checkbox" checked="checked" /> 翻译模型与对话模型使用同一个模型</label>
+          <div class="field-with-action">
+            <label><span id="setting-provider-label">服务商</span><select id="setting-provider"></select></label>
+            <button id="translation-provider-cards-button" class="button" type="button">记忆卡片</button>
+          </div>
+          <label>API密钥<input id="setting-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
+          <label>API地址<input id="setting-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+          <div class="field-with-action">
+            <label>模型<select id="setting-model"></select></label>
+            <button id="refresh-models-button" class="button" type="button">刷新模型列表</button>
+          </div>
+          <div class="reasoning-settings-row">
+            <label>思考模式<select id="setting-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
+            <label>思考强度
+              <select id="setting-reasoning-effort">
+                <option value="default">服务商默认</option>
+                <option value="minimal">最低</option>
+                <option value="low">较低</option>
+                <option value="medium">中等</option>
+                <option value="high">高</option>
+                <option value="xhigh">极高</option>
+                <option value="max">最大</option>
+              </select>
+            </label>
+          </div>
+          <label id="setting-deepseek-fast-layout-group" class="inline-check fast-layout-toggle" hidden="hidden"><input id="setting-deepseek-fast-layout" type="checkbox" /> <span><strong>DeepSeek快速排版翻译（仅支持排版模式翻译）</strong><small>利用官方服务的高缓存命中进行并发请求，费用消耗会加剧</small></span></label>
+        </section>
+
+        <section id="setting-chat-model-section" class="settings-section chat-model-section settings-card-chat">
+          <h3>对话模型设置</h3>
+          <div class="field-with-action">
+            <label><span id="setting-chat-provider-label">服务商</span><select id="setting-chat-provider"></select></label>
+            <button id="provider-cards-button" class="button" type="button">记忆卡片</button>
+          </div>
+          <label>API密钥<input id="setting-chat-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
+          <label>API地址<input id="setting-chat-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+          <div class="field-with-action">
+            <label>模型<select id="setting-chat-model"></select></label>
+            <button id="refresh-chat-models-button" class="button" type="button">刷新模型列表</button>
+          </div>
+          <div class="reasoning-settings-row">
+            <label>思考模式<select id="setting-chat-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
+            <label>思考强度
+              <select id="setting-chat-reasoning-effort">
+                <option value="default">服务商默认</option>
+                <option value="minimal">最低</option>
+                <option value="low">较低</option>
+                <option value="medium">中等</option>
+                <option value="high">高</option>
+                <option value="xhigh">极高</option>
+                <option value="max">最大</option>
+              </select>
+            </label>
+          </div>
+          <div id="setting-chat-image-group" class="conditional-settings" hidden="hidden">
+            <p class="settings-note conditional-settings-note">当前模型支持图片生成或编辑，可在此设置输出规格。</p>
+            <label>图片尺寸<input id="setting-chat-image-size" type="text" list="chat-image-size-list" placeholder="auto / 1024x1024" /></label>
+            <datalist id="chat-image-size-list"><option value="auto"></option><option value="1024x1024"></option><option value="1536x1024"></option><option value="1024x1536"></option><option value="2048x2048"></option><option value="2048x1152"></option><option value="1152x2048"></option><option value="3840x2160"></option><option value="2160x3840"></option></datalist>
+            <label>图片画质<select id="setting-chat-image-quality"><option value="auto">auto</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+            <label>图片格式<select id="setting-chat-image-format"><option value="png">png</option><option value="jpeg">jpeg</option><option value="webp">webp</option></select></label>
+          </div>
+        </section>
+
+        <details id="settings-advanced" class="settings-advanced">
+          <summary><span>进阶配置</span><small>翻译偏好、参考资料与阅读对话要求</small></summary>
+          <div class="settings-advanced-grid">
+        <section class="settings-section translation-settings-section settings-card-translation">
+          <h3>翻译</h3>
+          <label>目标语言<span class="editable-language"><input id="setting-target-language" type="text" /><select id="setting-target-language-picker" class="language-picker" aria-label="选择目标语言建议"><option value="" selected="selected"></option><option value="简体中文">简体中文</option><option value="繁体中文">繁体中文</option><option value="英文">英文</option><option value="日文">日文</option><option value="韩文">韩文</option><option value="德文">德文</option><option value="法文">法文</option><option value="西班牙文">西班牙文</option><option value="意大利文">意大利文</option><option value="葡萄牙文">葡萄牙文</option><option value="俄文">俄文</option></select></span></label>
+          <label id="setting-machine-source-language-group" hidden="hidden">源语言<span class="editable-language"><input id="setting-machine-source-language" type="text" /><select id="setting-machine-source-language-picker" class="language-picker" aria-label="选择源语言建议"><option value="" selected="selected"></option><option value="简体中文">简体中文</option><option value="繁体中文">繁体中文</option><option value="英文">英文</option><option value="日文">日文</option><option value="韩文">韩文</option><option value="德文">德文</option><option value="法文">法文</option><option value="西班牙文">西班牙文</option><option value="意大利文">意大利文</option><option value="葡萄牙文">葡萄牙文</option><option value="俄文">俄文</option></select></span></label>
+          <label>翻译策略<select id="setting-translation-mode"><option value="full_context">全文连续翻译</option><option value="chunked">分块翻译</option></select></label>
+          <label>参考文件
+            <span class="reference-list-field">
+              <select id="setting-reference-list" multiple="multiple" size="4" aria-label="翻译参考文件" aria-describedby="reference-list-empty-hint"></select>
+              <span id="reference-list-empty-hint" class="reference-list-empty-hint">可添加同领域、同目标语言的文献作为参考。模型会参考其中的术语和行文风格，但始终以当前文献的原意为准。也可用于将中文文献翻译成符合目标期刊参考文献风格的目标语言。支持PDF、Office文档、Markdown、文本和图片。</span>
+            </span>
+          </label>
+          <div class="field-with-action reference-actions">
+            <button id="add-reference-button" class="button" type="button">添加文件</button>
+            <button id="edit-custom-translation-instruction" class="button" type="button">添加自定义翻译指令</button>
+            <button id="remove-reference-button" class="button" type="button">移除所选</button>
+            <button id="clear-reference-button" class="button button-danger-quiet" type="button">清空</button>
+          </div>
+          <div id="custom-translation-instruction-preview" class="custom-translation-instruction-preview" hidden="hidden">
+            <div class="custom-translation-instruction-preview-header"><strong>自定义翻译要求</strong><button id="edit-custom-translation-instruction-preview" class="button" type="button">编辑要求</button></div>
+            <textarea id="custom-translation-instruction-preview-content" rows="3" readonly="readonly" aria-label="已保存的自定义翻译要求"></textarea>
+          </div>
+        </section>
+
+        <section class="settings-section settings-card-reading">
+          <h3>阅读与对话</h3>
+          <label>要点提炼要求<textarea id="setting-key-points-prompt" rows="12"></textarea></label>
+          <button id="restore-key-points-prompt" class="button" type="button">恢复默认要求</button>
+        </section>
+          </div>
+        </details>
+      </div>
+      <footer class="modal-footer">
+        <button id="clear-document-button" class="button button-danger-quiet" type="button">清除本文献数据</button>
+        <span class="modal-spacer"></span>
+        <button class="button" value="cancel" type="submit">取消</button>
+        <button id="save-settings-button" class="button button-primary" value="default" type="button">保存</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="custom-translation-instruction-dialog" class="modal custom-translation-instruction-modal">
+    <form method="dialog" class="modal-card custom-translation-instruction-card">
+      <header class="modal-header"><div><h2>自定义翻译要求</h2><p>可指定术语译法、行文风格或格式要求。</p></div><button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button></header>
+      <div class="custom-translation-instruction-body"><textarea id="custom-translation-instruction-input" rows="10" placeholder="例如：将术语 X 统一译为……；保留英文缩写，并在首次出现时补充中文全称。"></textarea></div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="cancel" type="submit">取消</button><button id="save-custom-translation-instruction" class="button button-primary" type="button">保存</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="provider-cards-dialog" class="modal provider-cards-modal">
+    <div class="modal-card provider-cards-card">
+      <header class="modal-header"><div><h2>记忆卡片</h2><p>记住常用的服务商、API密钥和地址，需要时一键应用。</p></div><button id="close-provider-cards" class="icon-button" type="button">×</button></header>
+      <div class="provider-cards-grid">
+        <div class="provider-cards-list-panel">
+          <select id="provider-card-list" size="10" aria-label="记忆卡片"></select>
+          <button id="new-provider-card" class="button" type="button">新建卡片</button>
+          <button id="delete-provider-card" class="button button-danger-quiet" type="button">删除卡片</button>
+        </div>
+        <div class="provider-card-editor">
+          <label>卡片名称<input id="provider-card-name" type="text" placeholder="例如：常用翻译模型" /></label>
+          <label>服务商<select id="provider-card-provider"></select></label>
+          <label>
+            <span class="provider-card-key-label"><span>API密钥</span><span id="provider-card-api-key-state" class="provider-card-key-state">未配置</span></span>
+            <input id="provider-card-api-key" type="password" autocomplete="off" placeholder="未配置" />
+          </label>
+          <label>API地址<input id="provider-card-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <button id="apply-provider-card" class="button button-primary" type="button">保存并应用</button>
+        <button id="save-provider-card" class="button" type="button">保存卡片</button>
+        <span class="modal-spacer"></span>
+        <button id="done-provider-cards" class="button" type="button">关闭</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="system-messages-dialog" class="modal chat-menu-modal">
+    <div class="modal-card compact system-messages-card">
+      <header class="modal-header"><h2>消息</h2><button id="close-system-messages" class="icon-button" type="button">×</button></header>
+      <div class="system-messages-body">
+        <section class="message-section">
+          <h3>任务进度</h3>
+          <div id="task-messages-list" class="task-messages-list"></div>
+        </section>
+        <section class="message-section">
+          <h3>结果与提醒</h3>
+          <div id="system-messages-list" class="system-messages-list"></div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="image-preview-dialog" class="image-preview-dialog" aria-label="图片预览">
+    <div class="image-preview-stage">
+      <img id="image-preview-image" alt="对话图片预览" draggable="false" />
+    </div>
+    <div class="image-preview-toolbar" role="toolbar" aria-label="图片操作">
+      <button id="image-preview-zoom-out" class="button" type="button" title="缩小">−</button>
+      <output id="image-preview-scale">100%</output>
+      <button id="image-preview-zoom-in" class="button" type="button" title="放大">＋</button>
+      <button id="image-preview-fit" class="button" type="button">适合窗口</button>
+      <span class="modal-spacer"></span>
+      <button id="image-preview-reuse" class="button" type="button">在对话中提问</button>
+      <button id="image-preview-copy" class="button" type="button">复制图片</button>
+      <button id="image-preview-save" class="button" type="button">另存为</button>
+      <button id="image-preview-close" class="button button-primary" type="button">关闭</button>
+    </div>
+  </dialog>
+
+  <dialog id="formula-preview-dialog" class="image-preview-dialog formula-preview-dialog" aria-label="公式预览">
+    <div id="formula-preview-viewport" class="formula-preview-viewport">
+      <div id="formula-preview-stage" class="formula-preview-stage">
+        <div id="formula-preview-body" class="formula-preview-body"></div>
+      </div>
+    </div>
+    <div class="image-preview-toolbar" role="toolbar" aria-label="公式操作">
+      <button id="formula-preview-zoom-out" class="button" type="button" title="缩小">−</button>
+      <output id="formula-preview-scale">100%</output>
+      <button id="formula-preview-zoom-in" class="button" type="button" title="放大">＋</button>
+      <button id="formula-preview-fit" class="button" type="button">适合窗口</button>
+      <span class="formula-preview-hint">滚轮缩放 · 左键拖动</span>
+      <span class="modal-spacer"></span>
+      <button id="formula-preview-ask" class="button" type="button">在对话中提问</button>
+      <button id="formula-preview-copy" class="button" type="button">复制TeX</button>
+      <button id="formula-preview-close" class="button button-primary" type="button">关闭</button>
+    </div>
+  </dialog>
+
+  <dialog id="diagram-viewer-dialog" class="diagram-viewer-dialog" aria-label="图形阅读器">
+    <header class="diagram-viewer-header"><strong id="diagram-viewer-title">图形阅读</strong><button id="diagram-viewer-maximize" class="icon-button" type="button" aria-label="最大化" style="margin-left: auto;">🗖</button><button id="diagram-viewer-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
+    <div id="diagram-viewer-stage" class="diagram-viewer-stage"></div>
+    <footer class="diagram-viewer-toolbar" role="toolbar" aria-label="图形操作">
+      <button id="diagram-viewer-fit" class="button" type="button">适合窗口</button>
+      <button id="diagram-viewer-zoom-out" class="button" type="button">−</button>
+      <output id="diagram-viewer-scale">100%</output>
+      <button id="diagram-viewer-zoom-in" class="button" type="button">＋</button>
+      <span class="diagram-viewer-hint">Ctrl + 鼠标滚轮缩放 · 拖动画布平移</span>
+      <span class="modal-spacer"></span><button id="diagram-viewer-export" class="button" type="button">导出SVG</button>
+    </footer>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="assertive"></div>
+</body>
+</html>

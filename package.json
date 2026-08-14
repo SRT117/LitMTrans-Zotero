@@ -1,0 +1,65 @@
+{
+  "name": "litmtrans-zotero",
+  "version": "2.0.0",
+  "private": false,
+  "author": "SRT117",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SRT117/LitMTrans-Zotero.git"
+  },
+  "homepage": "https://github.com/SRT117/LitMTrans-Zotero#readme",
+  "bugs": {
+    "url": "https://github.com/SRT117/LitMTrans-Zotero/issues"
+  },
+  "config": {},
+  "description": "Zotero plugin for document parsing, full-text translation, mind maps, and document chat.",
+  "keywords": [
+    "zotero",
+    "translation",
+    "pdf",
+    "mind-map",
+    "llm"
+  ],
+  "scripts": {
+    "sync-vendor": "node scripts/sync-vendor.mjs",
+    "prevalidate": "npm run sync-vendor",
+    "compile:core": "tsc -p tsconfig.core.json",
+    "test:runtime": "node tests/run-tests.js",
+    "test:layout-parity": "node scripts/layout-parity-test.mjs",
+    "test": "npm run compile:core && npm run test:runtime",
+    "inventory": "python3 scripts/generate-package-manifest.py",
+    "validate": "node scripts/validate.js",
+    "build": "bash scripts/build.sh",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-xpi.ps1",
+    "dev": "npm run dev:9",
+    "dev:7": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev.ps1 -ZoteroMajor 7",
+    "dev:8": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev.ps1 -ZoteroMajor 8",
+    "dev:9": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev.ps1 -ZoteroMajor 9",
+    "diagnostics:snapshot": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation snapshot",
+    "diagnostics:vision": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation multimodal-probe",
+    "diagnostics:document-vision": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation document-multimodal-probe",
+    "diagnostics:document-streaming": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation document-streaming-probe",
+    "diagnostics:chat-roundtrip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation chat-roundtrip-probe",
+    "diagnostics:gemini-transport": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation gemini-transport-probe",
+    "diagnostics:edge-local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation edge-local-probe"
+  },
+  "devDependencies": {
+    "katex": "^0.16.27",
+    "typescript": "5.8.3",
+    "zotero-plugin-scaffold": "0.8.8"
+  },
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "dependencies": {
+    "mermaid": "11.16.1",
+    "pako": "2.1.0",
+    "pdf-lib": "1.17.1"
+  },
+  "overrides": {
+    "zotero-plugin-scaffold": {
+      "adm-zip": "0.6.0"
+    }
+  }
+}

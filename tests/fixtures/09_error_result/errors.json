@@ -1,0 +1,15 @@
+[
+  {
+    "code": "HTTP",
+    "retryable": true,
+    "status": 503
+  },
+  {
+    "code": "INVALID_ZIP",
+    "retryable": false
+  },
+  {
+    "code": "STALE_TRANSLATION",
+    "retryable": false
+  }
+]

@@ -1,0 +1,41 @@
+[
+  {
+    "type": "step.delta",
+    "delta": {
+      "type": "text",
+      "text": "翻译"
+    }
+  },
+  {
+    "type": "step.delta",
+    "delta": {
+      "type": "thought_summary",
+      "content": {
+        "text": "正在检查术语"
+      }
+    }
+  },
+  {
+    "type": "interaction.completed",
+    "interaction": {
+      "model": "gemini-3.5-flash",
+      "usage": {
+        "total_input_tokens": 100,
+        "total_output_tokens": 20,
+        "total_tokens": 120,
+        "total_thought_tokens": 5
+      },
+      "steps": [
+        {
+          "type": "model_output",
+          "content": [
+            {
+              "type": "text",
+              "text": "翻译正文"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

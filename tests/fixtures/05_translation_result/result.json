@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 3,
+  "kind": "stream",
+  "documentID": "zotero-1-ABC-12345678",
+  "sourceFingerprint": "fixture-fingerprint",
+  "provider": "gemini",
+  "model": "gemini-3.5-flash",
+  "targetLanguage": "简体中文",
+  "status": "complete",
+  "markdown": "# 中文标题\n\n翻译正文。\n",
+  "translations": {},
+  "formulaReplacements": {},
+  "usage": {
+    "inputTokens": 100,
+    "outputTokens": 20,
+    "totalTokens": 120,
+    "cachedInputTokens": 10,
+    "reasoningTokens": 5
+  },
+  "createdAt": "2026-07-27T00:00:00.000Z",
+  "error": ""
+}

@@ -1,0 +1,45 @@
+# Build outputs and packaged add-ons
+dist/
+*.xpi
+*.zip
+
+# Dependencies and tool caches
+node_modules/
+.npm-cache/
+.scaffold/
+.validation-logs/
+.playwright-cli/
+output/
+
+# Isolated Zotero development profile and test-library data
+.zotero-dev/
+*.pdf
+!assets/docs/token-guide.pdf
+
+# Local configuration, logs, and temporary files
+AGENTS.md
+CLAUDE.md
+zotero_ai_three_views_codex_execution_spec_v4.md
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+coverage/
+tmp/
+
+# Operating system and editor temporary files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/tasks.json
+
+# Python caches created by auxiliary tooling
+__pycache__/
+*.pyc

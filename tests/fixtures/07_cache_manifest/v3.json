@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 3,
+  "documentID": "zotero-1-ABC-12345678",
+  "sourceFingerprint": "fixture-fingerprint",
+  "parsedAt": "2026-07-27T00:00:00Z",
+  "files": {},
+  "translations": {
+    "zh": {
+      "sourceFingerprint": "fixture-fingerprint",
+      "createdAt": "2026-07-27T00:00:00Z",
+      "provider": "gemini",
+      "model": "gemini-3.5-flash"
+    }
+  },
+  "archives": []
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "outer/result/full.md",
+    "directory": false,
+    "compressedSize": 100,
+    "uncompressedSize": 189
+  },
+  {
+    "name": "outer/result/images/图 1.png",
+    "directory": false,
+    "compressedSize": 20,
+    "uncompressedSize": 40
+  },
+  {
+    "name": "outer/result/images/图 1.png",
+    "directory": false,
+    "compressedSize": 21,
+    "uncompressedSize": 41
+  },
+  {
+    "name": "outer/result/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/非常长的目录名/数据.json",
+    "directory": false,
+    "compressedSize": 12,
+    "uncompressedSize": 24
+  },
+  {
+    "name": "outer/result/layout.json",
+    "directory": false,
+    "compressedSize": 30,
+    "uncompressedSize": 80
+  },
+  {
+    "name": "outer/result/model.json",
+    "directory": false,
+    "compressedSize": 30,
+    "uncompressedSize": 80
+  }
+]

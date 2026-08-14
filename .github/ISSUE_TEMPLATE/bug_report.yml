@@ -1,0 +1,51 @@
+name: 问题反馈
+description: 报告可以重复出现的错误
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 提交前请删除 API Key、文献正文、私人文件名和其他敏感内容。
+  - type: input
+    id: litmtrans-version
+    attributes:
+      label: LitMTrans 版本
+      placeholder: 例如 2.0.0
+    validations:
+      required: true
+  - type: input
+    id: zotero-version
+    attributes:
+      label: Zotero 版本
+      placeholder: 例如 9.0.6
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开 Zotero 开始，按顺序写出操作和实际结果。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏的日志或截图
+      description: 可留空。请勿上传受版权或保密限制的论文全文。

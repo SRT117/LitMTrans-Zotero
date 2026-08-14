@@ -1,0 +1,115 @@
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      id="litmtrans-preferences-root"
+      flex="1">
+  <html:div class="litmtrans-pref-shell">
+    <html:header class="litmtrans-pref-header">
+      <html:h1>LitMTrans设置</html:h1>
+      <html:button id="litmtrans-pref-open-token-guide" class="litmtrans-token-guide-link" type="button">点击查看令牌创建指南</html:button>
+      <html:span id="litmtrans-pref-message" aria-live="polite"/>
+      <html:button id="litmtrans-pref-save" class="primary" type="button">保存设置</html:button>
+    </html:header>
+
+    <html:main class="litmtrans-pref-board">
+        <html:section class="litmtrans-pref-card litmtrans-pref-card-mineru">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:div><html:h2>Mineru 文献解析</html:h2><html:p>请配置访问令牌，用于解析文献内容，是必要的设置内容。</html:p></html:div>
+          </html:div>
+          <html:div class="litmtrans-pref-form-stack">
+            <html:label>
+              <html:span class="litmtrans-mineru-token-label-line"><html:span>MinerU访问令牌</html:span><html:a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token">获取访问令牌</html:a></html:span>
+              <html:input id="litmtrans-pref-mineru-token" type="password" autocomplete="off" placeholder="未配置"/>
+            </html:label>
+            <html:input id="litmtrans-pref-mineru-model" type="hidden" value="vlm"/>
+          </html:div>
+        </html:section>
+
+        <html:section class="litmtrans-pref-card litmtrans-pref-card-model">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:span class="litmtrans-pref-card-mark">模型</html:span>
+            <html:div><html:h2>翻译模型设置</html:h2><html:p>用于全文翻译和排版翻译。</html:p></html:div>
+          </html:div>
+          <html:div class="litmtrans-shared-toggle">
+            <html:input id="litmtrans-pref-chat-uses-translation-model" type="checkbox"/>
+            <html:label for="litmtrans-pref-chat-uses-translation-model"><html:strong>翻译模型与对话模型使用同一个模型</html:strong><html:span>勾选后，两个用途会使用同一配置，并同步保存。</html:span></html:label>
+          </html:div>
+          <html:div class="litmtrans-pref-form-stack">
+            <html:label><html:span id="litmtrans-pref-provider-label">服务商</html:span><html:select id="litmtrans-pref-provider"/></html:label>
+            <html:label>API密钥<html:input id="litmtrans-pref-api-key" type="password" autocomplete="off" placeholder="未配置"/></html:label>
+            <html:label>API地址<html:input id="litmtrans-pref-base-url" type="url" placeholder="https://api.example.com/v1"/></html:label>
+            <html:div class="litmtrans-field-with-action">
+              <html:label>模型<html:select id="litmtrans-pref-model"/></html:label>
+              <html:button id="litmtrans-pref-refresh-models" type="button">刷新模型列表</html:button>
+            </html:div>
+            <html:div class="litmtrans-reasoning-row">
+              <html:label>思考模式<html:select id="litmtrans-pref-thinking-mode"><html:option value="default">服务商默认</html:option><html:option value="enabled">开启</html:option><html:option value="disabled">关闭</html:option></html:select></html:label>
+              <html:label>思考强度<html:select id="litmtrans-pref-reasoning-effort"><html:option value="default">服务商默认</html:option><html:option value="minimal">最低</html:option><html:option value="low">较低</html:option><html:option value="medium">中等</html:option><html:option value="high">高</html:option><html:option value="xhigh">极高</html:option><html:option value="max">最大</html:option></html:select></html:label>
+            </html:div>
+            <html:label id="litmtrans-pref-deepseek-fast-layout-group" class="litmtrans-fast-layout-toggle" hidden="hidden"><html:input id="litmtrans-pref-deepseek-fast-layout" type="checkbox"/><html:span><html:strong>DeepSeek快速排版翻译（仅支持排版模式翻译）</html:strong><html:small>利用官方服务的高缓存命中进行并发请求，费用消耗会加剧</html:small></html:span></html:label>
+          </html:div>
+        </html:section>
+
+        <html:section id="litmtrans-pref-chat-model-group" class="litmtrans-pref-card litmtrans-pref-card-chat">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:span class="litmtrans-pref-card-mark">对话</html:span>
+            <html:div><html:h2>对话模型设置</html:h2><html:p>关闭“使用同一个模型”后，可单独设置文献对话模型。</html:p></html:div>
+          </html:div>
+          <html:div class="litmtrans-pref-form-stack">
+            <html:label><html:span id="litmtrans-pref-chat-provider-label">服务商</html:span><html:select id="litmtrans-pref-chat-provider"/></html:label>
+            <html:label>API密钥<html:input id="litmtrans-pref-chat-api-key" type="password" autocomplete="off" placeholder="未配置"/></html:label>
+            <html:label>API地址<html:input id="litmtrans-pref-chat-base-url" type="url" placeholder="https://api.example.com/v1"/></html:label>
+            <html:div class="litmtrans-field-with-action">
+              <html:label>模型<html:select id="litmtrans-pref-chat-model"/></html:label>
+              <html:button id="litmtrans-pref-refresh-chat-models" type="button">刷新模型列表</html:button>
+            </html:div>
+            <html:div class="litmtrans-reasoning-row">
+              <html:label>思考模式<html:select id="litmtrans-pref-chat-thinking-mode"><html:option value="default">服务商默认</html:option><html:option value="enabled">开启</html:option><html:option value="disabled">关闭</html:option></html:select></html:label>
+              <html:label>思考强度<html:select id="litmtrans-pref-chat-reasoning-effort"><html:option value="default">服务商默认</html:option><html:option value="minimal">最低</html:option><html:option value="low">较低</html:option><html:option value="medium">中等</html:option><html:option value="high">高</html:option><html:option value="xhigh">极高</html:option><html:option value="max">最大</html:option></html:select></html:label>
+            </html:div>
+          </html:div>
+        </html:section>
+
+      <html:details id="litmtrans-pref-advanced" class="litmtrans-pref-advanced">
+        <html:summary><html:span>进阶配置</html:span><html:small>翻译偏好、参考资料与阅读对话要求</html:small></html:summary>
+        <html:div class="litmtrans-pref-advanced-grid">
+        <html:section class="litmtrans-pref-card litmtrans-pref-card-translation">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:span class="litmtrans-pref-card-mark">翻译</html:span>
+            <html:div><html:h2>文献翻译</html:h2><html:p>设置输出语言、翻译方式和补充语料。</html:p></html:div>
+          </html:div>
+          <html:div class="litmtrans-pref-grid">
+            <html:label>目标语言<html:span class="litmtrans-editable-language"><html:input id="litmtrans-pref-target-language" type="text"/><html:select id="litmtrans-pref-target-language-picker" class="litmtrans-language-picker" aria-label="选择目标语言建议"><html:option value="" selected="selected"/><html:option value="简体中文">简体中文</html:option><html:option value="繁体中文">繁体中文</html:option><html:option value="英文">英文</html:option><html:option value="日文">日文</html:option><html:option value="韩文">韩文</html:option><html:option value="德文">德文</html:option><html:option value="法文">法文</html:option><html:option value="西班牙文">西班牙文</html:option><html:option value="意大利文">意大利文</html:option><html:option value="葡萄牙文">葡萄牙文</html:option><html:option value="俄文">俄文</html:option></html:select></html:span></html:label>
+            <html:label id="litmtrans-pref-machine-source-language-group" hidden="hidden">源语言<html:span class="litmtrans-editable-language"><html:input id="litmtrans-pref-machine-source-language" type="text"/><html:select id="litmtrans-pref-machine-source-language-picker" class="litmtrans-language-picker" aria-label="选择源语言建议"><html:option value="" selected="selected"/><html:option value="简体中文">简体中文</html:option><html:option value="繁体中文">繁体中文</html:option><html:option value="英文">英文</html:option><html:option value="日文">日文</html:option><html:option value="韩文">韩文</html:option><html:option value="德文">德文</html:option><html:option value="法文">法文</html:option><html:option value="西班牙文">西班牙文</html:option><html:option value="意大利文">意大利文</html:option><html:option value="葡萄牙文">葡萄牙文</html:option><html:option value="俄文">俄文</html:option></html:select></html:span></html:label>
+              <html:label>翻译策略<html:select id="litmtrans-pref-translation-mode"><html:option value="full_context">全文连续翻译</html:option><html:option value="chunked">分块翻译</html:option></html:select></html:label>
+            <html:label class="litmtrans-span-all">参考文件
+              <html:span class="litmtrans-reference-list-field">
+                <html:select id="litmtrans-pref-reference-list" multiple="multiple" size="4" aria-label="翻译参考文件" aria-describedby="litmtrans-pref-reference-list-empty-hint"/>
+                <html:span id="litmtrans-pref-reference-list-empty-hint" class="litmtrans-reference-list-empty-hint">可添加同领域、同目标语言的文献作为参考。模型会参考其中的术语和行文风格，但始终以当前文献的原意为准。也可用于将中文文献翻译成符合目标期刊参考文献风格的目标语言。支持PDF、Office文档、Markdown、文本和图片。</html:span>
+              </html:span>
+            </html:label>
+            <html:div class="litmtrans-reference-actions litmtrans-span-all">
+              <html:button id="litmtrans-pref-add-reference" type="button">添加文件</html:button>
+              <html:button id="litmtrans-pref-edit-custom-translation-instruction" type="button">添加自定义翻译指令</html:button>
+              <html:button id="litmtrans-pref-remove-reference" type="button">移除所选</html:button>
+              <html:button id="litmtrans-pref-clear-reference" class="danger" type="button">清空</html:button>
+            </html:div>
+            <html:label id="litmtrans-pref-custom-translation-instruction-group" class="litmtrans-span-all" hidden="hidden">自定义翻译要求<html:textarea id="litmtrans-pref-custom-translation-instruction" rows="3" placeholder="可选：补充译法、术语或格式要求。"/></html:label>
+          </html:div>
+        </html:section>
+
+        <html:section class="litmtrans-pref-card litmtrans-pref-card-reading">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:span class="litmtrans-pref-card-mark">阅读</html:span>
+            <html:div><html:h2>阅读与对话</html:h2><html:p>设置“要点提炼”使用的要求。</html:p></html:div>
+          </html:div>
+          <html:div class="litmtrans-pref-form-stack">
+            <html:label>要点提炼要求<html:textarea id="litmtrans-pref-key-points-prompt" rows="12"/></html:label>
+            <html:button id="litmtrans-pref-restore-key-points-prompt" type="button">恢复默认要求</html:button>
+          </html:div>
+        </html:section>
+        </html:div>
+      </html:details>
+    </html:main>
+
+  </html:div>
+</vbox>

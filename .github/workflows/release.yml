@@ -1,0 +1,46 @@
+name: Release Zotero add-on
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify tag and inject update URL
+        shell: pwsh
+        run: |
+          $manifest = Get-Content manifest.json -Raw | ConvertFrom-Json
+          if ("v$($manifest.version)" -ne "${{ github.ref_name }}") {
+            throw "Tag must equal v$($manifest.version)."
+          }
+          $manifest.applications.zotero | Add-Member -NotePropertyName update_url -NotePropertyValue "https://github.com/${{ github.repository }}/releases/latest/download/update.json" -Force
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content manifest.json -Encoding utf8NoBOM
+          "LITMTRANS_RELEASE_UPDATE_URL=https://github.com/${{ github.repository }}/releases/latest/download/update.json" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - run: npm ci
+      - run: npm run build:windows
+      - name: Create update manifest
+        shell: pwsh
+        run: |
+          $xpis = @(Get-ChildItem dist -Filter '*.xpi')
+          if ($xpis.Count -ne 1) {
+            throw "Expected exactly one XPI, found $($xpis.Count)."
+          }
+          $xpi = $xpis[0].FullName
+          node scripts/create-update-manifest.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --xpi $xpi --out dist/update.json
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $xpi = Get-ChildItem dist -Filter '*.xpi' | Select-Object -ExpandProperty FullName
+          gh release create "${{ github.ref_name }}" $xpi dist/update.json --draft --generate-notes --title "LitMTrans ${{ github.ref_name }}" --verify-tag
