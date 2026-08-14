@@ -117,9 +117,9 @@ LitMTrans在请求结构中尽量保持全文和历史消息的前缀稳定，�
 
 ## 安装
 
-### Zotero插件市场
+### Zotero 中文社区插件商店
 
-在Zotero插件市场中搜索`LitMTrans`，点击安装后重启Zotero。
+[Zotero 中文社区插件商店](https://zotero-chinese.com/plugins/)是第三方社区维护的插件目录。LitMTrans 的收录信息以该页面实际显示为准；尚未显示时请使用下方 GitHub Releases 安装。
 
 首次完整使用通常只需要填写两个凭证：一个MinerU Token（免费获取，请访问[MinerU官网](https://mineru.net)），以及一个用于翻译和AI阅读的模型API Key，不填写AI的API Key也可以使用免费翻译服务翻译，不过AI对话模块无法使用。
 
