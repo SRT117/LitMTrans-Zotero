@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "katex": "^0.16.27",
-    "typescript": "5.8.3",
+    "typescript": "7.0.2",
     "zotero-plugin-scaffold": "0.8.8"
   },
   "engines": {
