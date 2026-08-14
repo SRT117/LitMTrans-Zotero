@@ -108,7 +108,7 @@ https://github.com/syt2/zotero-addons-scraper
 5. 提交修改，并向 `syt2/zotero-addons-scraper` 的 `master` 分支创建 Pull Request。
 6. PR 标题可使用 `Add SRT117/LitMTrans-Zotero`。
 
-市场会读取公开仓库及 GitHub Release。提交 PR 前必须保证仓库为 Public、正式 Release 已发布、XPI 能公开下载，且 `manifest.json` 中的主页和更新地址有效。
+市场会读取公开仓库及 GitHub Release。提交 PR 前最好确认仓库为 Public、正式 Release 已发布、XPI 能公开下载，且 `manifest.json` 中的主页和更新地址有效；如果有一项还没准备好，也可以先开 PR 讨论。
 
 ## 5. 后续发版
 
