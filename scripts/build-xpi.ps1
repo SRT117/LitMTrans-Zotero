@@ -7,7 +7,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
 try {
     & node "scripts/validate.js"
-    if ($LASTEXITCODE -ne 0) { throw "静态验证失败，未构建XPI。" }
+    if ($LASTEXITCODE -ne 0) { throw "Validation failed, aborting XPI build." }
 }
 finally {
     Pop-Location
@@ -56,11 +56,11 @@ try {
     $entries = @($archive.Entries | ForEach-Object { $_.FullName })
     $invalidEntries = @($entries | Where-Object { $_ -match '\\' -or $_ -match '(^|/)\.\.(/|$)' -or $_ -match '^/' })
     if ($invalidEntries.Count) {
-        throw "XPI含有非法ZIP路径: $($invalidEntries -join ', ')"
+        throw "XPI contains invalid ZIP path: $($invalidEntries -join ', ')"
     }
     foreach ($required in @("manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/katex/LICENSE.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "PRIVACY.md", "THIRD_PARTY_NOTICES.md")) {
         if ($entries -notcontains $required) {
-            throw "XPI缺少运行文件: $required"
+            throw "XPI missing required runtime file: $required"
         }
     }
     $forbidden = @($entries | Where-Object {
@@ -70,7 +70,7 @@ try {
         $_ -match '\.(?:py|pyc)$'
     })
     if ($forbidden.Count) {
-        throw "XPI含有不应打包的文件: $($forbidden -join ', ')"
+        throw "XPI contains forbidden file: $($forbidden -join ', ')"
     }
 }
 finally {
@@ -87,6 +87,6 @@ finally {
     $sha256.Dispose()
 }
 $size = (Get-Item -LiteralPath $xpi).Length
-Write-Output "已构建: $xpi"
-Write-Output "大小: $size bytes"
+Write-Output "Built: $xpi"
+Write-Output "Size: $size bytes"
 Write-Output "SHA256: $digest"
