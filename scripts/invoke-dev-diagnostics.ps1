@@ -2,13 +2,15 @@
 param(
     [ValidateSet("snapshot", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe")]
     [string]$Operation = "multimodal-probe",
+    [ValidateSet("7", "8", "9", "10")]
+    [string]$ZoteroMajor = "10",
     [switch]$NoLaunch,
     [int]$TimeoutSeconds = 210
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$testVersion = & (Join-Path $PSScriptRoot "prepare-zotero-test-version.ps1") -Major 9
+$testVersion = & (Join-Path $PSScriptRoot "prepare-zotero-test-version.ps1") -Major $ZoteroMajor
 $profileRoot = $testVersion.ProfilePath
 $diagnosticsRoot = Join-Path $profileRoot "litmtrans\dev-diagnostics"
 $commandPath = Join-Path $diagnosticsRoot "command.json"
@@ -77,7 +79,7 @@ if (-not $isolatedZotero -and -not $NoLaunch) {
     $logOut = Join-Path $diagnosticsRoot "start-dev.stdout.log"
     $logError = Join-Path $diagnosticsRoot "start-dev.stderr.log"
     Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "start-dev.ps1")) `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "start-dev.ps1"), "-ZoteroMajor", $ZoteroMajor) `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $logOut `

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("7", "8", "9")]
-    [string]$ZoteroMajor = "9",
+    [ValidateSet("7", "8", "9", "10")]
+    [string]$ZoteroMajor = "10",
     [switch]$PrepareOnly
 )
 

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet("7", "8", "9")]
+    [ValidateSet("7", "8", "9", "10")]
     [string]$Major
 )
 
@@ -134,9 +134,17 @@ $matrix = @{
         Version = "8.0.4"
         Url = "https://www.zotero.org/download/client/dl?channel=release&platform=win-x64-zip&version=8.0.4"
     }
+    "9" = @{
+        Version = "9.0.6"
+        Url = "https://www.zotero.org/download/client/dl?channel=release&platform=win-x64-zip&version=9.0.6"
+    }
+    "10" = @{
+        Version = "10.0"
+        Url = "https://www.zotero.org/download/client/dl?channel=release&platform=win-x64-zip&version=10.0"
+    }
 }
 
-if ($Major -in @("7", "8")) {
+if ($matrix.ContainsKey($Major)) {
     $target = $matrix[$Major]
     $version = $target.Version
     $binary = Restore-ZoteroRuntime -Version $version -DownloadUrl $target.Url
@@ -144,11 +152,11 @@ if ($Major -in @("7", "8")) {
 else {
     $binary = Find-InstalledZotero
     if (-not $binary) {
-        throw "未找到 Zotero 9。请安装 Zotero 9，或使用 Zotero 7/8 测试任务。"
+        throw "未找到 Zotero $Major。请安装 Zotero $Major，或使用已配置的测试任务。"
     }
     $version = Get-ZoteroApplicationVersion -BinaryPath $binary
-    if (-not $version.StartsWith("9.", [System.StringComparison]::Ordinal)) {
-        throw "系统 Zotero 不是 9.x，而是 $version：$binary"
+    if (-not $version.StartsWith("$Major.", [System.StringComparison]::Ordinal)) {
+        throw "系统 Zotero 不是 $Major.x，而是 $version：$binary"
     }
 }
 

@@ -200,7 +200,7 @@ API密钥保存在Zotero的凭据存储中。排版译文和对照PDF作为Zoter
 ## 系统兼容性
 
 - 支持**Zotero 7.0**及更高版本；
-- 主要功能已在**Windows 11**上针对Zotero 7/8/9做过回归测试，个别测试文献在Zotero 8中出现了字号过大的排版异常，建议使用Zotero 7/9；
+- 主要功能已在**Windows 11**上针对Zotero 7/8/9/10做过回归测试，个别测试文献在Zotero 8中出现了字号过大的排版异常，建议使用Zotero 7/9/10；
 - **macOS与Linux**：基础功能可用，目前没有做完整回归测试；
 - **Edge本地翻译**：受系统组件限制，仅支持Windows；
 - **移动端**：Zotero iOS/Android不支持桌面插件。

@@ -4,7 +4,7 @@
     {
       "label": "Zotero: 验证 → 构建 → 启动隔离测试库（Ctrl+Shift+B）",
       "type": "shell",
-      "command": "& '${workspaceFolder}\\scripts\\start-dev.ps1' -ZoteroMajor 9",
+      "command": "& '${workspaceFolder}\\scripts\\start-dev.ps1' -ZoteroMajor 10",
       "options": {
         "cwd": "${workspaceFolder}",
         "shell": {
@@ -13,6 +13,46 @@
         }
       },
       "group": { "kind": "build", "isDefault": true },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Zotero 10: 验证 → 构建 → 启动隔离测试库",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\scripts\\start-dev.ps1' -ZoteroMajor 10",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "group": "test",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Zotero 9: 验证 → 构建 → 启动隔离测试库",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\scripts\\start-dev.ps1' -ZoteroMajor 9",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "group": "test",
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
