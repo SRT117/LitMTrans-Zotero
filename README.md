@@ -18,7 +18,7 @@
 <p align="center">
   <a href="https://www.zotero.org/"><img src="https://img.shields.io/badge/Zotero-7%2B-CC2936?style=flat-square" alt="Zotero 7+"></a>
   <a href="https://github.com/SRT117/LitMTrans-Zotero/releases"><img src="https://img.shields.io/github/v/release/SRT117/LitMTrans-Zotero?style=flat-square" alt="GitHub Release"></a>
-  <a href="https://github.com/SRT117/LitMTrans-Zotero/releases"><img src="https://img.shields.io/github/downloads/SRT117/LitMTrans-Zotero/total?style=flat-square" alt="GitHub Downloads"></a>
+  <a href="https://github.com/SRT117/LitMTrans-Zotero/releases"><img src="https://img.shields.io/github/downloads/SRT117/LitMTrans-Zotero/litmtrans-2.0.0.xpi?style=flat-square&displayAssetName=false" alt="GitHub Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="MIT License"></a>
 </p>
 
