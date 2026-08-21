@@ -148,7 +148,7 @@ LitMTrans在请求结构中尽量保持全文和历史消息的前缀稳定，�
 
 LitMTrans本身以MIT License开源，没有订阅费用。MinerU官方API当前提供日常解析额度；额度和服务规则可能调整，请以[MinerU官方文档](https://mineru.net/doc/docs/) 为准。
 
-模型费用由所选服务商按实际token用量收取。以作者近期使用DeepSeek API的实际测试为例，一篇常见期刊论文的完整翻译约为 **¥0.07**。这个数字只用于说明当前使用量级，不是固定价格：论文长度、模型、输出量、缓存命中率和服务商定价都会影响最终费用。DeepSeek的当前价格见其 [官方定价页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)。
+模型费用由所选服务商按实际token用量收取。以作者近期使用DeepSeek API的实际测试为例，一篇常见期刊论文的完整翻译约为 **¥0.07**（2026年8月deepseek官方涨价后成本可能会有较大涨幅）。这个数字只用于说明当前使用量级，不是固定价格：论文长度、模型、输出量、缓存命中率和服务商定价都会影响最终费用。DeepSeek的当前价格见其 [官方定价页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)。
 
 如果只需要翻译而不使用模型能力，也可以选择Google/Bing，或在Windows下使用Edge本地翻译，使用手动翻译功能复制网页问答AI的结果也是非常不错的选择。
 
