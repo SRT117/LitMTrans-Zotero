@@ -46,7 +46,7 @@
     "diagnostics:edge-local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-dev-diagnostics.ps1 -Operation edge-local-probe"
   },
   "devDependencies": {
-    "katex": "^0.16.27",
+    "katex": "^0.18.5",
     "typescript": "5.8.3",
     "zotero-plugin-scaffold": "0.8.8"
   },
