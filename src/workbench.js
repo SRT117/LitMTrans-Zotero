@@ -108,7 +108,7 @@
       "both-panes-button", "source-only-button", "translation-only-button",
       "sync-scroll-check",
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button",
-      "swap-panes-button", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
+      "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
       "system-messages-button", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
@@ -814,9 +814,9 @@
     renderedTranslationMarkdown = null;
     renderedSourceMarkdown = null;
     state.settings = data?.settings || state.settings;
-    // Keep measurement metadata available to the fitter while exposing its
-    // visual overlays only when the corresponding setting is enabled.
-    document.body.classList.toggle("layout-debug", Boolean(state.settings?.layoutDevelopmentMode));
+    const isLayoutDebug = Boolean(els["debug-boxes-check"]?.checked || state.settings?.layoutDevelopmentMode);
+    document.body.classList.toggle("layout-debug", isLayoutDebug);
+    if (els["debug-boxes-check"]) els["debug-boxes-check"].checked = isLayoutDebug;
     const canUseLayoutReader = Boolean(data?.capabilities?.canUseLayoutReader);
     if (!state.modeInitialized) {
       // Reading mode belongs to this paper, not to the global preferences.
@@ -1244,6 +1244,7 @@
     node.dataset.fromList = fromList ? "1" : "0";
     node.dataset.equationDense = stream.equationDense ? "1" : "0";
     node.dataset.toc = isToc ? "1" : "0";
+    node.dataset.columnKey = String(stream.columnKey || "");
     node.dataset.blockID = String(stream.items?.[0]?.id || stream.items?.[0]?.parts?.[0]?.id || "");
     placeLayoutNode(node, stream.bbox, page);
     const baseFont = Math.max(4, Number(stream.fontSize || 7.6));
@@ -1555,31 +1556,140 @@
     applyCluster();
   }
 
-  function fitLayoutFormulas(pages) {
-    for (const block of (pages || []).flatMap(page => [...page.querySelectorAll(".layout-block.layout-formula")])) {
-      const target = block.querySelector(".layout-formula-target") || block;
-      const number = target.querySelector(".layout-equation-number");
-      const formula = target.querySelector(".katex, .litmtrans-math") || target.firstElementChild || target;
-      formula.style.transform = "";
-      formula.style.transformOrigin = number ? "left center" : "center center";
-      formula.style.display = "inline-block";
-      // `.litmtrans-math` normally has max-width:100% for flowing Markdown.
-      // Inside an absolute equation block that cap hides the true overflowing
-      // content width from getBoundingClientRect(), so the scale calculation
-      // can report success while descendants still cross into the next column.
-      // Measure its intrinsic equation width, matching MathJax's width:auto
+  function collectPageColumnRights(page) {
+    const pageWidth = Number(page.dataset.sourceWidth || page.clientWidth || 612);
+    const nodes = [...page.querySelectorAll(".layout-flow-stream, .layout-block.type-text")];
+    if (!nodes.length) return null;
 
-      formula.style.width = "max-content";
-      formula.style.maxWidth = "none";
-      formula.style.overflow = "visible";
-      const blockRect = block.getBoundingClientRect();
-      const formulaRect = formula.getBoundingClientRect();
-      const availableWidth = Math.max(1, blockRect.width - 4);
-      const scale = Math.min(1, availableWidth / Math.max(1, formulaRect.width));
-      if (scale < .999) formula.style.transform = `scale(${scale.toFixed(4)})`;
-      block.classList.toggle("layout-fitted", scale < .999);
-      if (state.settings?.layoutDevelopmentMode && scale < .999) {
-        block.dataset.fitLabel = `formula · ${scale.toFixed(3)}×`;
+    const columns = [];
+    for (const node of nodes) {
+      if (node.classList.contains("refs") || node.classList.contains("toc-stream")
+        || node.classList.contains("layout-caption") || node.classList.contains("layout-title")) continue;
+      const leftPct = Number.parseFloat(node.style.left);
+      const widthPct = Number.parseFloat(node.style.width);
+      if (!Number.isFinite(leftPct) || !Number.isFinite(widthPct)) continue;
+      const left = leftPct * pageWidth / 100;
+      const width = widthPct * pageWidth / 100;
+      const right = left + width;
+      if (width > pageWidth * 0.82 || width < 20) continue;
+      const key = String(node.dataset.columnKey || "");
+      if (key === "full") continue;
+
+      let col = key
+        ? columns.find(c => c.key === key)
+        : columns.find(c => Math.abs(c.anchor - left) < 28);
+
+      if (!col) {
+        col = { key: key || `col-${columns.length}`, anchor: left, minLeft: left, maxRight: right };
+        columns.push(col);
+      } else {
+        col.minLeft = Math.min(col.minLeft, left);
+        col.maxRight = Math.max(col.maxRight, right);
+      }
+    }
+    return columns.length ? columns : null;
+  }
+
+  function calibrateEquationNumberRight(block, target, page, columns) {
+    const pageWidth = Number(page.dataset.sourceWidth || page.clientWidth || 612);
+    const blockLeftPct = Number.parseFloat(block.style.left);
+    const blockWidthPct = Number.parseFloat(block.style.width);
+    if (!Number.isFinite(blockLeftPct)) return;
+
+    const blockLeft = blockLeftPct * pageWidth / 100;
+    const blockWidth = (Number.isFinite(blockWidthPct) ? blockWidthPct : 0) * pageWidth / 100;
+    const blockRight = blockLeft + blockWidth;
+
+    let bestCol = null;
+    let minDist = Infinity;
+    for (const col of columns) {
+      const dist = Math.abs(blockLeft - col.anchor);
+      if (dist < minDist) {
+        minDist = dist;
+        bestCol = col;
+      }
+    }
+    if (!bestCol) return;
+
+    let targetRight = bestCol.maxRight;
+    const colWidth = Math.max(1, bestCol.maxRight - bestCol.minLeft);
+
+    if (blockWidth >= colWidth * 1.25 || blockRight > bestCol.maxRight + 15) {
+      const spanningCols = columns.filter(col => col.maxRight >= blockLeft && col.minLeft <= blockRight + 15);
+      if (spanningCols.length > 1) {
+        targetRight = Math.max(...spanningCols.map(c => c.maxRight));
+      }
+    }
+
+    const desiredNumberRightPx = targetRight - blockLeft;
+    if (desiredNumberRightPx > 20) {
+      const currentVal = Number.parseFloat(target.style.getPropertyValue("--equation-number-right") || "0");
+      if (!currentVal || desiredNumberRightPx > currentVal + 4) {
+        target.style.setProperty("--equation-number-right", `${desiredNumberRightPx.toFixed(2)}px`);
+      }
+    }
+  }
+
+  function fitLayoutFormulas(pages, { expand = false } = {}) {
+    for (const page of (pages || []).filter(Boolean)) {
+      const formulas = [...page.querySelectorAll(".layout-block.layout-formula")];
+      if (!formulas.length) continue;
+
+      const columns = expand ? collectPageColumnRights(page) : null;
+
+      for (const block of formulas) {
+        const target = block.querySelector(".layout-formula-target") || block;
+        const number = target.querySelector(".layout-equation-number");
+        const formula = target.querySelector(".katex, .litmtrans-math") || target.firstElementChild || target;
+
+        if (expand && number && columns) {
+          calibrateEquationNumberRight(block, target, page, columns);
+        }
+
+        formula.style.transform = "";
+        formula.style.transformOrigin = number ? "left center" : "center center";
+        formula.style.display = "inline-block";
+        // `.litmtrans-math` normally has max-width:100% for flowing Markdown.
+        // Inside an absolute equation block that cap hides the true overflowing
+        // content width from getBoundingClientRect(), so the scale calculation
+        // can report success while descendants still cross into the next column.
+        // Measure its intrinsic equation width, matching MathJax's width:auto
+        formula.style.width = "max-content";
+        formula.style.maxWidth = "none";
+        formula.style.overflow = "visible";
+
+        const blockRect = block.getBoundingClientRect();
+        const formulaRect = formula.getBoundingClientRect();
+        if (blockRect.width <= 0 || formulaRect.width <= 0) continue;
+
+        const availableWidth = Math.max(1, blockRect.width - 4);
+        let maxFormulaWidth = availableWidth;
+        if (number) {
+          const numRect = number.getBoundingClientRect();
+          if (numRect.left > formulaRect.left) {
+            const spaceBeforeNumber = numRect.left - formulaRect.left - 8;
+            if (spaceBeforeNumber > 10) {
+              maxFormulaWidth = Math.min(maxFormulaWidth, spaceBeforeNumber);
+            }
+          }
+        }
+
+        const scaleW = maxFormulaWidth / Math.max(1, formulaRect.width);
+        let scale = Math.min(1, scaleW);
+
+        if (expand && blockRect.height > 0 && formulaRect.height > 0) {
+          const targetHeight = blockRect.height * 0.92;
+          const scaleH = targetHeight / formulaRect.height;
+          scale = Math.min(scaleW, Math.max(0.7, scaleH), 1.35);
+        }
+
+        if (Math.abs(scale - 1) > 0.005) {
+          formula.style.transform = `scale(${scale.toFixed(4)})`;
+        }
+        block.classList.toggle("layout-fitted", scale < .999);
+        if (state.settings?.layoutDevelopmentMode || document.body.classList.contains("layout-debug")) {
+          block.dataset.fitLabel = `formula · ${scale.toFixed(3)}×`;
+        }
       }
     }
   }
@@ -1588,13 +1698,12 @@
     const pages = (pageNodes || []).filter(Boolean);
     const wraps = pages.map(page => page.closest(".layout-page-wrap")).filter(Boolean);
 
-    // pass. Otherwise an oversized, not-yet-fitted formula becomes a false
-    // body-text barrier and stops the shared font iteration too early.
+    // Initial pass: shrink-only so oversized un-fitted formulas do not become
+    // false body-text barriers during shared font iteration.
     fitLayoutFormulas(pages);
     runLayoutParityEngine(wraps, false);
-    // Text fitting does not move formula frames, but converge once more after
-    // the pass so a renderer/font readiness change cannot leak into display.
-    fitLayoutFormulas(pages);
+    // Post-pass: adapt formulas to bbox and right-align equation numbers.
+    fitLayoutFormulas(pages, { expand: true });
   }
 
   // A layout solve is expensive because it measures real glyph rectangles.
@@ -1770,7 +1879,7 @@
         // A restored snapshot already has fitted text styles, but equation
         // dimensions depend on the newly created KaTeX nodes. Re-converge
         // those cheaply in canonical coordinates without re-running text fit.
-        fitLayoutFormulas(active);
+        fitLayoutFormulas(active, { expand: true });
         const codeFitChanged = clampTranslatedCodeOverflow();
         if (codeFitChanged) saveLayoutFitSnapshot(active);
         return;
@@ -1778,7 +1887,7 @@
       // Any invalid page invalidates the shared document solution.
       fitLayoutPages(pending);
       applyLayoutBodyFont(pending);
-      fitLayoutFormulas(pending);
+      fitLayoutFormulas(pending, { expand: true });
       saveLayoutFitSnapshot(active);
     }
     finally {
@@ -2397,6 +2506,7 @@
     // In layout mode this control changes body text only; titles, captions,
     // references, formulas and media retain their fitted styles.
     els["reader-font-input"].closest("label").hidden = false;
+    if (els["debug-boxes-control"]) els["debug-boxes-control"].hidden = !layout;
     const showLayoutLivePreview = layout && hasLayoutLivePreview();
     els["translation-content"].hidden = showLayoutLivePreview
       ? false
@@ -5269,7 +5379,7 @@
         ? ""
         : els["setting-key-points-prompt"].value,
       showLayoutRestoration: true,
-      layoutDevelopmentMode: false,
+      layoutDevelopmentMode: Boolean(els["debug-boxes-check"]?.checked ?? state.settings?.layoutDevelopmentMode),
       showReasoning: true,
       requestAudit: false,
       syncScroll: true,
@@ -6184,11 +6294,25 @@
       if (document.body.classList.contains("clean-reader-mode")) exitCleanReader();
       else enterCleanReader();
     });
+    const toggleLayoutDebugMode = enabled => {
+      const active = typeof enabled === "boolean" ? enabled : !document.body.classList.contains("layout-debug");
+      document.body.classList.toggle("layout-debug", active);
+      if (els["debug-boxes-check"]) els["debug-boxes-check"].checked = active;
+      if (state.settings) state.settings.layoutDevelopmentMode = active;
+      if (state.mode === "layout") {
+        const pages = [...document.querySelectorAll(".layout-page")];
+        fitLayoutPages(pages);
+      }
+    };
     els["clean-reader-ai-button"].addEventListener("click", () => exitCleanReader({ focusChat: true }));
     document.addEventListener("keydown", event => {
       if (event.key === "Escape" && document.body.classList.contains("clean-reader-mode") && !document.querySelector("dialog[open]")) {
         event.preventDefault();
         exitCleanReader();
+      }
+      else if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === "D" || event.key === "d")) {
+        event.preventDefault();
+        toggleLayoutDebugMode();
       }
     });
     els["export-pdf-button"].addEventListener("click", () => { void exportCurrentTranslationPDF(); });
@@ -6385,6 +6509,9 @@
     els["swap-panes-button"].addEventListener("click", () => {
       state.swapped = !state.swapped;
       els["reader-split"].classList.toggle("swapped", state.swapped);
+    });
+    els["debug-boxes-check"]?.addEventListener("change", () => {
+      toggleLayoutDebugMode(els["debug-boxes-check"].checked);
     });
     const submitPaperAITask = async taskType => {
       if (!await ensureParsedBeforeChatSend()) return;

@@ -337,6 +337,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-debug .layout-block[data-fit-label]::after { content: attr(data-fit-label); position: absolute; z-index: 8; left: 2px; top: 2px; display: block; max-width: calc(100% - 4px); padding: 2px 4px; overflow: hidden; border: 1px solid rgba(37, 99, 235, .85); background: rgba(239, 246, 255, .94); color: #172554; font: 600 9px/1.2 var(--sans); text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .layout-debug .layout-flow-stream.fit-limiter,
 .layout-debug .layout-block.fit-limiter { outline: 2px solid rgba(220, 38, 38, .92); outline-offset: -1px; }
+
+/* 调试模式：公式外框 bbox（蓝色虚线/溢出缩小时变红虚线）与公式内容（绿色实线）、序号（橙色实线） */
+.layout-debug .layout-block.layout-formula { outline: 1.5px dashed rgba(37, 99, 235, .85); outline-offset: -1px; background: rgba(37, 99, 235, .04); }
+.layout-debug .layout-block.layout-formula .katex,
+.layout-debug .layout-block.layout-formula .litmtrans-math { outline: 1px solid rgba(22, 163, 74, .8); outline-offset: 1px; }
+.layout-debug .layout-block.layout-formula .layout-equation-number { outline: 1.5px solid rgba(217, 119, 6, .9); background: rgba(254, 243, 199, .65); }
+.layout-debug .layout-block.layout-formula.layout-fitted { outline: 1.5px dashed rgba(220, 38, 38, .9); background: rgba(220, 38, 38, .06); }
+.layout-debug .layout-block.layout-formula[data-fit-label]::after { top: -16px; left: 0; max-width: none; border-radius: 2px; }
+.layout-debug .layout-block.layout-formula.layout-fitted[data-fit-label]::after { border-color: rgba(220, 38, 38, .85); background: rgba(254, 242, 242, .96); color: #991b1b; }
 .layout-block.type-title,
 .layout-block.type-header,
 .layout-block.type-page_header,

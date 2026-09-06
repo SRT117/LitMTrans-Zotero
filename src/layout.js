@@ -1470,7 +1470,7 @@
         top: stream.bbox[1], bottom: stream.bbox[3], role: stream.debugRole
       };
       edges.textBoxes.push(box);
-      if (!["body_candidate", "merged_body"].includes(stream.debugRole)) continue;
+      if (!["body_candidate", "merged_body", "body_inherited"].includes(stream.debugRole)) continue;
       edges.bodyBoxes.push(box);
       edges[`${key}Left`] = Math.min(edges[`${key}Left`] ?? box.left, box.left);
       edges[key] = Math.max(edges[key] ?? 0, box.right);
@@ -1521,7 +1521,7 @@
       const score = entries => Math.max(...entries.map(({ overlap, containsCenter }) => overlap + (containsCenter ? pageWidth : 0)));
       return score(entriesB) - score(entriesA);
     });
-    const [, chosenEntries] = ranked[0];
+    const [chosenKey, chosenEntries] = ranked[0];
     let chosenRight = Math.max(...chosenEntries.map(entry => entry.box.right));
     const chosenLeft = Math.min(...chosenEntries.map(entry => entry.box.left));
     const overlappingColumns = [...byColumn.values()].filter(entries =>
@@ -1531,6 +1531,20 @@
     // its span, rather than inside an arbitrary middle column.
     if (overlappingColumns.length >= 2 && width >= chosenColumnWidth * 1.25) {
       chosenRight = Math.max(...overlappingColumns.flatMap(entries => entries.map(entry => entry.box.right)));
+      for (const [colKey] of byColumn.entries()) {
+        const colAuth = Number(columnRights?.[colKey] ?? 0);
+        if (colAuth > chosenRight) chosenRight = colAuth;
+      }
+    } else {
+      const columnAuthorityRight = Number(columnRights?.[chosenKey] ?? 0);
+      const maxColumnBoxRight = Math.max(
+        0,
+        ...geometryBoxes.filter(b => b.columnKey === chosenKey).map(b => Number(b.right) || 0)
+      );
+      const targetColumnRight = Math.max(columnAuthorityRight, maxColumnBoxRight);
+      if (targetColumnRight > chosenRight) {
+        chosenRight = targetColumnRight;
+      }
     }
     return Math.max(originalRight, chosenRight);
   }

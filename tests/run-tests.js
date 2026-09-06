@@ -1880,6 +1880,21 @@ function testEquationNumberAnchorUsesLocalColumns() {
     320,
     "without nearby column evidence, the number must stay at the source formula edge"
   );
+  const edgesWithShortTransition = {
+    "column-0": 288,
+    bodyBoxes: [
+      { columnKey: "column-0", left: 44, right: 288, top: 400, bottom: 450 }
+    ],
+    textBoxes: [
+      { columnKey: "column-0", left: 54, right: 171, top: 490, bottom: 503 },
+      { columnKey: "column-0", left: 44, right: 288, top: 400, bottom: 450 }
+    ]
+  };
+  assert.deepEqual(
+    numberRight([44, 513, 94, 525], 612, edgesWithShortTransition),
+    288,
+    "a formula vertically near an incomplete transition line must still align with the full column right edge"
+  );
 }
 
 async function testLayoutCodeAndContentsRules() {
