@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("snapshot", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe")]
     [string]$Operation = "multimodal-probe",
@@ -89,7 +89,7 @@ if (-not $isolatedZotero -and -not $NoLaunch) {
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 while ([DateTime]::UtcNow -lt $deadline) {
     if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
         $result | ConvertTo-Json -Depth 20
         if (-not $result.ok -or ($Operation -in @("multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "gemini-transport-probe", "edge-local-probe") -and -not $result.passed)) {
             exit 1

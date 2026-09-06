@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # Supplying this makes the manifest transformation reproducible in CI and
     # lets us cover older supported Zotero majors without launching them.
@@ -32,7 +32,7 @@ $strictMaxVersion = "$($versionMatch.Groups['major'].Value).*"
 
 # The update URL is also required by Zotero's temporary-install path. Updates
 # are disabled in the isolated profile. Neither field is written to the XPI.
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
 $manifest.applications.zotero | Add-Member -NotePropertyName "update_url" -NotePropertyValue "https://127.0.0.1/litmtrans/updates.json" -Force
 $manifest.applications.zotero | Add-Member -NotePropertyName "strict_max_version" -NotePropertyValue $strictMaxVersion -Force
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding utf8

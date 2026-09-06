@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
@@ -12,7 +12,7 @@ try {
 finally {
     Pop-Location
 }
-$manifest = Get-Content (Join-Path $projectRoot "manifest.json") -Raw | ConvertFrom-Json
+$manifest = Get-Content (Join-Path $projectRoot "manifest.json") -Raw -Encoding utf8 | ConvertFrom-Json
 $dist = Join-Path $projectRoot "dist"
 $stage = Join-Path $dist "addon"
 $xpi = Join-Path $dist ("litmtrans-{0}.xpi" -f $manifest.version)

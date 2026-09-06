@@ -171,6 +171,12 @@ for (const internalFile of ["AGENTS.md", "CLAUDE.md", "zotero_ai_three_views_cod
   const tracked = spawnSync("git", ["ls-files", "--error-unmatch", internalFile], { cwd: root, stdio: "ignore" });
   if (tracked.status === 0) fail(`Internal development instructions must not be published: ${internalFile}`);
 }
+for (const file of allProjectFiles.filter(f => f.startsWith(path.join(root, "scripts")) && f.endsWith(".ps1"))) {
+  const buf = fs.readFileSync(file);
+  if (buf.length < 3 || buf[0] !== 0xef || buf[1] !== 0xbb || buf[2] !== 0xbf) {
+    fail(`PowerShell script must have UTF-8 BOM for Windows PowerShell compatibility: ${path.relative(root, file)}`);
+  }
+}
 const auditText = allProjectFiles
   .filter(file => /\.(?:js|ts|json|md|xhtml|css|mjs|ps1|sh|txt|csv)$/.test(file))
   .filter(file => path.basename(file) !== "AGENTS.md")

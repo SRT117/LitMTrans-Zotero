@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
