@@ -2713,20 +2713,30 @@
 
     async translateGroup(group, guide, referenceContext, documentID, identity, settings, index, count, emit, signal) {
       const source = group.map(record => ({ id: record.id, page: record.page, type: record.type, text: record.text }));
-      const system = "You are a professional academic paper translator and scientific copy editor. Translate with field-aware terminology, preserve scientific facts exactly, and keep layout block IDs stable. You must output strict JSON only, without Markdown fences.";
+      const system = "You are a professional academic paper translator and layout-aware scientific copy editor. Translate with field-aware terminology, preserve scientific facts exactly, respect visual bounding box boundaries, and keep layout block IDs stable. You must output strict JSON only, without Markdown fences.";
       const retryDetails = settings.retryDetails && typeof settings.retryDetails.get === "function"
         ? settings.retryDetails
         : null;
       const buildPrimaryUser = requestRecords => (
         `Translate the following academic-paper layout text blocks into ${settings.targetLanguage}.\n` +
         `${U.targetLanguageInstruction(settings.targetLanguage)}\n` +
-        "This is a layout-preserving academic-paper translation task. Each block has an id, page, type, and text.\n" +
+        "This is a layout-preserving academic-paper translation task. Each block is an isolated physical layout box extracted by visual layout analysis with an id, page, type, and text.\n" +
+        "Our typesetting engine places each translated block back into its exact original coordinates. Therefore, each block's translation must strictly correspond to its own source content; moving or migrating content across blocks is strictly prohibited as it causes severe layout collisions and overflow.\n" +
         "Only the listed text-like blocks and captions are translation targets. Image bodies, table bodies, and standalone equation/media blocks must not be translated, described, or reconstructed.\n" +
         "Return ONLY valid JSON with this exact shape:\n" +
         '{"translations":[{"id":"...","text":"..."}]}\n' +
         "Rules:\n" +
         "1. Preserve every id exactly and return one translation for every input block.\n" +
-        "2. Translate in context across all blocks; do not treat blocks as isolated sentences. If a sentence is interrupted by layout/column splitting, translate only the visible fragment in each id. Never complete a fragment with text from the next block, merge blocks, duplicate a neighbouring block, or move content between ids.\n" +
+        "2. Physical block boundary and sentence continuation:\n" +
+        "   - Translate strictly within the scope of each block's own text. Never borrow, steal, migrate, or merge content across blocks, and never duplicate neighbouring blocks.\n" +
+        "   - If a sentence is split across blocks (e.g. across columns or pages):\n" +
+        "     * Do NOT complete the entire sentence inside the first block.\n" +
+        "     * Do NOT defer or move the whole sentence into the second block.\n" +
+        "     * Each block translates only its visible portion. You may adapt phrasing and tone at the split boundary so that when a reader reads continuously from the first block into the second, the full sentence is grammatically natural and fluent, while each block remains strictly faithful to its own text.\n" +
+        "   - Example of split handling:\n" +
+        '     * Source: Block 1: "The proposed method achieves", Block 2: "superior accuracy on benchmarks."\n' +
+        '     * Correct (faithful scope, continuous reading): Block 1 translates only the first part (e.g. "所提出的方法实现了"); Block 2 translates the continuation (e.g. "在基准测试上的卓越准确率。"). When read continuously, the sentence flows naturally.\n' +
+        '     * Incorrect (FORBIDDEN): Block 1 translates the whole sentence prematurely (e.g. "所提出的方法在基准测试上取得了卓越准确率。"), leaving Block 2 empty, truncated, or duplicated.\n' +
         "3. Use formal, accurate, fluent academic style suitable for scientific papers. Prefer standard technical terminology over literal word-by-word translation.\n" +
         "4. Preserve inline formulas, variables, citations, reference numbers, units, chemical symbols, material names, figure/table numbers, and numerical values; copy every inline formula verbatim with its original TeX and delimiters.\n" +
         "4a. Because the response is JSON, encode every literal TeX backslash as a JSON escape: write two consecutive backslashes in JSON text (for example, JSON text `\\\\frac` represents the TeX command `\\frac`). Never emit control characters.\n" +
@@ -2775,7 +2785,7 @@
       const retryUser = retryDetails ? (
         retryFormatOnly
           ? "This is a surgical formula/JSON-format check. Do not explain your reasoning, retranslate, or polish prose. retry_reasons and retry_details are fallible program guesses, not factual conclusions; independently verify the source, current_translation, and math structure. If normalized math is already equivalent (whitespace, redundant braces, \\mathrm wrappers, or OCR list markers), or you cannot confirm a real error, return current_translation unchanged. Otherwise repair only the named missing/altered delimiter or math token and keep surrounding prose, citations, and identifiers unchanged. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]}; use normal JSON escaping.\n\n"
-          : "Review only the complete blocks listed below. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Independently decide the most accurate output from the source and current_translation; change a block only when you confirm a real problem, and return current_translation unchanged if you cannot confirm one. For retranslate, translate only the visible block. Never complete, merge, or duplicate neighbouring blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n"
+          : "Review only the complete blocks listed below. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Independently decide the most accurate output from the source and current_translation; change a block only when you confirm a real problem, and return current_translation unchanged if you cannot confirm one. For retranslate, translate strictly within the visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n"
       ) + JSON.stringify({ blocks_to_correct: retryPayload }, null, 2) : "";
       const retryContext = retryDetails && Array.isArray(settings.retryContextGroup)
         ? settings.retryContextGroup.map(record => ({ id: record.id, page: record.page, type: record.type, text: record.text }))

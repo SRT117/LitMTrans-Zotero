@@ -164,7 +164,7 @@ namespace LitMTransPort {
     return changed;
   }
   export function buildGlobalGuide(records: LayoutTranslationRecord[], targetLanguage: string): string {
-    return `Translate all blocks into ${targetLanguage}. Preserve ids, visible fragment boundaries, formulas, citations, names, affiliations and block order. Do not complete a fragment with text from another block.`;
+    return `Translate all blocks into ${targetLanguage}. Preserve ids, visual layout block boundaries, formulas, citations, names, affiliations and block order. Each block maps to an exact physical layout box; do not complete a split fragment with text from another block, and never migrate or merge content across blocks.`;
   }
   export function buildTranslationPrompt(records: LayoutTranslationRecord[], targetLanguage: string, referenceContext = ""): string {
     return [

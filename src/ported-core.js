@@ -1234,7 +1234,7 @@ var LitMTransPort;
     }
     LitMTransPort.applyFormulaReplacements = applyFormulaReplacements;
     function buildGlobalGuide(records, targetLanguage) {
-        return `Translate all blocks into ${targetLanguage}. Preserve ids, visible fragment boundaries, formulas, citations, names, affiliations and block order. Do not complete a fragment with text from another block.`;
+        return `Translate all blocks into ${targetLanguage}. Preserve ids, visual layout block boundaries, formulas, citations, names, affiliations and block order. Each block maps to an exact physical layout box; do not complete a split fragment with text from another block, and never migrate or merge content across blocks.`;
     }
     LitMTransPort.buildGlobalGuide = buildGlobalGuide;
     function buildTranslationPrompt(records, targetLanguage, referenceContext = "") {
