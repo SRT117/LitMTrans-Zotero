@@ -230,11 +230,35 @@ function testConciseStructuredOperationMessages() {
   );
 }
 
+function testDirectExternalLinkOpening() {
+  const controllerCode = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const preferencesCode = fs.readFileSync(path.join(root, "src", "preferences.js"), "utf8");
+  const workbenchCode = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+
+  assert(controllerCode.includes("typeof Zotero?.launchURL === \"function\""), "controller must prefer Zotero.launchURL for direct browser launch");
+  assert(preferencesCode.includes('event.target?.closest?.("a")'), "preferences must intercept link clicks directly");
+  assert(workbenchCode.includes('event.target?.closest?.("a")'), "workbench must intercept link clicks directly");
+
+  const controller = new context.LitMTrans.Controller({ rootURI: "chrome://litmtrans/" });
+  context.Zotero.lastLaunchedURL = null;
+
+  controller.openExternalURL("https://mineru.net/apiManage/token");
+  assert.strictEqual(context.Zotero.lastLaunchedURL, "https://mineru.net/apiManage/token", "HTTP(S) URLs must be launched through Zotero.launchURL");
+
+  controller.openExternalURL("doi:10.1000/182");
+  assert.strictEqual(context.Zotero.lastLaunchedURL, "https://doi.org/10.1000/182", "DOI URLs must be resolved to HTTPS and launched directly");
+
+  assert.throws(() => controller.openExternalURL("javascript:alert(1)"), /只允许打开 HTTP\(S\) 官网地址/);
+  assert.throws(() => controller.openExternalURL(""), /官网地址无效/);
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
     testSilentNotifications,
     testWorkbenchStreamScrollUsesExclusiveImageTier,
     testConciseStructuredOperationMessages,
+    testDirectExternalLinkOpening,
   };
 };
+

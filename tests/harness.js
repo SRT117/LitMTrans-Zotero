@@ -184,7 +184,8 @@ function createTestContext() {
         clear: key => prefValues.delete(key)
       },
       debug() {},
-      logError(error) { throw error; }
+      logError(error) { throw error; },
+      launchURL(url) { this.lastLaunchedURL = url; }
     },
     Services: {
       prefs: {
@@ -194,6 +195,17 @@ function createTestContext() {
             .filter(key => key.startsWith(prefix))
             .map(key => key.slice(prefix.length))
         })
+      },
+      io: {
+        newURI(url) {
+          const parsed = new URL(String(url || "").trim());
+          const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+          return {
+            spec: parsed.href,
+            scheme,
+            schemeIs(value) { return scheme === String(value || "").toLowerCase(); }
+          };
+        }
       }
     },
     Cc: {},

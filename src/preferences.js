@@ -332,11 +332,17 @@ var LitMTransControllerPreferences = {
 
   bind() {
     document.addEventListener("click", event => {
-      const link = event.target?.closest?.("a[data-external-url]");
+      const link = event.target?.closest?.("a");
       if (!link) return;
-      event.preventDefault();
-      try { this.controller().openExternalURL(link.dataset.externalUrl || link.href); }
-      catch (error) { this.message(error.message || "无法打开官网", true); }
+      const rawUrl = link.dataset.externalUrl || link.getAttribute("href") || link.href;
+      if (!rawUrl || rawUrl.startsWith("#") || rawUrl.startsWith("javascript:")) return;
+      let targetUrl = rawUrl;
+      if (/^doi:\s*/i.test(targetUrl)) targetUrl = "https://doi.org/" + targetUrl.replace(/^doi:\s*/i, "");
+      if (/^https?:\/\//i.test(targetUrl)) {
+        event.preventDefault();
+        try { this.controller().openExternalURL(targetUrl); }
+        catch (error) { this.message(error.message || "无法打开官网", true); }
+      }
     });
     this.bindLanguagePicker("target-language", "target-language-picker");
     this.bindLanguagePicker("machine-source-language", "machine-source-language-picker");

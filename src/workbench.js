@@ -6134,11 +6134,17 @@
   function bindEvents() {
     bindEditableContextMenu();
     document.addEventListener("click", event => {
-      const link = event.target?.closest?.("a[data-external-url]");
+      const link = event.target?.closest?.("a");
       if (!link) return;
-      event.preventDefault();
-      void hostCall("open-external-url", { url: link.dataset.externalUrl || link.href })
-        .catch(error => toast(error.message || "无法打开官网", "error"));
+      const rawUrl = link.dataset.externalUrl || link.getAttribute("href") || link.href;
+      if (!rawUrl || rawUrl.startsWith("#") || rawUrl.startsWith("javascript:")) return;
+      let targetUrl = rawUrl;
+      if (/^doi:\s*/i.test(targetUrl)) targetUrl = "https://doi.org/" + targetUrl.replace(/^doi:\s*/i, "");
+      if (/^https?:\/\//i.test(targetUrl)) {
+        event.preventDefault();
+        void hostCall("open-external-url", { url: targetUrl })
+          .catch(error => toast(error.message || "无法打开官网", "error"));
+      }
     });
     els["open-token-guide-button"].addEventListener("click", () => {
       void hostCall("open-token-guide")

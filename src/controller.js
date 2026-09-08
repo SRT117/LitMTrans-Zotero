@@ -1330,15 +1330,37 @@
     }
 
     openExternalURL(value) {
+      let raw = String(value || "").trim();
+      if (!raw) throw new Error("官网地址无效");
+      if (/^doi:\s*/i.test(raw)) raw = "https://doi.org/" + raw.replace(/^doi:\s*/i, "");
       let uri;
-      try { uri = Services.io.newURI(String(value || "").trim()); }
+      try { uri = Services.io.newURI(raw); }
       catch (_) { throw new Error("官网地址无效"); }
       if (!uri.schemeIs("http") && !uri.schemeIs("https")) throw new Error("只允许打开 HTTP(S) 官网地址");
-      const service = Cc["@mozilla.org/uriloader/external-protocol-service;1"]
-        .getService(Ci.nsIExternalProtocolService);
-      service.loadURI(uri, null);
+
+      if (typeof Zotero?.launchURL === "function") {
+        Zotero.launchURL(uri.spec);
+        return { opened: true };
+      }
+
+      try {
+        const service = Cc["@mozilla.org/uriloader/external-protocol-service;1"]
+          ?.getService(Ci.nsIExternalProtocolService);
+        if (service && Ci.nsIHandlerInfo) {
+          const handler = service.getProtocolHandlerInfo("http");
+          handler.preferredAction = Ci.nsIHandlerInfo.useSystemDefault;
+          handler.launchWithURI(uri, null);
+          return { opened: true };
+        }
+      }
+      catch (_) {
+        const service = Cc["@mozilla.org/uriloader/external-protocol-service;1"]
+          ?.getService(Ci.nsIExternalProtocolService);
+        service?.loadURI(uri, null);
+      }
       return { opened: true };
     }
+
 
     async printWorkbenchPDF(runtime, payload = {}) {
       const context = await this.attachmentContext(runtime.attachmentID);
