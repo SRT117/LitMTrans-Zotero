@@ -291,7 +291,28 @@
         if (!parsed.hasLayout) throw new Error("当前MinerU结果没有可用的页面布局数据");
         const records = await this.layout.extractRecords(context.documentID);
         const blocks = records.map(({ id, page, type, text }) => ({ id, page, type, text: this.layout.sanitizeManualText(text) }));
-        return "请一次性将以下学术论文排版文本块翻译为 " + settings.targetLanguage + "。保留每个 id，不能合并、拆分、遗漏或补全文本块。公式、变量、引用、数值和单位必须原样保留。\n\n请只输出一个 `text` 代码块。代码块内使用 JSON Lines：每个输入块对应一条独立、合法的 JSON 记录，并单独占一行，形状严格如下：\n{\"id\":\"原始id\",\"text\":\"该id对应的译文\"}\n不要添加外层对象、外层数组或 `translations` 字段。必须按输入顺序一次性输出全部记录，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n输入文本块 JSON：\n" + JSON.stringify({ blocks }, null, 2);
+        return (
+          `你是一位专业的学术论文翻译家与排版感知编辑。请将以下学术论文排版文本块翻译为 ${settings.targetLanguage}。\n\n` +
+          "【排版物理机理与块边界要求】\n" +
+          "1. 每个文本块均由视觉版面分析引擎从文献中提取，对应原页面上独立的物理矩形框（Bounding Box）。\n" +
+          "2. 翻译完成后，排版引擎会严格按 ID 将译文填回原始坐标；严禁跨块挪移、借调、提前合并内容或遗漏块，否则会导致版面内容严重挤压、文字重叠溢出或区域坍塌。\n" +
+          "3. 必须严格保留每一个原始 id，并为每个输入块返回且仅返回一条对应的译文记录。\n\n" +
+          "【跨块断句接续规则】\n" +
+          "如果一句话因排版分栏或换页被切断在不同块中：\n" +
+          "- 严禁在前面的块中提前补全整句话；严禁将整句话推迟挪移到后面的块。\n" +
+          "- 每个块只翻译其自身可见的文字部分。允许在接壤断口处结合上下文进行自然的语法行文过渡，目标是：读者顺着跨块连续阅读时整句话通顺流畅，但每个块各自严格忠实于自身文本。\n" +
+          "正误对照示例：\n" +
+          '  * 原文：块1: "The proposed method achieves" | 块2: "superior accuracy on benchmarks."\n' +
+          '  * 正确（各自对应、顺读连贯）：块1: "所提出的方法实现了" | 块2: "在基准测试上的卓越准确率。"\n' +
+          '  * 错误（严禁抢翻补全）：块1: "所提出的方法在基准测试上取得了卓越准确率。" [违规提前翻完] | 块2: "具有更高精度。" [违规重复或残缺]\n\n' +
+          "【输出格式规范】\n" +
+          "1. 行内公式、变量、引用序号、数值、单位必须原样保留 TeX 及定界符；TeX 反斜杠在 JSON 文本中必须转义为双反斜杠（例如 `\\\\frac`）。\n" +
+          "2. 采用正式严谨的学术文风，使用规范专业术语。\n" +
+          "3. 请只输出一个 `text` 代码块。代码块内使用 JSON Lines：每个输入块对应一条独立、合法的 JSON 记录，并单独占一行，形状严格如下：\n" +
+          '{"id":"原始id","text":"该id对应的译文"}\n' +
+          "不要添加外层对象、外层数组或 `translations` 字段。必须按输入顺序一次性输出全部记录，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
+          "输入文本块 JSON：\n" + JSON.stringify({ blocks }, null, 2)
+        );
       }
       const parsed = await this.mineru.loadParsed(context.documentID);
       const markdown = String(parsed.markdown || "");
@@ -313,6 +334,7 @@
     }
 
     async manualTranslationRecoveryCommand(context, mode, responses) {
+      const settings = this.getSettings();
       if (mode !== "layout") {
         const parsed = await this.mineru.loadParsed(context.documentID);
         const marker = await this.translation.manualCompletionMarker(String(parsed.markdown || ""));
@@ -321,7 +343,16 @@
       const records = await this.layout.extractRecords(context.documentID);
       const received = this.layout.normalizeManualTranslations(records, responses);
       const missing = records.filter(record => !received[record.id]).map(({ id, page, type, text }) => ({ id, page, type, text }));
-      return "上一轮排版译文未能通过校验，仍缺少以下文本块。请一次性只翻译这些块，保留每个 id，不能合并、拆分或补全相邻块；公式、变量、引用、数值和单位必须原样保留。\n\n请只输出一个 `text` 代码块。代码块内使用 JSON Lines，每个缺失块对应一条独立 JSON 记录并单独占一行：\n{\"id\":\"原始id\",\"text\":\"该id对应的译文\"}\n不要添加外层对象、外层数组或 `translations` 字段，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n缺失文本块 JSON：\n" + JSON.stringify({ blocks: missing }, null, 2);
+      return (
+        `上一轮排版译文未能通过校验，仍缺少以下文本块。请一次性只翻译这些块，目标语言为 ${settings.targetLanguage}。\n\n` +
+        "【核心约束】\n" +
+        "1. 严格限定在各块自身可见范围内翻译，绝不得跨块提前补全句子、合并或挪移相邻块内容；每个 id 只返回其自身对应文本。\n" +
+        "2. 严格保留每个原始 id，行内公式、变量、引用序号、数值和单位必须原样保留，TeX 反斜杠必须转义为双反斜杠。\n" +
+        "3. 请只输出一个 `text` 代码块。代码块内使用 JSON Lines，每个缺失块对应一条独立 JSON 记录并单独占一行：\n" +
+        '{"id":"原始id","text":"该id对应的译文"}\n' +
+        "不要添加外层对象、外层数组或 `translations` 字段，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
+        "缺失文本块 JSON：\n" + JSON.stringify({ blocks: missing }, null, 2)
+      );
     }
 
     logTranslationEvent(documentID, mode, emit) {

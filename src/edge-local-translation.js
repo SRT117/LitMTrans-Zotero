@@ -633,7 +633,8 @@
           .replace(/PP\d*><\/b\d+>/gi, "")
           .replace(/4>4>/g, "")
           .replace(/<\/?(?:b|PP)\d*[^>]*>/gi, "")
-          .replace(/<\/?(?:b|PP)\d+/gi, "");
+          .replace(/<\/?(?:b|PP)\d+/gi, "")
+          .replace(/<b\s+[^>]*>/gi, "");
         // 通用连续退化死循环去重
         const clauseRegex = /([^，。！？；\n]{8,120}[，。！？；\s]*)\1{1,}/gu;
         for (let i = 0; i < 2; i++) {

@@ -1267,24 +1267,68 @@
     }
 
     readClipboardText() {
-      const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
-      transferable.init(null);
-      transferable.addDataFlavor("text/unicode");
-      Services.clipboard.getData(transferable, Services.clipboard.kGlobalClipboard);
-      const value = {};
-      transferable.getTransferData("text/unicode", value);
-      return String(value.value?.QueryInterface(Ci.nsISupportsString)?.data || "");
+      try {
+        const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
+        transferable.init(null);
+        // 同时注册纯文本与Unicode类型，优先读取标准纯文本
+        const flavors = ["text/plain", "text/unicode"];
+        for (const flavor of flavors) {
+          try {
+            transferable.addDataFlavor(flavor);
+          }
+          catch (_) {}
+        }
+        try {
+          Services.clipboard.getData(transferable, Services.clipboard.kGlobalClipboard);
+        }
+        catch (_) {
+          return "";
+        }
+        for (const flavor of flavors) {
+          const value = {};
+          try {
+            transferable.getTransferData(flavor, value);
+          }
+          catch (_) {
+            continue;
+          }
+          if (!value.value) continue;
+          try {
+            const data = value.value.QueryInterface(Ci.nsISupportsString)?.data;
+            if (typeof data === "string" && data.length > 0) return data;
+          }
+          catch (_) {}
+          try {
+            const data = value.value.QueryInterface(Ci.nsISupportsCString)?.data;
+            if (typeof data === "string" && data.length > 0) return data;
+          }
+          catch (_) {}
+        }
+      }
+      catch (_) {}
+      return "";
     }
 
     writeClipboardText(value) {
-      const text = Cc["@mozilla.org/supports-string;1"].createInstance(Ci.nsISupportsString);
-      text.data = String(value || "");
-      const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
-      transferable.init(null);
-      transferable.addDataFlavor("text/unicode");
-      transferable.setTransferData("text/unicode", text);
-      Services.clipboard.setData(transferable, null, Services.clipboard.kGlobalClipboard);
-      return { copied: true };
+      try {
+        const stringValue = String(value || "");
+        const text = Cc["@mozilla.org/supports-string;1"].createInstance(Ci.nsISupportsString);
+        text.data = stringValue;
+        const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
+        transferable.init(null);
+        for (const flavor of ["text/plain", "text/unicode"]) {
+          try {
+            transferable.addDataFlavor(flavor);
+            transferable.setTransferData(flavor, text);
+          }
+          catch (_) {}
+        }
+        Services.clipboard.setData(transferable, null, Services.clipboard.kGlobalClipboard);
+        return { copied: true };
+      }
+      catch (error) {
+        return { copied: false, error: String(error?.message || error) };
+      }
     }
 
     openWithDefaultApplication(filePath) {

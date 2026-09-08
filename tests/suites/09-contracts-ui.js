@@ -92,6 +92,8 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(workbench.includes('(control.closest("dialog[open]") || document.body).appendChild(menu);'),
     "an editable-control menu inside a modal dialog must remain in the browser top layer");
   assert(controller.includes('case "clipboard-read-text"'), "the host must expose clipboard text to the editable-control context menu");
+  assert(controller.includes('"text/plain"') && controller.includes('"text/unicode"'), "clipboard text transfer must support standard plain text and unicode flavors");
+  assert(workbench.includes("navigator?.clipboard?.readText"), "context menu paste must provide fallback clipboard reading");
   const diagramViewer = fs.readFileSync(path.join(root, "src", "diagram-viewer.js"), "utf8");
   assert(diagramViewer.includes("dialog.show();") && !diagramViewer.includes("dialog.showModal();"), "the diagram viewer must remain modeless so evidence jumps can be inspected in the reader");
   assert(diagramViewer.includes("function bindWindowDrag()") && diagramViewer.includes('header.setPointerCapture?.(event.pointerId)'), "the diagram viewer title bar must support bounded pointer dragging");

@@ -328,7 +328,22 @@
     const node = document.createElement("div");
     node.className = `toast ${kind}`.trim();
     node.textContent = normalizeUserMessage(message);
-    els["toast-region"].appendChild(node);
+    const activeDialog = document.querySelector("dialog[open]");
+    let container = els["toast-region"];
+    if (activeDialog) {
+      container = activeDialog.querySelector(".dialog-toast-region");
+      if (!container) {
+        container = document.createElement("div");
+        container.className = "toast-region dialog-toast-region";
+        activeDialog.appendChild(container);
+      }
+    }
+    if (container) {
+      container.appendChild(node);
+    }
+    else {
+      document.body.appendChild(node);
+    }
     setTimeout(() => node.remove(), kind === "error" ? 6500 : 3800);
   }
 
@@ -6037,6 +6052,8 @@
 
   function bindEditableContextMenu() {
     let menu = null;
+    let contextTarget = null;
+    let savedRange = null;
     const editableInputTypes = new Set(["", "text", "password", "search", "email", "url", "tel", "number"]);
     const editableControl = target => {
       const control = target?.closest?.("input, textarea");
@@ -6047,6 +6064,8 @@
     const removeMenu = () => {
       menu?.remove();
       menu = null;
+      contextTarget = null;
+      savedRange = null;
     };
     const selectionRange = control => {
       const length = String(control.value || "").length;
@@ -6054,26 +6073,49 @@
       const end = Number.isInteger(control.selectionEnd) ? control.selectionEnd : start;
       return { start, end };
     };
-    const replaceSelection = (control, replacement) => {
-      const { start, end } = selectionRange(control);
+    const replaceSelection = (control, replacement, targetRange = null) => {
       control.focus();
-      if (Number.isInteger(control.selectionStart) && typeof control.setRangeText === "function") {
-        control.setRangeText(String(replacement || ""), start, end, "end");
+      const current = selectionRange(control);
+      const range = targetRange && Number.isInteger(targetRange.start) && Number.isInteger(targetRange.end)
+        ? targetRange
+        : current;
+      const insertText = String(replacement || "");
+      if (Number.isInteger(range.start) && typeof control.setRangeText === "function") {
+        control.setRangeText(insertText, range.start, range.end, "end");
+        if (typeof control.setSelectionRange === "function") {
+          const nextPos = range.start + insertText.length;
+          control.setSelectionRange(nextPos, nextPos);
+        }
       }
       else {
-        control.value = String(replacement || "");
+        control.value = insertText;
       }
       control.dispatchEvent(new Event("input", { bubbles: true }));
+      control.dispatchEvent(new Event("change", { bubbles: true }));
     };
-    const selectedText = control => {
-      const { start, end } = selectionRange(control);
+    const selectedText = (control, targetRange = null) => {
+      const { start, end } = targetRange && Number.isInteger(targetRange.start) && Number.isInteger(targetRange.end)
+        ? targetRange
+        : selectionRange(control);
       return String(control.value || "").slice(start, end);
     };
-    const writeSelectedText = async control => {
-      const text = selectedText(control);
+    const writeSelectedText = async (control, targetRange = null) => {
+      const text = selectedText(control, targetRange);
       if (!text) return false;
-      await hostCall("clipboard-write-text", { text });
-      return true;
+      try {
+        await hostCall("clipboard-write-text", { text });
+        return true;
+      }
+      catch (_) {
+        if (navigator.clipboard?.writeText) {
+          try {
+            await navigator.clipboard.writeText(text);
+            return true;
+          }
+          catch (_) {}
+        }
+        return false;
+      }
     };
 
     document.addEventListener("contextmenu", event => {
@@ -6083,7 +6125,9 @@
       event.stopPropagation();
       removeMenu();
 
-      const { start, end } = selectionRange(control);
+      contextTarget = control;
+      savedRange = selectionRange(control);
+      const { start, end } = savedRange;
       const hasSelection = end > start;
       const readOnly = Boolean(control.readOnly);
       menu = document.createElement("div");
@@ -6097,22 +6141,52 @@
         button.setAttribute("role", "menuitem");
         button.addEventListener("mousedown", downEvent => downEvent.preventDefault());
         button.addEventListener("click", () => {
+          const currentControl = contextTarget || control;
+          const currentRange = savedRange;
           removeMenu();
-          void Promise.resolve(action()).catch(error => toast(error.message || `${label}失败`, "error"));
+          void Promise.resolve(action(currentControl, currentRange)).catch(error => toast(error.message || `${label}失败`, "error"));
         });
         menu.appendChild(button);
       };
-      addAction("剪切", async () => {
-        if (await writeSelectedText(control)) replaceSelection(control, "");
+      addAction("剪切", async (targetControl, targetRange) => {
+        const c = targetControl || control;
+        if (await writeSelectedText(c, targetRange)) replaceSelection(c, "", targetRange);
       }, readOnly || !hasSelection);
-      addAction("复制", () => writeSelectedText(control), !hasSelection);
-      addAction("粘贴", async () => {
-        const result = await hostCall("clipboard-read-text");
-        replaceSelection(control, result?.text || "");
+      addAction("复制", (targetControl, targetRange) => writeSelectedText(targetControl || control, targetRange), !hasSelection);
+      addAction("粘贴", async (targetControl, targetRange) => {
+        const c = targetControl || control;
+        let pastedText = "";
+        try {
+          const result = await hostCall("clipboard-read-text");
+          if (typeof result?.text === "string" && result.text.length > 0) {
+            pastedText = result.text;
+          }
+        }
+        catch (_) {}
+        if (!pastedText && typeof navigator?.clipboard?.readText === "function") {
+          try {
+            const webText = await navigator.clipboard.readText();
+            if (typeof webText === "string" && webText.length > 0) {
+              pastedText = webText;
+            }
+          }
+          catch (_) {}
+        }
+        if (pastedText) {
+          replaceSelection(c, pastedText, targetRange);
+        }
+        else {
+          c.focus();
+          const executed = document.execCommand("paste");
+          if (!executed && !String(c.value || "").length) {
+            toast("剪贴板内容为空", "info");
+          }
+        }
       }, readOnly);
-      addAction("全选", () => {
-        control.focus();
-        control.select();
+      addAction("全选", (targetControl) => {
+        const c = targetControl || control;
+        c.focus();
+        c.select();
       }, !String(control.value || "").length);
 
       menu.style.left = `${Math.max(4, Math.min(window.innerWidth - 150, event.clientX))}px`;

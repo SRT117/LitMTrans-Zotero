@@ -871,6 +871,12 @@ async function testEdgeLocalTranslationQualityHardening() {
   const issues = WebMachineTranslation.qualityIssues("", "设计了具有两个自由ZXQH002E59A59E3HQXZ的截面<b9002>模型", "简体中文");
   assert(issues.includes("存在未还原保护标记"), "必须检出未还原的占位符");
   assert(issues.includes("存在异常标签残留"), "必须检出残留的异常标签");
+
+  // 10. 公式变量说明中文谓词冒号消除与 Edge 翻译器伪标签清洗
+  const formulaDescVerb = WebMachineTranslation.normalizeAcademic("where Q is mass.", "其中 : Q : 代表了质量。", "简体中文");
+  assert.equal(formulaDescVerb, "其中 Q 代表了质量。", "公式变量说明后的中文谓词冒号必须消除");
+  const cleanedDirty = new context.LitMTrans.EdgeLocalTranslator("简体中文", "英文").cleanTranslationResult("<b class=\"test\">PP9004></b9004>4>4>这是一个测试结果 ::，，");
+  assert.equal(cleanedDirty, "这是一个测试结果", "必须彻底清理伪标签碎片与病态标点");
 }
 
   return {
