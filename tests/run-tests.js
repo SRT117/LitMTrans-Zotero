@@ -3837,6 +3837,119 @@ async function testMultimodalFallback() {
   assert(ChatInternals.looksLikeImageUnsupportedError(new Error("unknown image_url variant")));
   assert(ChatInternals.looksLikeImageUnsupportedError(new Error("messages.content.type 参数非法，取值范围 ['text']")));
   assert(!ChatInternals.looksLikeImageUnsupportedError(new Error("messages.content.type 参数非法，取值范围 ['json']")));
+  assert(ChatInternals.looksLikeImageUnsupportedError(new Error('Failed to deserialize the JSON body into the target type: messages[0]: invalid type: string "https://example.com/test.png", expected struct OpenAICompletionImageUrl at line 1 column 184')));
+  assert(ChatInternals.looksLikeImageUnsupportedError(new Error('{"code":20041,"message":"The model is not a VLM (Vision Language Model). Please use text-only prompts.","data":null}')));
+  assert(ChatInternals.looksLikeImageUnsupportedError(new Error("当前模型不支持图片输入，请使用纯文本")));
+  assert(!ChatInternals.looksLikeImageUnsupportedError(new Error("HTTP 413: <html><title>413 Request Entity Too Large</title></html>")));
+}
+
+async function testPayloadTooLargePreservesImageCapability() {
+  const errors = [
+    Object.assign(new Error("image_url request rejected"), { status: 413 }),
+    new Error("HTTP 413: <html><title>413 Request Entity Too Large</title></html>"),
+    new Error("Payload too large"),
+    Object.assign(new Error("Request rejected"), { body: "Request entity too large: image_url" })
+  ];
+  for (const error of errors) {
+    const storage = new MemoryStorage();
+    U.setPref("nonMultimodalModelMarks", "{}");
+    await storage.writeText(storage.path("doc", "full.cleaned.md"), "# Paper\n\nSource context.");
+    const tinyPNG = "data:image/png;base64,iVBORw0KGgo=";
+    const model = "vision-payload-limit-test";
+    let calls = 0;
+    const warnings = [];
+    const llm = withResolvedChatModel({
+      getSettings: () => ({ targetLanguage: "简体中文", chatContextChars: 50000, model }),
+      resolveConfig: () => ({ provider: "openai", model }),
+      async complete(messages) {
+        calls++;
+        const user = [...messages].reverse().find(message => message.role === "user");
+        if (calls === 2) {
+          assert(messages.every(message => typeof message.content === "string"));
+          assert(user.content.includes("解释截图"));
+          return { text: "纯文本回答", reasoning: "" };
+        }
+        assert(Array.isArray(user.content));
+        assert(user.content.some(part => part?.type === "image_url" && part.image_url.url === tinyPNG));
+        if (calls === 1) throw error;
+        return { text: "图片回答", reasoning: "" };
+      }
+    });
+    const chat = new ChatService(storage, llm, { load: async () => ({ markdown: "" }) });
+    const session = await chat.loadSession("doc");
+    const options = {
+      contextMode: "selected",
+      images: [{ name: "figure.png", mimeType: "image/png", dataURL: tinyPNG }]
+    };
+    await chat.send("doc", session.id, "解释截图", options, event => {
+      if (event.type === "warning") warnings.push(event.message);
+    });
+    assert.equal(calls, 2);
+    assert.equal(warnings.length, 1);
+    assert(warnings[0].includes("请求内容过大"));
+    assert(!chat.imageUnsupportedModels.has(model));
+    assert.equal(U.getPref("nonMultimodalModelMarks", "{}"), "{}");
+    const saved = await chat.loadSession("doc");
+    assert.equal(saved.messages[0].attachments.length, 1);
+    const attachment = saved.messages[0].attachments[0];
+    assert((await storage.readBytes(storage.path("doc", attachment.relativePath))).length > 0);
+    assert.equal(await chat.attachmentDataURL("doc", attachment), tinyPNG);
+    const reloaded = new ChatService(storage, llm, { load: async () => ({ markdown: "" }) });
+    await reloaded.send("doc", session.id, "解释下一张小图", options);
+    assert.equal(calls, 3);
+  }
+}
+
+async function testDeepSeekDeserializeFallbackAndRollback() {
+  const storage = new MemoryStorage();
+  U.setPref("nonMultimodalModelMarks", "{}");
+  await storage.writeText(storage.path("doc", "full.cleaned.md"), "# Paper\n\nSource context.");
+  const tinyPNG = "data:image/png;base64,iVBORw0KGgo=";
+  let calls = 0;
+  const warnings = [];
+  const llm = withResolvedChatModel({
+    getSettings: () => ({ targetLanguage: "简体中文", chatContextChars: 50000, model: "deepseek-v4-flash" }),
+    resolveConfig: () => ({ provider: "deepseek", baseURL: "https://api.deepseek.com", model: "deepseek-v4-flash" }),
+    async complete(messages, options) {
+      calls++;
+      const user = [...messages].reverse().find(message => message.role === "user");
+      if (calls === 1) {
+        assert(Array.isArray(user.content));
+        throw new Error('HTTP 400: {"error":{"message":"Failed to deserialize the JSON body into the target type: messages[0]: invalid type: string \\"https://example.com/test.png\\", expected struct OpenAICompletionImageUrl at line 1 column 184","type":"invalid_request_error"}}');
+      }
+      assert.equal(typeof user.content, "string");
+      options.onText?.("降级纯文本回答成功");
+      return { text: "降级纯文本回答成功", reasoning: "" };
+    }
+  });
+  const chat = new ChatService(storage, llm, { load: async () => ({ markdown: "" }) });
+  const session = await chat.loadSession("doc");
+  const result = await chat.send("doc", session.id, "分析这篇文献", {
+    contextMode: "selected",
+    images: [{ name: "fig.png", mimeType: "image/png", dataURL: tinyPNG }]
+  }, event => { if (event.type === "warning") warnings.push(event.message); });
+  assert.equal(calls, 2);
+  assert.equal(result.message.content, "降级纯文本回答成功");
+  assert.equal(warnings.length, 1);
+
+  const failingLLM = withResolvedChatModel({
+    getSettings: () => ({ targetLanguage: "简体中文", chatContextChars: 50000, model: "deepseek-v4-flash" }),
+    resolveConfig: () => ({ provider: "deepseek", baseURL: "https://api.deepseek.com", model: "deepseek-v4-flash" }),
+    async complete() {
+      throw new Error("Fatal network error 500");
+    }
+  });
+  const chatWithFail = new ChatService(storage, failingLLM, { load: async () => ({ markdown: "" }) });
+  let failed = false;
+  try {
+    await chatWithFail.send("doc", session.id, "一次失败的提问", { contextMode: "source" });
+  }
+  catch (_) {
+    failed = true;
+  }
+  assert(failed);
+  const reloadedSession = await chatWithFail.loadSession("doc");
+  assert.notEqual(reloadedSession.messages[reloadedSession.messages.length - 1]?.content, "一次失败的提问");
 }
 
 async function testDocumentImageSendOptions() {
@@ -4919,6 +5032,8 @@ function testConciseStructuredOperationMessages() {
   await testCurrentImagePayloadRecoversWhenTransportBookkeepingIsLost();
   await testPastedImageHistoryKeepsOriginalDataURL();
   await testMultimodalFallback();
+  await testPayloadTooLargePreservesImageCapability();
+  await testDeepSeekDeserializeFallbackAndRollback();
   await testDocumentImageSendOptions();
   await testImageGenerationRequest();
   await testAtomicEntryPublicationRollback();

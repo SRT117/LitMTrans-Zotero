@@ -1,0 +1,134 @@
+{
+  "id": "7b35db08ccf447ffac9a0376d15f5593",
+  "operation": "edge-local-probe",
+  "ok": true,
+  "completedAt": "2026-09-07T20:49:18.199Z",
+  "passed": true,
+  "source": "This is a local translation test for an academic paper.",
+  "translation": "这是学术论文的本地翻译测试。",
+  "streamSource": "# ABSTRACT\n\nThe model uses $x^2$ in Eq. (16).",
+  "streamTranslation": "# 摘要\n\n该模型在等式中使用 : $x^2$ , (16) .",
+  "layoutSource": "FIGURE 2. The measured value is $x^2$ in Eq. (16).",
+  "layoutTranslation": "图 2. 等式 : (16) 中的实测值为 : $x^2$ 。",
+  "punctuationCases": [
+    {
+      "source": "Abstract",
+      "translation": "摘要",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "Introduction",
+      "translation": "介绍",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "Results and discussion",
+      "translation": "结果与讨论",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "Conclusion",
+      "translation": "结论",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "The model improves translation accuracy.",
+      "translation": "该模型提高了翻译的准确性。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "The results are shown in Figure 2.",
+      "translation": "结果如图2所示。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "We propose a new method for image classification.",
+      "translation": "我们提出了一种新的图像分类方法。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "Note: the model uses two parameters.",
+      "translation": "注意:该模型使用两个参数。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "The ratio is 1:2.",
+      "translation": "该比率为 1:2。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "The measured value is $x^2$ in Eq. (16).",
+      "translation": "在等式(16)中,测量值为$x^2$。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "The measured value is ZXQH0123456789ABHQXZ in Eq. (16).",
+      "translation": "测量值为式 ZXQH0123456789ABHQXZ (16)。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "The following equation defines the loss:",
+      "translation": "以下等式定义了损失:",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "Figure 2. Comparison of the proposed method and the baseline.",
+      "translation": "图 2。所提出的方法与基线的比较。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    },
+    {
+      "source": "Accuracy\nThe model improves prediction accuracy.",
+      "translation": "AccuracyVaried该模型提高了预测精度。",
+      "addedColon": false,
+      "repeatedPunctuation": false
+    }
+  ],
+  "messages": [
+    "用户已同意，正在下载Edge本地翻译语言模型…",
+    "Edge本地翻译语言模型下载进度：0%",
+    "Edge本地翻译语言模型下载进度：5%",
+    "Edge本地翻译语言模型下载进度：11%",
+    "Edge本地翻译语言模型下载进度：15%",
+    "Edge本地翻译语言模型下载进度：21%",
+    "Edge本地翻译语言模型下载进度：25%",
+    "Edge本地翻译语言模型下载进度：30%",
+    "Edge本地翻译语言模型下载进度：35%",
+    "Edge本地翻译语言模型下载进度：40%",
+    "Edge本地翻译语言模型下载进度：45%",
+    "Edge本地翻译语言模型下载进度：50%",
+    "Edge本地翻译语言模型下载进度：55%",
+    "Edge本地翻译语言模型下载进度：60%",
+    "Edge本地翻译语言模型下载进度：65%",
+    "Edge本地翻译语言模型下载进度：70%",
+    "Edge本地翻译语言模型下载进度：75%",
+    "Edge本地翻译语言模型下载进度：80%",
+    "Edge本地翻译语言模型下载进度：85%",
+    "Edge本地翻译语言模型下载进度：90%",
+    "Edge本地翻译语言模型下载进度：95%",
+    "Edge本地翻译语言模型下载进度：100%",
+    "Edge本地翻译语言模型已就绪。",
+    "Edge本地翻译批次1/1，共1个文本块，正在逐块处理…",
+    "正在启用已下载的Edge本地翻译语言模型…",
+    "Edge本地翻译语言模型已就绪。",
+    "Edge本地翻译已完成1/1个待翻译文本块。",
+    "流式Edge本地翻译完成，结果已整理。",
+    "Edge本地翻译批次1/1，共1个文本块，正在逐块处理…",
+    "正在启用已下载的Edge本地翻译语言模型…",
+    "Edge本地翻译语言模型已就绪。",
+    "Edge本地翻译已完成1/1个待翻译文本块。",
+    "排版Edge本地翻译完成，结果已整理。"
+  ]
+}

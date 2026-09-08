@@ -525,26 +525,57 @@
     return U.base64Encode(binary);
   }
 
-  function looksLikeImageUnsupportedError(error) {
+  function looksLikePayloadTooLargeError(error) {
     const text = `${error?.message || error || ""} ${error?.body || ""}`.toLowerCase();
-    // GLM's OpenAI-compatible endpoint rejects image parts without naming
-    // `image_url`: `messages.content.type 参数非法，取值范围 ['text']`.
-    // This is still an image-capability rejection when the caller has image
-    // payloads, so recognize the field/value form as well as the usual
-    // English capability messages.
-    const textOnlyContentTypeError =
-      /messages?\.content\.type/.test(text) &&
-      /(参数非法|取值范围|invalid(?:\s+value)?|expected)/.test(text) &&
-      /[\[（(][\s\"']*text[\s\"']*[\]）)]/.test(text);
-    return (
+    return Number(error?.status || 0) === 413
+      || /\b413\b/.test(text)
+      || text.includes("payload too large")
+      || text.includes("entity too large");
+  }
+
+  function looksLikeImageUnsupportedError(error) {
+    if (looksLikePayloadTooLargeError(error)) return false;
+    const text = `${error?.message || error || ""} ${error?.body || ""}`.toLowerCase();
+
+    // 2. 报错中直接提到了图片相关字段（例如 image_url、input_image、OpenAICompletionImageUrl）
+    if (
       text.includes("image_url") ||
-      text.includes("multimodal") ||
-      text.includes("vision") ||
-      text.includes("image input") ||
-      text.includes("image content") ||
-      textOnlyContentTypeError ||
-      (text.includes("content") && (text.includes("unsupported") || text.includes("unknown variant") || text.includes("deserialize")))
-    );
+      text.includes("input_image") ||
+      text.includes("openaicompletionimageurl")
+    ) {
+      return true;
+    }
+
+    // 3. 多模态/视觉能力拒绝提示（包含中英文及 VLM 特征）
+    const visionKeywords = [
+      "not a vlm", "vision language model", "text-only",
+      "multimodal", "vision", "image input", "image content",
+      "does not support image", "not support image", "unsupported image",
+      "不支持图片", "不支持图像", "不支持多模态", "非多模态", "纯文本模型",
+      "仅支持文本", "只支持文本", "无法识别图片", "无法处理图片"
+    ];
+    if (visionKeywords.some(kw => text.includes(kw))) {
+      return true;
+    }
+
+    // 4. OpenAI 兼容接口标准 content.type 错误（如 GLM、各类中转代理）
+    const textOnlyContentTypeError =
+      /messages?(\[\d+\])?\.content(\[\d+\])?(\.type)?/.test(text) &&
+      /(参数非法|取值范围|invalid(?:\s+value)?|expected|type)/.test(text) &&
+      /(text|string)/.test(text);
+    if (textOnlyContentTypeError) {
+      return true;
+    }
+
+    // 5. 通用反序列化或非支持类型异常（涉及消息内容）
+    if (
+      (text.includes("deserialize") || text.includes("unknown variant") || text.includes("unsupported")) &&
+      (text.includes("message") || text.includes("content") || text.includes("image"))
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   function textOnlyMessages(messages) {
@@ -553,8 +584,9 @@
       const text = message.content
         .filter(part => part && (part.type === "text" || part.type === "input_text"))
         .map(part => String(part.text || ""))
-        .join("\n");
-      return { ...message, content: text };
+        .join("\n")
+        .trim();
+      return { ...message, content: text || "（原图已自动省略）" };
     });
   }
 
@@ -2204,6 +2236,13 @@
               inactivityTimeout: 0
             });
           }
+          else if (!assistant.content && outgoingImageCount > 0 && looksLikePayloadTooLargeError(error)) {
+            emit?.({ type: "warning", message: "请求内容过大，本轮将省略图片，根据文字和文献内容重试。原图已保留。" });
+            messages = textOnlyMessages(messages);
+            outgoingImageCount = 0;
+            outgoingCurrentUserImageCount = 0;
+            result = await this.llm.complete(messages, completionOptions);
+          }
           else if (!assistant.content && hasImagePayload && looksLikeImageUnsupportedError(error)) {
             this.markImageUnsupported(imageCapabilityKey);
             const currentUserMessage = session.messages[userIndex];
@@ -2265,6 +2304,11 @@
           session.messages.splice(insertIndex, 0, assistant);
           session = await this.saveSession(documentID, session, false);
         }
+        else if (userIndex >= 0 && userIndex === session.messages.length - 1 && session.messages[userIndex]?.role === "user") {
+          // 若 Assistant 没有任何输出且当前轮次处于会话末尾，移除该孤立提问以防止污染后续历史
+          session.messages.splice(userIndex, 1);
+          session = await this.saveSession(documentID, session, false);
+        }
         emit?.({ type: "chat-error", sessionID: session.id, session: this.presentSession(documentID, session), error: U.normalizeError(error) });
         throw error;
       }
@@ -2316,6 +2360,9 @@
       if (!question && !referenceQuotes.length) throw new Error("请输入问题、添加图片、附加文档或引用文档内容");
       let session = await this.loadSession(documentID, sessionID, false);
       this.updateSessionModel(session, emit);
+      while (session.messages.length && session.messages[session.messages.length - 1]?.role === "user") {
+        session.messages.pop();
+      }
       const priorDocumentIDs = new Set(
         session.messages.flatMap(message =>
           (Array.isArray(message?.documents) ? message.documents : [])

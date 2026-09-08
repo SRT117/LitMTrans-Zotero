@@ -355,7 +355,67 @@
       if (operation === "provider-cache-probe") return this.runProviderCacheProbe(command);
       if (operation === "gemini-transport-probe") return this.runGeminiTransportProbe();
       if (operation === "edge-local-probe") return this.runEdgeLocalProbe();
+      if (operation === "edge-document-probe") return this.runEdgeDocumentProbe(command);
       throw new Error(`不支持的检查操作：${operation}`);
+    }
+
+    async runEdgeDocumentProbe(command) {
+      const documentID = String(command.documentID || "");
+      if (!/^\d+-[A-Z0-9]+$/.test(documentID)) throw new Error("文档 ID 无效");
+      const source = await this.storage.readText(PathUtils.join(this.storage.documentsRoot, documentID, "full.cleaned.md"), "");
+      if (!source.trim()) throw new Error("文献全文不存在");
+      const directory = PathUtils.join(this.developerDiagnosticsPaths().directory, `edge-document-${command.id}`);
+      await this.storage.ensureDir(directory);
+      await this.storage.writeText(PathUtils.join(directory, "source.md"), source);
+      const calls = [], messages = [];
+      const translator = new LitMTrans.EdgeLocalTranslator("简体中文", "英文", {
+        downloadConsent: async () => true,
+        log: message => messages.push(String(message))
+      });
+      const translate = translator.translate.bind(translator);
+      translator.translate = async (text, signal) => {
+        const row = { source: text, startedAt: new Date().toISOString() };
+        calls.push(row);
+        try { row.translation = await translate(text, signal); return row.translation; }
+        catch (error) { row.error = U.normalizeError(error); throw error; }
+        finally { await this.storage.writeJSON(PathUtils.join(directory, "calls.json"), calls); }
+      };
+      try {
+        if (command.mode === "layout") {
+          const storage = new LitMTrans.Storage();
+          storage.root = directory;
+          storage.documentsRoot = PathUtils.join(directory, "documents");
+          await storage.ensureDir(storage.path(documentID));
+          for (const name of ["layout.json", "model.json", "asset-map.json", "image-map.json", "document.json", "layout-revision.json"]) {
+            const input = this.storage.path(documentID, name);
+            if (await this.storage.exists(input)) await storage.copyFile(input, storage.path(documentID, name));
+          }
+          const webMachine = {
+            translateRecords: (records, options) => this.webMachine.translateRecords(records, { ...options, translator })
+          };
+          const layout = new LitMTrans.LayoutTranslationService(storage, this.llm, webMachine);
+          const records = await layout.extractRecords(documentID);
+          await storage.writeJSON(PathUtils.join(directory, "records.json"), records);
+          const result = await layout.translateWebMachine(documentID, {
+            provider: "edge_local", machineSourceLanguage: "英文", targetLanguage: "简体中文", force: true
+          }, event => { if (event.type === "log") messages.push(event.message); });
+          await storage.writeJSON(PathUtils.join(directory, "translations.json"), result.translations);
+          await storage.writeJSON(PathUtils.join(directory, "render-model.json"), result.model);
+          return { passed: true, mode: "layout", documentID, directory, records: records.length,
+            translatedRecords: Object.keys(result.translations).length, calls: calls.length, cached: result.cached };
+        }
+        const output = await this.webMachine.translateMarkdown(source, {
+          provider: "edge_local", sourceLanguage: "英文", targetLanguage: "简体中文", translator,
+          log: message => messages.push(String(message))
+        });
+        await this.storage.writeText(PathUtils.join(directory, "translation.md"), output);
+        return { passed: true, documentID, directory, sourceChars: source.length, translationChars: output.length,
+          calls: calls.length, addedColonCalls: calls.filter(row => !/[:：]/u.test(row.source) && /[:：]/u.test(row.translation || "")).length };
+      }
+      finally {
+        await translator.close();
+        await this.storage.writeJSON(PathUtils.join(directory, "messages.json"), messages);
+      }
     }
 
     async runEdgeLocalProbe() {
@@ -374,6 +434,30 @@
       });
       try {
         const translation = await translator.translate(source);
+        const punctuationCases = [];
+        for (const text of [
+          "Abstract", "Introduction", "Results and discussion", "Conclusion",
+          "The model improves translation accuracy.",
+          "The results are shown in Figure 2.",
+          "We propose a new method for image classification.",
+          "Note: the model uses two parameters.",
+          "The ratio is 1:2.",
+          "The measured value is $x^2$ in Eq. (16).",
+          "The measured value is ZXQH0123456789ABHQXZ in Eq. (16).",
+          "The following equation defines the loss:",
+          "Figure 2. Comparison of the proposed method and the baseline.",
+          "Accuracy\nThe model improves prediction accuracy."
+        ]) {
+          try {
+            const output = await translator.translate(text);
+            punctuationCases.push({ source: text, translation: output,
+              addedColon: !/[:：]/u.test(text) && /[:：]/u.test(output),
+              repeatedPunctuation: /[:：]{2,}|[。.!！?？]{3,}/u.test(output) });
+          }
+          catch (error) {
+            punctuationCases.push({ source: text, error: U.normalizeError(error) });
+          }
+        }
         await translator.endJob();
         const streamSource = "# ABSTRACT\n\nThe model uses $x^2$ in Eq. (16).";
         const streamTranslation = await this.webMachine.translateMarkdown(streamSource, options);
@@ -394,6 +478,9 @@
           streamTranslation,
           layoutSource: layoutSource[0].text,
           layoutTranslation,
+          punctuationCases,
+          punctuationQualityPassed: !punctuationCases.some(row => row.error || row.addedColon || row.repeatedPunctuation)
+            && !/[:：]/u.test(streamTranslation) && !/[:：]/u.test(layoutTranslation),
           messages
         };
       }
