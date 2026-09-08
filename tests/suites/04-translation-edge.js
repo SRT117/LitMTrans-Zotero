@@ -798,6 +798,81 @@ async function testChunkedExtraFormulaWarnsWithoutWholeChunkRetry() {
   );
 }
 
+async function testEdgeLocalTranslationQualityHardening() {
+  // 1. 占位符容错还原：Edge 漏掉 1 个十六进制字符时仍能准确还原
+  const token = "ZXQH017537231F40HQXZ";
+  const damaged = "影响超过50%(ZXQH017537231F4HQXZ,仅 32%)";
+  const restored = WebMachineTranslation.restoreInline(damaged, [[token, "$R/R_0 = 17$"]]);
+  assert.equal(restored, "影响超过50%($R/R_0 = 17$,仅 32%)", "容错还原必须匹配因模型吞字符而损坏的占位符");
+
+  // 2. 伪标签剥除与冒号消噪
+  const rawAcademic = "惯性子范围内的 -<b9000>/3幂律 在 PP9004></b9004> 中，水下爆炸。<sup>1–3</sup> :不同载荷... A. : 实验安排 图 5. 图:5 ,分别在";
+  const normalized = WebMachineTranslation.normalizeAcademic("", rawAcademic, "简体中文");
+  assert(!/<b\d+/i.test(normalized), "必须剥除 <b9000> 等伪标签碎片");
+  assert(!/PP\d+/i.test(normalized), "必须剥除 PP9004 等碎片标签");
+  assert(!/<sup>[^<]+<\/sup>\s*[:：]/.test(normalized), "必须安全剥除上标后的邻接多余冒号");
+  assert(!/A\.\s*[:：]/.test(normalized), "必须安全剥除标题后的多余冒号");
+  assert(normalized.includes("图 5. 分别在"), "必须规范化重复图号并移除多余冒号");
+
+  // 3. 标题前缀规范化（绝无多余冒号）
+  const headingA = WebMachineTranslation.normalizeAcademic("A. UNDEX shock wave on the beam", "A. : 梁上 UNDEX 冲击波", "简体中文");
+  assert.equal(headingA, "A. 梁上 UNDEX 冲击波", "章节标题编号后不得含有多余冒号");
+  const headingB = WebMachineTranslation.normalizeAcademic("B. The after flow on the beam", ": 梁上的后流", "简体中文");
+  assert.equal(headingB, "B. 梁上的后流", "章节标题缺失标号或有冒号时应正确规范化");
+
+  // 4. 公式说明“其中/式中”引导词与公式后冒号消噪
+  const formulaDesc = WebMachineTranslation.normalizeAcademic("where $Q _ { T N T }$ is the mass of TNT.", "其中 : $Q _ { T N T }$ : 是 TNT 的质量。", "简体中文");
+  assert.equal(formulaDesc, "其中 $Q _ { T N T }$ 是 TNT 的质量。", "公式说明中的其中与公式后冒号必须消除");
+  const formulaDescTeX = WebMachineTranslation.normalizeAcademic("where \\(Q _ { T N T }\\) is the mass of TNT.", "其中 : \\(Q _ { T N T }\\) : 是 TNT 的质量。", "简体中文");
+  assert.equal(formulaDescTeX, "其中 \\(Q _ { T N T }\\) 是 TNT 的质量。", "LaTeX行内公式说明后的冒号必须消除");
+
+  // 5. 正文引用陈述句 vs 图表题注区分
+  const bodySentence = WebMachineTranslation.normalizeAcademic(
+    "Figure 5 shows the wall pressure-time history of the midship under the impact of UNDEX shock wave",
+    "图:<sup>5</sup> ,分别显示了 R/R0=6, 10, 和17三个不同爆轰距离下船艏在UNDEX冲击波下的历史",
+    "简体中文"
+  );
+  assert(bodySentence.startsWith("图 5 分别显示了"), "普通正文中的 Figure X shows 不得被当成题注拼出重复图号");
+
+  const captionFig5 = WebMachineTranslation.normalizeAcademic(
+    "FIG. 5. The wall pressure at midship under three different detonation distances:",
+    "图 5. 图:<sup>5</sup> ,在三种不同爆轰距离下船艏的壁压:",
+    "简体中文"
+  );
+  assert.equal(captionFig5, "图 5. 在三种不同爆轰距离下船艏的壁压:", "图表题注必须剥除重复图号与上标图号");
+
+  const captionFig3 = WebMachineTranslation.normalizeAcademic(
+    "FIG. 3. The arrangement of the UNDEX experiment.",
+    ",, 图 3. UNDEX实验的排列方式",
+    "简体中文"
+  );
+  assert.equal(captionFig3, "图 3. UNDEX实验的排列方式", "题注前孤立逗号必须剥除");
+
+  // 6. 子图标签与末尾病态标点
+  const subFigA = WebMachineTranslation.normalizeAcademic("", "(a) 实验船体梁型号 ::", "简体中文");
+  assert.equal(subFigA, "(a) 实验船体梁型号", "必须剥除行末连续冒号");
+  const subFigC = WebMachineTranslation.normalizeAcademic("", "(c) 顶视图 ,,", "简体中文");
+  assert.equal(subFigC, "(c) 顶视图", "必须剥除行末连续逗号");
+  const subFigAlone = WebMachineTranslation.normalizeAcademic("", "(a)  ,  :", "简体中文");
+  assert.equal(subFigAlone, "(a)", "孤立子图标签后的病态逗号和冒号必须剥除");
+  const subFigWithCap = WebMachineTranslation.normalizeAcademic("", "(d) 侧视图 : 图 2. 船体梁模型尺寸示意图(单位:mm).", "简体中文");
+  assert.equal(subFigWithCap, "(d) 侧视图. 图 2. 船体梁模型尺寸示意图(单位:mm).", "子图与主图题注之间的冒号应规范化为句号");
+
+  // 7. Markdown 图片前后孤立逗号清理
+  const imgWithCaption = WebMachineTranslation.normalizeAcademic("", "![IMAGE_012](images/image_012.jpg) , , 图 3。UNDEX实验的排列方式", "简体中文");
+  assert(imgWithCaption.includes("![IMAGE_012](images/image_012.jpg)\n\n图 3。UNDEX实验的排列方式"), "Markdown图片后病态孤立逗号必须消除为段落分隔");
+
+  // 8. 通用连续循环重复去重
+  const repeatedText = "在实验中,在相同条件下进行了三次重复测试。在实验中,在相同条件下进行了三次重复测试。在实验中,在相同条件下进行了三次重复测试。在实验中,在相同条件下进行了三次重复测试。";
+  const deduped = WebMachineTranslation.normalizeAcademic("", repeatedText, "简体中文");
+  assert.equal(deduped, "在实验中,在相同条件下进行了三次重复测试。", "必须抑制连续重复 >= 2 次的病态死循环");
+
+  // 9. 质量问题检出
+  const issues = WebMachineTranslation.qualityIssues("", "设计了具有两个自由ZXQH002E59A59E3HQXZ的截面<b9002>模型", "简体中文");
+  assert(issues.includes("存在未还原保护标记"), "必须检出未还原的占位符");
+  assert(issues.includes("存在异常标签残留"), "必须检出残留的异常标签");
+}
+
   return {
     testWebMachineTranslationProtection,
     testEdgeLocalTranslationMigration,
@@ -805,5 +880,6 @@ async function testChunkedExtraFormulaWarnsWithoutWholeChunkRetry() {
     testFullContextResume,
     testChunkedStreamingConcurrencyContinuationAndCache,
     testChunkedExtraFormulaWarnsWithoutWholeChunkRetry,
+    testEdgeLocalTranslationQualityHardening,
   };
 };

@@ -256,6 +256,7 @@
   const IMAGE_INLINE = /!\[[^\]\n]*\]\([^\)\n]*\)/g, IMAGE_REFERENCE = /!\[[^\]\n]*\]\[[^\]\n]*\]/g;
   const FRAGMENTED_STATISTIC = /\\\((?<formula>[^\n]{0,360}?)\\\)(?<tail>\s*(?:(?:&(?:lt|gt);|[<>]=?)\s*)?\d[\d\s.,]*\)?)/gi;
   const SECTION_PREFIX = /^\s*((?:[IVXLCDM]+|[A-Z]|\(?\d+(?:\.\d+)*\)?)[.)])(?=\s+)/;
+  const CAPTION_VERBS = /^\s*(?:shows?|illustrates?|depicts?|presents?|gives?|summarizes?|lists?|compares?|displays?|demonstrates?|reports?|exhibits?|indicates?|reveals?|suggests?|provides?|contains?|is\b|are\b|was\b|were\b|can\b|could\b|will\b|would\b|has\b|have\b|had\b)/i;
   const EQUATION_REFERENCE = /\b(?:Eq|Eqs|Equation|Equations)\.?\s+(?:(?![.;。；]\s).){0,120}[（(]\s*[A-Za-z]?\d+[A-Za-z]?\s*[)）]/gi;
   const EQUATION_NUMBER = /[（(]\s*[A-Za-z]?\d+[A-Za-z]?\s*[)）]/g;
   const AUTHOR_CITATION = /\b([A-Z][a-z]{1,})\s+(\d{1,3})(?=\s+[a-z])/g;
@@ -286,7 +287,27 @@
     ).join("");
   }
   function protectInlineTokens(text, pythonCompatibleTeX = false) { const placeholders = [], output = []; for (const [protectedPart, value] of splitInlineTokens(text)) { if (!protectedPart) output.push(value); else { const token = inlinePlaceholder(placeholders.length, value, pythonCompatibleTeX); placeholders.push([token, value]); output.push(` ${token} `); } } return { text: output.join(""), placeholders }; }
-  function restoreInlineTokens(text, placeholders) { let output = String(text || ""); for (const [token,value] of placeholders || []) output = output.replace(new RegExp(tolerantPattern(token), "gi"), () => value); return output; }
+  function restoreInlineTokens(text, placeholders) {
+    let output = String(text || "");
+    const remaining = [];
+    for (const [token, value] of placeholders || []) {
+      const pattern = new RegExp(tolerantPattern(token), "gi");
+      if (pattern.test(output)) {
+        output = output.replace(pattern, () => value);
+      } else {
+        remaining.push([token, value]);
+      }
+    }
+    // 容错兜底：若模型微调或遗漏了个别十六进制字符，基于 ZXQH 与索引十六进制进行模糊还原
+    for (const [token, value] of remaining) {
+      const match = /^ZXQH([0-9A-Fa-f]{2})/i.exec(token);
+      if (!match) continue;
+      const indexHex = match[1];
+      const fallbackPattern = new RegExp(`ZXQH[\\s_-]*${escapeRE(indexHex)}[0-9A-Fa-f\\s_-]{6,16}(?:HQXZ)?`, "gi");
+      output = output.replace(fallbackPattern, () => value);
+    }
+    return output;
+  }
   function batchMarker(prefix, id) { return `${prefix}${id}${sha1(`${prefix}:${id}`).slice(0,8)}`; }
   function encodeTranslationBatch(items) { const tokenToItem = new Map(); const parts = items.map(([id,text], i) => { const token = String(i + 1).padStart(6,"0"); tokenToItem.set(token,id); return `[[[${batchMarker("ZXA",token)}]]]\n${text}\n[[[${batchMarker("ZXZ",token)}]]]`; }); return { text: parts.join("\n\n"), tokenToItem }; }
   function parseTranslationBatch(response, tokenToItem) { const parsed = {}; for (const [token,id] of tokenToItem) { const start = `\\[\\s*\\[\\s*\\[\\s*${tolerantPattern(batchMarker("ZXA",token))}\\s*\\]\\s*\\]\\s*\\]`; const end = `\\[\\s*\\[\\s*\\[\\s*${tolerantPattern(batchMarker("ZXZ",token))}\\s*\\]\\s*\\]\\s*\\]`; const m = new RegExp(`${start}\\s*([\\s\\S]*?)\\s*${end}`, "i").exec(String(response || "")); if (!m) return null; parsed[id] = m[1].trim(); } return parsed; }
@@ -301,6 +322,10 @@
     if (/(?:资料图|图表)\s*[。．、]*\s*\d/.test(output)) issues.push("图注标签疑似误译");
     if (/[A-Za-z0-9）\)]。(?=\s*[（(\dA-Za-z])/.test(output)) issues.push("非中文标点疑似全角化");
     if (/<sup>/i.test(input) && !/<sup>/i.test(output)) issues.push("引文上标丢失");
+    if (/ZXQH[0-9A-Fa-f]{2}/i.test(output)) issues.push("存在未还原保护标记");
+    if (/<\/?(?:b|PP)\d+/i.test(output)) issues.push("存在异常标签残留");
+    if (/(?:图|表)\s*\d+[A-Za-z]?\s*[:：.]\s*(?:图|表)\s*[:：.]*\s*\d+/i.test(output)) issues.push("存在重复图表标号");
+    if (/(?:[IVXLCDM]+|[A-Z]|\d+(?:\.\d+)*)[.)]\s*[:：]/.test(output)) issues.push("标题编号存在多余冒号");
     return issues;
   }
   function normalizeAcademic(source, translated, target) {
@@ -309,25 +334,56 @@
     const heading = headingTranslation(sourceText, target);
     if (heading) return heading;
     if (!output) return output;
-    const cap = /^\s*(fig(?:ure)?|table)\.?\s*(\d+[A-Za-z]?)\.?\s*/i.exec(sourceText);
-    if (cap && chineseTarget(target)) {
-      const label = /^fig/i.test(cap[1]) ? "图" : "表";
-      output = output.replace(new RegExp(
-        `^\\s*(?:资料图|图表|插图|图|表格|表|fig(?:ure)?|table)\\s*[.。．、:：]*\\s*${escapeRE(cap[2])}\\s*[.。．、:：]*\\s*`,
-        "i"
-      ), "");
-      return `${label} ${cap[2]}${output ? `. ${output}` : ""}`;
-    }
-    const prefix = SECTION_PREFIX.exec(sourceText);
-    SECTION_PREFIX.lastIndex = 0;
-    if (prefix) {
-      const marker = prefix[1].slice(0, -1), punct = prefix[1].slice(-1);
-      output = output
-        .replace(new RegExp(`^\\s*(?:(?:${escapeRE(marker)})[.。．、)]\\s*)+`, "i"), "")
-        .replace(/^\s*[。．、]+\s*/, "");
-      return `${marker}${punct}${output.trim() ? ` ${output.trim()}` : ""}`;
-    }
+
     if (chineseTarget(target)) {
+      // 1. 章节与标号前缀检测（如 "A. "、"1.1 "）
+      let sectionMarker = "";
+      const prefix = SECTION_PREFIX.exec(sourceText);
+      SECTION_PREFIX.lastIndex = 0;
+      if (prefix) {
+        const marker = prefix[1].slice(0, -1), punct = prefix[1].slice(-1);
+        sectionMarker = `${marker}${punct}`;
+        output = output
+          .replace(new RegExp(`^\\s*(?:(?:${escapeRE(marker)})[.。．、)]\\s*)+`, "i"), "")
+          .replace(/^[\s:：.。．、\-–—~,，]+/, "");
+      }
+
+      // 2. 图表题注 vs 普通正文句分析
+      const capMatch = /^\s*(fig(?:ure)?|table)\.?\s*([A-Za-z]?\d+[A-Za-z]?|[IVXLCDM]+)(?:\.|\b)/i.exec(sourceText);
+      if (capMatch) {
+        const label = /^fig/i.test(capMatch[1]) ? "图" : "表";
+        const num = capMatch[2];
+        const afterCap = sourceText.slice(capMatch.index + capMatch[0].length);
+        const isBodySentence = CAPTION_VERBS.test(afterCap);
+        if (isBodySentence) {
+          // 普通陈述句（如 "Figure 5 shows..." -> Edge 译为 "图:5 ,分别显示了..." 或 "图:<sup>5</sup> ,分别显示了..."）
+          output = output.replace(
+            new RegExp(`^\\s*(?:[,，:：.。．、\\-–—~]*\\s*)?(?:资料图|图表|插图|图|表格|表|fig(?:ure)?|table)\\s*[:：.。．、]*\\s*(?:<sup>)?\\s*${escapeRE(num)}\\s*(?:<\\/sup>)?\\s*[,，:：.。．、]*\\s*`, "i"),
+            `${label} ${num} `
+          );
+        } else {
+          // 真正的图表题注：循环剥除所有多余重复的图表标签前缀
+          const capLeadPattern = new RegExp(
+            `^\\s*(?:[,，:：.。．、\\-–—~]*\\s*)?(?:资料图|图表|插图|图|表格|表|fig(?:ure)?|table)\\s*[:：.。．、]*\\s*(?:<sup>)?\\s*${escapeRE(num)}\\s*(?:<\\/sup>)?\\s*[:：.。．、,，\\-–—~]*\\s*`,
+            "i"
+          );
+          while (capLeadPattern.test(output)) {
+            output = output.replace(capLeadPattern, "");
+          }
+          output = output.replace(/^[\s,，:：.。．、\-–—~]+/, "");
+          output = `${label} ${num}${output ? `. ${output}` : ""}`;
+        }
+      }
+
+      // 3. 组装章节编号（若有）
+      if (sectionMarker) {
+        output = output
+          .replace(new RegExp(`^\\s*(?:(?:${escapeRE(sectionMarker.slice(0, -1))})[.。．、)]\\s*)+`, "i"), "")
+          .replace(/^[\s:：.。．、\-–—~,，]+/, "");
+        output = `${sectionMarker}${output ? ` ${output}` : ""}`;
+      }
+
+      // 4. 公式引用标号规范化
       const numbers = [];
       for (const ref of sourceText.matchAll(EQUATION_REFERENCE)) {
         for (const number of ref[0].matchAll(EQUATION_NUMBER)) {
@@ -349,8 +405,61 @@
       output = output
         .replace(/(?:方程|公式)\s*[。.．]\s*(式\s*\()/g, "$1")
         .replace(/\)\s*(和|与|及)\s*式/g, ") $1式");
+
+      // 5. 剥除模型幻觉伪标签碎片
+      output = output
+        .replace(/PP\d*><\/b\d+>/gi, "")
+        .replace(/4>4>/g, "")
+        .replace(/<\/?(?:b|PP)\d*[^>]*>/gi, "")
+        .replace(/<\/?(?:b|PP)\d+/gi, "")
+        .replace(/<b\s+[^>]*>/gi, "");
+
+      // 6. 通用连续退化死循环去重（连续重复 >= 2 次的长子句仅保留 1 次）
+      const clauseRegex = /([^，。！？；\n]{8,120}[，。！？；\s]*)\1{1,}/gu;
+      for (let i = 0; i < 3; i++) {
+        const next = output.replace(clauseRegex, "$1");
+        if (next === output) break;
+        output = next;
+      }
+
+      // 7. 公式说明与“其中”后冒号清理（如 "其中 : $Q$ : 是" -> "其中 $Q$ 是"）
+      output = output
+        .replace(/(^|[，。；\n\s])(其中|式中)\s*[:：]\s*(?=[$（(\\\w\u4e00-\u9fa5])/gu, "$1$2 ")
+        .replace(/(\$[^$\n]+\$)\s*[:：]\s*(?=(?:[是为指]|代表|表示|等于|即为|[a-zA-Z\u4e00-\u9fa5]))/g, "$1 ")
+        .replace(/(\\\([^\n]+?\\\))\s*[:：]\s*(?=(?:[是为指]|代表|表示|等于|即为|[a-zA-Z\u4e00-\u9fa5]))/g, "$1 ")
+        .replace(/(?<=[$A-Za-z0-9_\\\)）])\s*[:：]\s*(?=(?:[是为指]|代表|表示|等于|即为)\b)/g, " ");
+
+      // 8. 子图标签与题注标点清洗
+      output = output
+        .replace(/(?<![。！？!?])[,，\s]+$/gm, "")
+        .replace(/(?<![。！？!?])[:：]{2,}$/gm, "");
+      if (!/[:：]\s*$/.test(sourceText)) {
+        output = output.replace(/(?<![。！？!?])[:：\s]+$/gm, "");
+      }
+      output = output
+        .replace(/(^|[\n\s])(\([a-z]\)|（[a-z]）)\s*[,，:：\s]+(?=[\n\s]|$|!\[)/gim, "$1$2 ")
+        .replace(/(\([a-z]\)|（[a-z]）)\s*[,，:：]+\s*(?=[A-Za-z\u4e00-\u9fa5!\[])/gim, "$1 ")
+        .replace(/(\([a-z]\)\s*[^:：\n]+?)\s*[:：]\s*(图\s*\d+|表\s*\d+)/gi, "$1. $2")
+        .replace(/(\([a-z]\)|（[a-z]）)\s*[,，:：]\s*(图\s*\d+|表\s*\d+)/gi, "$1 $2")
+        .replace(/^[\s,，:：.。．、\-–—~]+(?=(?:图|表|Figure|Table|\([a-z]\)|（[a-z]）))/gi, "");
+
+      // 9. Markdown 图片前后病态孤立逗号/冒号清理
+      output = output
+        .replace(/(?:^|[ \t]*[,，:：]+[ \t]*)+(!\[[^\]\n]+\]\([^\)\n]+\))/g, "\n\n$1")
+        .replace(/(!\[[^\]\n]+\]\([^\)\n]+\))[ \t]*[,，:：\s]*(图\s*\d+|表\s*\d+|\([a-z]\)|（[a-z]）)/gi, "$1\n\n$2")
+        .replace(/(!\[[^\]\n]+\]\([^\)\n]+\))[ \t]*[,，:：]+[ \t]*/g, "$1 ");
+
+      // 10. 标题、上标与残留标号冒号消噪
+      output = output
+        .replace(/(^|[\n#\s])((?:[IVXLCDM]+|[A-Z]|\d+(?:\.\d+)*)[.)]?)\s*[:：]\s*(?=[A-Za-z\u4e00-\u9fa5])/gm, "$1$2 ")
+        .replace(/(<sup>[^<]+<\/sup>)\s*[:：]\s*/g, "$1 ")
+        .replace(/(<sub>[^<]+<\/sub>)\s*[:：]\s*/g, "$1 ")
+        .replace(/[:：]{2,}/g, "：")
+        .replace(/[,，]{2,}/g, "，")
+        .replace(/[,，]\s*[:：]|[:：]\s*[,，]/g, "：")
+        .replace(/(图\s*\d+[A-Za-z]?)\.?\s*(?:资料图|图表|插图|图|表格|表)\s*[:：.]*\s*(?:<sup>)?\s*\d*[A-Za-z]?\s*(?:<\/sup>)?\s*[,，:：.]*/gi, "$1. ");
     }
-    return output;
+    return output.trim();
   }
 
   function markdownBlocks(text) { const blocks=[], current=[]; let fence=false, math=false; const flush=()=>{if(current.length)blocks.push(current.splice(0).join(""));}; for(const line of String(text||"").split(/(?<=\n)/)){const stripped=line.trim(), f=/^(?:```|~~~)/.test(stripped), table=/^\|.*\|$/.test(stripped);if(f){if(!fence&&current.length)flush();current.push(line);fence=!fence;if(!fence)flush();continue;}if(fence){current.push(line);continue;}if(/^\$\$/.test(stripped)){if(!math&&current.length)flush();current.push(line);if(stripped==="$$")math=!math;if(!math&&stripped==="$$")flush();continue;}if(math){current.push(line);continue;}if(table){if(current.length&&!current.at(-1).trim().startsWith("|"))flush();current.push(line);continue;}if(!stripped){current.push(line);flush();continue;}if(stripped.startsWith("#")&&current.length)flush();current.push(line);}flush();return blocks; }

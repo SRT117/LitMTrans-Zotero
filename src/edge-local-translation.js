@@ -627,9 +627,38 @@
 
     cleanTranslationResult(result) {
       if (typeof result === "string" && result.trim()) {
-        return Array.from(result).filter(character => !/\p{C}/u.test(character)).join("");
+        let text = Array.from(result).filter(character => !/\p{C}/u.test(character)).join("");
+        // 剥除模型幻觉伪标签碎片
+        text = text
+          .replace(/PP\d*><\/b\d+>/gi, "")
+          .replace(/4>4>/g, "")
+          .replace(/<\/?(?:b|PP)\d*[^>]*>/gi, "")
+          .replace(/<\/?(?:b|PP)\d+/gi, "");
+        // 通用连续退化死循环去重
+        const clauseRegex = /([^，。！？；\n]{8,120}[，。！？；\s]*)\1{1,}/gu;
+        for (let i = 0; i < 2; i++) {
+          const next = text.replace(clauseRegex, "$1");
+          if (next === text) break;
+          text = next;
+        }
+        // 抑制连续重复标点与末尾病态标点
+        text = text
+          .replace(/[:：]{2,}/g, ":")
+          .replace(/[,，]{2,}/g, ",")
+          .replace(/[,，\s]*[:：][,，\s]*/g, ":")
+          .replace(/(?<![。！？!?])[:：,，\s]+$/gm, "");
+        return text;
       }
       return "";
+    }
+
+    normalizeInputSoftBreaks(text) {
+      if (!text || typeof text !== "string") return text;
+      // 拼接跨行连字符断词：如 differ-\nences -> differences
+      let res = text.replace(/([A-Za-z]{2,})-\s*(?:\r?\n)+\s*([A-Za-z]{2,})/g, "$1$2");
+      // 将段落内部非空行的普通硬换行替换为空格，保护空行与列表项
+      res = res.replace(/(?<!\n)\r?\n(?!\r?\n|[ \t]*[-*+]\s|[ \t]*\d+\.\s|[ \t]*#)/g, " ");
+      return res;
     }
 
     async translateSource(source, signal, depth = 0, initialResult = undefined) {
@@ -650,6 +679,7 @@
     async translate(text, signal = null) {
       let source = String(text || "");
       if (!source.trim()) return source;
+      source = this.normalizeInputSoftBreaks(source);
       const safeSource = replaceOCRReplacementCharacters(source);
       if (safeSource !== source) {
         source = safeSource;
