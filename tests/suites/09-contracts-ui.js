@@ -1,0 +1,240 @@
+"use strict";
+
+module.exports = function createSuite(env) {
+  const {
+    assert, fs, path, root, prefValues, context, zlib, nodeCrypto, vm,
+    crc32, zipU16, zipU32, zipU64, oneEntryZip, oneEntryZip64,
+    MemoryStorage, withResolvedChatModel,
+    U, M, H, LLMService, LLMInternals,
+    TranslationService, TranslationInternals,
+    WebMachineTranslationService, WebMachineTranslation,
+    EdgeLocalTranslation, LayoutTranslationService, LayoutHelpers,
+    MinerUService, MinerUInternals, Mindmap, MindmapV2, Flowchart,
+    ChatService, ChatInternals, ControllerInternals, DocumentPipeline
+  } = env;
+
+function testExclusions() {
+  const contentRoot = path.join(root, "src");
+  const files = [];
+  const walk = dir => {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const stat = fs.statSync(full);
+      if (stat.isDirectory()) walk(full);
+      else if (/\.(?:js|xhtml|css)$/i.test(name)) files.push(full);
+    }
+  };
+  walk(contentRoot);
+  const combined = files.map(file => fs.readFileSync(file, "utf8")).join("\n").toLowerCase();
+  // The web translator is a supported, separately audited service.  Keep
+  // only the removed local-engine and export stacks out of the package.
+  for (const forbidden of ["mtranserver", "youdao_direct", "pandoc", "python-docx", "export_fidelity.lua"]) {
+    assert(!combined.includes(forbidden), `forbidden excluded feature leaked into plugin: ${forbidden}`);
+  }
+  assert(!combined.includes("cdn.jsdelivr.net"));
+  assert(!combined.includes("unpkg.com"));
+}
+
+function testWorkbenchChatRecoveryAndFormulaPreview() {
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const xhtml = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  const css = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+
+  assert(controller.includes('case "operation-state"'), "workbench must be able to reconcile lost operation events");
+  assert(controller.includes('case "pdf-page-count"'), "workbench must be able to check the source PDF page count before translating");
+  assert(controller.includes('pdf.getPageCount()'), "source PDF page count must come from the original PDF");
+  assert(workbench.includes('recommendedTranslationModeForLongPDF'), "workbench must offer a long-PDF translation-mode recommendation");
+  assert(xhtml.includes('当前所译文档超过150页'), "long-PDF recommendation text must be present in the workbench dialog");
+  assert(css.includes('.long-document-translation-body strong'), "the recommended chunked mode must be visually emphasized");
+  assert(xhtml.includes('id="mineru-token-dialog"'), "missing MinerU credentials must have an in-workbench prompt");
+  assert(xhtml.includes('data-external-url="https://mineru.net/apiManage/token"'), "the MinerU credential prompt must expose the token website link");
+  assert(workbench.includes('if (method === "parse" && !await ensureMinerUTokenForParse()) return null;'), "parse must request a missing MinerU token before starting the host operation");
+  assert(workbench.includes('await hostCall("save-mineru-token", { token });'), "the credential prompt must persist the token before continuing parsing");
+  assert(workbench.includes('hostCall("operation-state", {}, { timeout: 5000 })'));
+  assert(workbench.includes('state.running.delete("chat")'), "terminal chat events must release a stale chat lock");
+  assert(
+    workbench.includes("chatFollowLatest: true")
+      && workbench.includes('els["chat-messages"].addEventListener("scroll", () => {')
+      && workbench.includes("state.chatFollowLatest = chatIsNearBottom();")
+      && workbench.includes("if (!state.chatFollowLatest) return;")
+      && workbench.includes("scrollChatToLatest();")
+      && !workbench.includes("if (atBottom || hasStreamingTurn)"),
+    "streaming chat must pause bottom-following while the user reads history and resume after they return to the bottom"
+  );
+  assert(
+    workbench.includes('if (!isChatReasoning) {\n        appendReasoningLog(event);\n        return;\n      }'),
+    "translation and layout reasoning must go to the process log without entering the shared AI chat transcript"
+  );
+  assert(workbench.includes('function appendReasoningLog(event)'), "process log must render streamed translation reasoning");
+  assert(
+    workbench.includes("state.data?.layout?.meta?.complete\n          && Object.keys(state.data?.layout?.translations || {}).length"),
+    "a partial layout checkpoint must resume instead of being treated as a forced retranslation"
+  );
+  assert(xhtml.includes('id="formula-preview-dialog"'));
+  assert(xhtml.includes('id="formula-preview-ask"'));
+  assert(xhtml.includes('id="formula-preview-copy"'));
+  assert(workbench.includes("Markdown.renderTeX(equation.body || previewTex, true)"), "formula preview must render the equation body without its tag");
+  assert(workbench.includes("function formulaTeXWithoutTag(value)"), "formula preview must have a tag-free TeX copy path");
+  assert(workbench.includes("state.previewFormulaTeX = previewTex"), "formula preview copy state must exclude the equation tag");
+  assert(workbench.includes("copyText(formulaTeXWithoutTag(layoutFormulaTeX(formula)))"), "context-menu TeX copy must exclude the equation tag");
+  assert(!xhtml.includes('id="formula-preview-number"'), "formula preview must not render an equation number");
+  assert(!workbench.includes("formulaPreviewNumber(equation.number)"), "formula preview must not render an equation number");
+  assert(!css.includes(".formula-preview-number"), "formula preview must not reserve space for an equation number");
+  assert(workbench.includes("event.clipboardData?.items"), "image paste must read clipboard items");
+  assert(workbench.includes("event.clipboardData?.files"), "image paste must also read direct clipboard files");
+  assert(workbench.includes('addImageFiles(files, { source: "paste" })'), "pasted images must retain their source identity");
+  assert(workbench.includes("async function prepareComposerImage(file, mimeType, source)"), "small pasted images must pass through vision preparation");
+  assert(workbench.includes('name.className = "pending-image-name"'), "pending pasted images must display their unique filename");
+  assert(workbench.includes("function bindEditableContextMenu()"), "editable controls must provide a mouse context menu in Zotero's embedded browser");
+  assert(workbench.includes('addAction("粘贴"'), "the editable-control context menu must expose paste");
+  assert(workbench.includes('hostCall("clipboard-read-text")'), "mouse paste must read text from Zotero's host clipboard");
+  assert(workbench.includes('(control.closest("dialog[open]") || document.body).appendChild(menu);'),
+    "an editable-control menu inside a modal dialog must remain in the browser top layer");
+  assert(controller.includes('case "clipboard-read-text"'), "the host must expose clipboard text to the editable-control context menu");
+  const diagramViewer = fs.readFileSync(path.join(root, "src", "diagram-viewer.js"), "utf8");
+  assert(diagramViewer.includes("dialog.show();") && !diagramViewer.includes("dialog.showModal();"), "the diagram viewer must remain modeless so evidence jumps can be inspected in the reader");
+  assert(diagramViewer.includes("function bindWindowDrag()") && diagramViewer.includes('header.setPointerCapture?.(event.pointerId)'), "the diagram viewer title bar must support bounded pointer dragging");
+  assert(css.includes(".pending-image-name"), "the pending-image filename must remain visible in the composer");
+  assert(workbench.includes("function renderLayoutTranslatedText(text)"), "layout translations must have a dedicated inline-TeX rendering path");
+  assert(workbench.includes("Markdown.normalizeEscapedTeXDelimiters(source)"), "persisted layout translations must normalize complete doubly escaped TeX before rendering");
+  assert(workbench.includes("return useTranslation\n      ? renderLayoutTranslatedText(translated)"), "translated layout blocks must repair bare TeX before rendering");
+  assert(workbench.includes("if (useTranslation && translated) return renderLayoutTranslatedText(translated);"), "translated layout fragments must repair bare TeX before rendering");
+  assert(workbench.includes("function layoutTranslationPageState(page, useTranslation)"));
+  assert(
+    workbench.includes("const showAwaitingOverlay = Boolean(useTranslation && hasTranslatableBlocks && !hasPageTranslation);"),
+    "only pages with requested-but-missing translations may show the awaiting overlay"
+  );
+  assert(workbench.includes("if (!showAwaitingOverlay) {"), "reference-only pages must retain their source layout in the translation pane");
+  assert(workbench.includes("async function waitForLayoutFitToSettle(pageNodes)"), "layout reveal must wait for the ResizeObserver-driven fit to settle");
+  assert(workbench.includes("await nextLayoutPaint();\n    await nextLayoutPaint();")
+    && workbench.includes("if (!visiblePages.length) return false;")
+    && workbench.includes("await ensureLayoutFit(pageNodes);"),
+  "the layout mask must survive the observer turn and remain when no visible measurement occurred");
+  assert(workbench.includes("container.dataset.layoutRenderVersion !== version"), "a stale layout fit must not reveal a newer pane");
+  assert(workbench.includes("layoutPublicationRevision: 0"), "the workbench must track final layout publication events");
+  assert(workbench.includes("state.layoutPublicationRevision += 1;"), "a final layout event must mark its model as published");
+  assert(workbench.includes("if (state.layoutPublicationRevision === publicationRevision) renderLayoutPanes();"), "the bridge result must rebuild layout only when its final event was lost");
+  assert(workbench.includes("await refreshState({ preserveLayout: true });"), "post-translation state refresh must not remount an already published layout");
+  const saveSettingsHandler = workbench.slice(
+    workbench.indexOf('els["save-settings-button"].addEventListener("click", async () => {'),
+    workbench.indexOf('els["clear-document-button"].addEventListener("click", async () => {')
+  );
+  assert(!saveSettingsHandler.includes("renderLayoutPanes()"), "saving connection settings must not rebuild an already fitted layout");
+}
+
+function testSilentNotifications() {
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  assert(controller.includes('doc.createXULElement("panel")'), "plugin errors must use a custom, non-native notification panel");
+  assert(controller.includes('panel.setAttribute("noautohide", "true")'), "silent notification panel must remain actionable");
+  assert(!controller.includes("prompt.alert("), "plugin must not invoke the native prompt alert, which plays system sounds");
+}
+
+function testWorkbenchStreamScrollUsesExclusiveImageTier() {
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  assert(
+    workbench.includes("const sharedImageKeys = new Set(U.sharedImageAnchorKeys("),
+    "stream scroll sync must establish image correspondence across both panes"
+  );
+  assert(
+    workbench.includes("const key = U.imageAnchorKey(source);"),
+    "stream scroll sync must derive image anchors from resource identity instead of pane ordinal"
+  );
+  assert(
+    workbench.includes("new MutationObserver(() => invalidate(source)).observe(source, {"),
+    "streaming Markdown replacement must invalidate cached image identities"
+  );
+  assert(
+    workbench.includes('{ syncAnchors: true, imageLoading: "eager" }'),
+    "both stream panes must load image geometry before it is used as the primary anchor tier"
+  );
+  assert(
+    workbench.includes('const pageNodes = state.mode === "layout"'),
+    "hidden layout-reader pages must never replace visible stream-reader anchors"
+  );
+  assert(
+    workbench.includes("queueSync(lastUserPair.source, lastUserPair.target);"),
+    "an image load must repeat the newest user-driven mapping after geometry changes"
+  );
+  assert(
+    workbench.includes('mode: "image",') && workbench.includes('mode: "fallback",'),
+    "stream scroll sync must keep image and legacy anchor tiers separate"
+  );
+  assert(
+    !/fallbackAnchors\.push\(\{\s*key:\s*`image:/.test(workbench),
+    "image anchors must not be mixed back into the legacy interpolation tier"
+  );
+}
+
+function testConciseStructuredOperationMessages() {
+  const workbenchCode = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const workbenchMarkup = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  assert(
+    workbenchCode.includes("function translationConfigurationField(message)")
+      && workbenchCode.includes('["translate", "translate-layout"].includes(method)')
+      && workbenchCode.includes("await openSettingsDialog(configurationField);")
+      && workbenchCode.includes("field?.focus();"),
+    "missing translation-model configuration must open settings and focus the field the user needs to complete"
+  );
+  assert(
+    workbenchCode.includes('previous.rawText = (previous.rawText || "") + String(event.delta || "");')
+      && workbenchCode.includes("function updateReasoningText(node, text)")
+      && workbenchCode.includes("const followLatest = node.scrollHeight - node.scrollTop - node.clientHeight < 36;")
+      && workbenchCode.includes("if (followLatest) node.scrollTop = node.scrollHeight;")
+      && workbenchCode.includes("updateReasoningText(previous.reasoningNode, previous.rawText);")
+      && workbenchCode.includes("updateReasoningText(previous.messageReasoningNode, previous.rawText);"),
+    "the task panel must keep showing live model reasoning so long requests do not appear stalled"
+  );
+  assert(
+    workbenchCode.includes('const key = `reasoning:${scope}:${group}`;'),
+    "reasoning activity must still be deduplicated by scope and group"
+  );
+  assert(
+    workbenchCode.includes('const visibleTypes = new Set(["started", "completed", "warning", "error"]);'),
+    "the message center must exclude raw reasoning history while the live task panel displays it"
+  );
+  assert(
+    workbenchCode.includes('badge.textContent = ({ success: "完成", warning: "提醒", error: "错误", info: "信息" })[kind];'),
+    "message-center entries must have plain-language categories"
+  );
+  assert(
+    workbenchCode.includes('if (key && previous?.key === key && previous.kind === kind && previous.textNode)')
+      && workbenchCode.includes('previous.textNode.textContent = text;'),
+    "changing progress for one phase must update its current row instead of flooding the task panel"
+  );
+  assert(
+    workbenchCode.includes("item.node?.remove();")
+      && workbenchCode.includes("item.messageNode?.remove();"),
+    "trimming operation history must remove stale rows from both progress views"
+  );
+  assert(
+    !workbenchMarkup.includes("实时显示处理步骤和模型思考"),
+    "the task-panel heading must not contain explanatory implementation copy"
+  );
+  assert(
+    workbenchMarkup.includes('id="task-messages-list"')
+      && workbenchMarkup.includes("<h3>任务进度</h3>")
+      && workbenchMarkup.includes("<h3>结果与提醒</h3>")
+      && !workbenchMarkup.includes("过程详情请查看“任务进度”"),
+    "the message dialog itself must expose both live task progress and durable notices"
+  );
+  assert(
+    workbenchCode.includes("function renderTaskMessages()")
+      && workbenchCode.includes("updateReasoningText(previous.messageReasoningNode, previous.rawText);"),
+    "the message dialog must keep live task progress and reasoning current while it is open"
+  );
+  assert(
+    !workbenchCode.includes('addLog(error.stack || message, "error")')
+      && !workbenchCode.includes('addLog(`${notice}\\n${error.stack || message}`, "error")'),
+    "user-facing task messages must not include JavaScript stack traces"
+  );
+}
+
+  return {
+    testExclusions,
+    testWorkbenchChatRecoveryAndFormulaPreview,
+    testSilentNotifications,
+    testWorkbenchStreamScrollUsesExclusiveImageTier,
+    testConciseStructuredOperationMessages,
+  };
+};
