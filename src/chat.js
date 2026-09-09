@@ -640,6 +640,8 @@
     return { start, end, index };
   }
 
+  const NON_MULTIMODAL_MARK_TTL_MS = 2 * 24 * 60 * 60 * 1000;
+
   class ChatService {
     constructor(storage, llm, translation, mineru = null) {
       this.storage = storage;
@@ -650,14 +652,45 @@
       this.imageUnsupportedModels = new Map();
       try {
         const stored = JSON.parse(String(U.getPref("nonMultimodalModelMarks", "{}") || "{}"));
-        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const cutoff = Date.now() - NON_MULTIMODAL_MARK_TTL_MS;
+        let hasExpired = false;
         for (const [key, value] of Object.entries(stored || {})) {
           const timestamp = Number(value?.timestamp || value || 0);
           const model = String(value?.model || key.split("\u001f").pop() || key).trim().toLowerCase();
-          if (timestamp >= cutoff && model) this.imageUnsupportedModels.set(model, timestamp);
+          if (timestamp >= cutoff && model) {
+            this.imageUnsupportedModels.set(model, timestamp);
+          } else if (model) {
+            hasExpired = true;
+          }
+        }
+        if (hasExpired) {
+          this.persistImageUnsupportedModels();
         }
       }
       catch (_) {}
+    }
+
+    persistImageUnsupportedModels() {
+      const cutoff = Date.now() - NON_MULTIMODAL_MARK_TTL_MS;
+      const payload = {};
+      for (const [modelKey, timestamp] of this.imageUnsupportedModels) {
+        if (timestamp >= cutoff) payload[modelKey] = { model: modelKey, timestamp };
+        else this.imageUnsupportedModels.delete(modelKey);
+      }
+      U.setPref("nonMultimodalModelMarks", JSON.stringify(payload));
+    }
+
+    isImageUnsupported(key) {
+      const model = String(key || "").trim().toLowerCase();
+      if (!model) return false;
+      const timestamp = this.imageUnsupportedModels.get(model);
+      if (!timestamp) return false;
+      if (Date.now() - timestamp >= NON_MULTIMODAL_MARK_TTL_MS) {
+        this.imageUnsupportedModels.delete(model);
+        this.persistImageUnsupportedModels();
+        return false;
+      }
+      return true;
     }
 
     root(documentID) {
@@ -706,11 +739,7 @@
       const model = String(key || "").trim().toLowerCase();
       if (!model) return;
       this.imageUnsupportedModels.set(model, Date.now());
-      const payload = {};
-      for (const [modelKey, timestamp] of this.imageUnsupportedModels) {
-        payload[modelKey] = { model: modelKey, timestamp };
-      }
-      U.setPref("nonMultimodalModelMarks", JSON.stringify(payload));
+      this.persistImageUnsupportedModels();
     }
 
     async prepareDocument(documentID, filePath, options = {}, emit = null, signal = null) {
@@ -2151,7 +2180,7 @@
       const imageCapabilityKey = String(settings.model || "").trim().toLowerCase();
       let outgoingImageCount = imagePayloads.length;
       let outgoingCurrentUserImageCount = loadedCurrentUserAttachments.length;
-      if (hasImagePayload && this.imageUnsupportedModels.has(imageCapabilityKey)) {
+      if (hasImagePayload && this.isImageUnsupported(imageCapabilityKey)) {
         messages = textOnlyMessages(messages);
         outgoingImageCount = 0;
         outgoingCurrentUserImageCount = 0;
@@ -2345,7 +2374,7 @@
       const referenceQuotes = normalizeReferenceQuotes(options.referenceQuotes);
       const rawQuestion = String(userText || "").trim();
       const imageCapabilityKey = String(this.llm.getSettings("chat").model || "").trim().toLowerCase();
-      const imagesAlreadyUnsupported = incomingImages.length && this.imageUnsupportedModels.has(imageCapabilityKey);
+      const imagesAlreadyUnsupported = incomingImages.length && this.isImageUnsupported(imageCapabilityKey);
       if (imagesAlreadyUnsupported && !rawQuestion && !documents.length && !referenceQuotes.length) {
         throw new Error("当前模型不支持图片输入。请更换支持图片的模型，或输入文字问题。");
       }
@@ -2406,6 +2435,7 @@
 
   LitMTrans.ChatService = ChatService;
   LitMTrans.ChatInternals = {
+    NON_MULTIMODAL_MARK_TTL_MS,
     DEFAULT_KEY_POINTS_PROMPT,
     DIAGRAM_CHINESE_INSTRUCTION,
     MINDMAP_FORMAT_INSTRUCTION,

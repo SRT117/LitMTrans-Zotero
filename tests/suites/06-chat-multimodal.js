@@ -827,6 +827,48 @@ async function testDocumentImageSendOptions() {
   assert(currentStillSequential.some(part => part.type === "text" && part.text.includes("Current body.")));
 }
 
+async function testNonMultimodalModelMarksTTL() {
+  const ttl = ChatInternals.NON_MULTIMODAL_MARK_TTL_MS;
+  assert.equal(ttl, 2 * 24 * 60 * 60 * 1000, "TTL must be 2 days");
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const initialMarks = {
+    "recent-model": { model: "recent-model", timestamp: now - 1 * dayMs },
+    "expired-3d-model": { model: "expired-3d-model", timestamp: now - 3 * dayMs },
+    "expired-8d-model": { model: "expired-8d-model", timestamp: now - 8 * dayMs }
+  };
+  U.setPref("nonMultimodalModelMarks", JSON.stringify(initialMarks));
+  const storage = new MemoryStorage();
+  const llm = { getSettings: () => ({ targetLanguage: "简体中文" }) };
+  const chat = new ChatService(storage, llm, { load: async () => ({ markdown: "" }) });
+  assert(chat.imageUnsupportedModels.has("recent-model"), "recent mark within 2 days must be preserved");
+  assert(!chat.imageUnsupportedModels.has("expired-3d-model"), "mark older than 2 days must be pruned");
+  assert(!chat.imageUnsupportedModels.has("expired-8d-model"), "mark older than 7 days must be pruned");
+
+  // 构造时已自动清理持久化首选项
+  const diskAfterConstruct = JSON.parse(U.getPref("nonMultimodalModelMarks", "{}"));
+  assert.equal(typeof diskAfterConstruct["recent-model"], "object");
+  assert.equal(diskAfterConstruct["expired-3d-model"], undefined, "constructor must sanitize disk pref");
+  assert.equal(diskAfterConstruct["expired-8d-model"], undefined, "constructor must sanitize disk pref");
+
+  // 运行时 TTL 动态检查：在进程无需重启的情况下，时间推移导致标记超时
+  chat.imageUnsupportedModels.set("aging-model", Date.now() - 3 * dayMs);
+  assert.equal(chat.isImageUnsupported("aging-model"), false, "runtime TTL must expire aging models");
+  assert(!chat.imageUnsupportedModels.has("aging-model"), "aging model must be evicted from map");
+  const diskAfterEviction = JSON.parse(U.getPref("nonMultimodalModelMarks", "{}"));
+  assert.equal(diskAfterEviction["aging-model"], undefined, "evicted model must be removed from pref");
+
+  chat.markImageUnsupported("new-model");
+  assert(chat.imageUnsupportedModels.has("new-model"));
+  assert.equal(chat.isImageUnsupported("new-model"), true);
+  const saved = JSON.parse(U.getPref("nonMultimodalModelMarks", "{}"));
+  assert.equal(typeof saved["recent-model"], "object");
+  assert.equal(typeof saved["new-model"], "object");
+  assert.equal(saved["expired-3d-model"], undefined);
+  assert.equal(saved["expired-8d-model"], undefined);
+  U.setPref("nonMultimodalModelMarks", "{}");
+}
+
   return {
     testChat,
     testChatGeminiStreamTimeoutFallback,
@@ -844,5 +886,6 @@ async function testDocumentImageSendOptions() {
     testPayloadTooLargePreservesImageCapability,
     testDeepSeekDeserializeFallbackAndRollback,
     testDocumentImageSendOptions,
+    testNonMultimodalModelMarksTTL,
   };
 };

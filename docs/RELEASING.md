@@ -79,7 +79,7 @@ https://github.com/SRT117/LitMTrans-Zotero/releases/latest
 https://github.com/SRT117/LitMTrans-Zotero/releases/latest/download/update.json
 ```
 
-再下载 XPI，在隔离的 Zotero profile 中完成一次安装、重启和核心功能检查。自动更新的完整链路需要等后续更高版本发布后验证；首个版本能安装并不等于自动更新已经经过端到端测试。
+再下载 XPI，在隔离的 Zotero profile 中完成一次安装、重启和核心功能检查。自动更新的端到端升级链路可在本地直接运行 `npm run dev:upgrade`（或按快捷键 `Ctrl+Shift+O`）进行全流程实测验证。
 
 ## 4. 申请加入中文插件市场
 

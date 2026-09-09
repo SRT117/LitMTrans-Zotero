@@ -22,6 +22,46 @@
       }
     },
     {
+      "label": "Zotero: 新用户干净测试环境（Ctrl+Shift+N）",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\scripts\\start-new-user.ps1' -ZoteroMajor 10",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "group": "test",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Zotero: 老用户更新体验环境（Ctrl+Shift+O）",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\scripts\\start-upgrade-test.ps1' -ZoteroMajor 10",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "group": "test",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
       "label": "Zotero 10: 验证 → 构建 → 启动隔离测试库",
       "type": "shell",
       "command": "& '${workspaceFolder}\\scripts\\start-dev.ps1' -ZoteroMajor 10",
