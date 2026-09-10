@@ -4931,10 +4931,15 @@
     const label = els[`${prefix}provider-label`];
     if (!label) return;
     label.replaceChildren("服务商");
+    if (isWebMachineTranslationProvider(provider) && !isEdgeLocalTranslationProvider(provider)) {
+      label.append("（外网google，国内自动切换bing，bing很慢）");
+      return;
+    }
     const providerLinks = {
       deepseek: ["https://platform.deepseek.com/api_keys", "DeepSeek key官网"],
       gemini: ["https://aistudio.google.com/api-keys", "Google AI Studio官网"],
-      openrouter: ["https://openrouter.ai/workspaces/default/keys", "OpenRouter官网"]
+      openrouter: ["https://openrouter.ai/workspaces/default/keys", "OpenRouter官网"],
+      zai: ["https://open.bigmodel.cn/apikey/platform", "Z.ai key官网"]
     };
     const [href, text] = providerLinks[provider] || [];
     if (!href) return;
@@ -4965,6 +4970,7 @@
       els["setting-chat-base-url"].value = option.dataset.baseURL;
     }
     updateChatImageSettingsVisibility();
+    updateProviderLabel("setting-chat-");
   }
 
   function updateTranslationContextControls(disabled) {
@@ -5045,7 +5051,9 @@
     const model = els["setting-model"];
     const key = els["setting-api-key"];
     const refresh = els["refresh-models-button"];
-    for (const input of [baseURL, model, key, refresh]) {
+    const thinkingMode = els["setting-thinking-mode"];
+    const reasoningEffort = els["setting-reasoning-effort"];
+    for (const input of [baseURL, model, key, refresh, thinkingMode, reasoningEffort]) {
       if (input) input.disabled = enabled;
     }
     els["setting-machine-source-language-group"].hidden = !edgeLocal;
@@ -5061,6 +5069,8 @@
         model.appendChild(option);
         model.value = "";
       }
+      if (thinkingMode) thinkingMode.value = "default";
+      if (reasoningEffort) reasoningEffort.value = "default";
     } else {
       if (baseURL) baseURL.placeholder = "https://api.example.com/v1";
       if (key) key.placeholder = "未配置";

@@ -75,10 +75,15 @@ var LitMTransControllerPreferences = {
     const label = this.$(`${prefix}provider-label`);
     if (!label) return;
     label.replaceChildren("服务商");
+    if (this.isWebMachineTranslationProvider(provider) && !this.isEdgeLocalTranslationProvider(provider)) {
+      label.append("（外网google，国内自动切换bing，bing很慢）");
+      return;
+    }
     const providerLinks = {
       deepseek: ["https://platform.deepseek.com/api_keys", "DeepSeek key官网"],
       gemini: ["https://aistudio.google.com/api-keys", "Google AI Studio官网"],
-      openrouter: ["https://openrouter.ai/workspaces/default/keys", "OpenRouter官网"]
+      openrouter: ["https://openrouter.ai/workspaces/default/keys", "OpenRouter官网"],
+      zai: ["https://open.bigmodel.cn/apikey/platform", "Z.ai key官网"]
     };
     const [href, text] = providerLinks[provider] || [];
     if (!href) return;
@@ -105,6 +110,7 @@ var LitMTransControllerPreferences = {
     this.$("chat-thinking-mode").value = this.$("thinking-mode").value;
     this.setSelectValue(this.$("chat-reasoning-effort"), this.$("reasoning-effort").value);
     this.$("chat-api-key").value = this.$("api-key").value;
+    this.updateProviderLabel("chat-");
   },
 
   updateTranslationContextControls(disabled) {
@@ -131,7 +137,9 @@ var LitMTransControllerPreferences = {
     const model = this.$("model");
     const key = this.$("api-key");
     const refresh = this.$("refresh-models");
-    for (const input of [baseURL, model, key, refresh]) if (input) input.disabled = enabled;
+    const thinkingMode = this.$("thinking-mode");
+    const reasoningEffort = this.$("reasoning-effort");
+    for (const input of [baseURL, model, key, refresh, thinkingMode, reasoningEffort]) if (input) input.disabled = enabled;
     this.$("machine-source-language-group").hidden = !edgeLocal;
     this.updateTranslationContextControls(enabled);
     if (enabled) {
@@ -143,6 +151,8 @@ var LitMTransControllerPreferences = {
       const option = this.option("", `${edgeLocal ? "Edge本地翻译" : "联网翻译"}不需要模型`);
       model.appendChild(option);
       model.value = "";
+      if (thinkingMode) thinkingMode.value = "default";
+      if (reasoningEffort) this.setSelectValue(reasoningEffort, "default");
     }
     else {
       baseURL.placeholder = "https://api.example.com/v1";

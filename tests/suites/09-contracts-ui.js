@@ -250,6 +250,16 @@ function testDirectExternalLinkOpening() {
   controller.openExternalURL("doi:10.1000/182");
   assert.strictEqual(context.Zotero.lastLaunchedURL, "https://doi.org/10.1000/182", "DOI URLs must be resolved to HTTPS and launched directly");
 
+  controller.openExternalURL("https://open.bigmodel.cn/apikey/platform");
+  assert.strictEqual(context.Zotero.lastLaunchedURL, "https://open.bigmodel.cn/apikey/platform", "Z.ai key platform URL must be launched through Zotero.launchURL");
+
+  assert(workbenchCode.includes("https://open.bigmodel.cn/apikey/platform"), "workbench must include Z.ai key platform link");
+  assert(preferencesCode.includes("https://open.bigmodel.cn/apikey/platform"), "preferences must include Z.ai key platform link");
+  assert(workbenchCode.includes("（外网google，国内自动切换bing，bing很慢）"), "workbench must include free machine translation label hint");
+  assert(preferencesCode.includes("（外网google，国内自动切换bing，bing很慢）"), "preferences must include free machine translation label hint");
+  assert(workbenchCode.includes("[baseURL, model, key, refresh, thinkingMode, reasoningEffort]"), "workbench must disable reasoning controls on web machine translation");
+  assert(preferencesCode.includes("[baseURL, model, key, refresh, thinkingMode, reasoningEffort]"), "preferences must disable reasoning controls on web machine translation");
+
   assert.throws(() => controller.openExternalURL("javascript:alert(1)"), /只允许打开 HTTP\(S\) 官网地址/);
   assert.throws(() => controller.openExternalURL(""), /官网地址无效/);
 }
