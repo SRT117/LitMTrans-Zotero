@@ -264,6 +264,52 @@ function testDirectExternalLinkOpening() {
   assert.throws(() => controller.openExternalURL(""), /官网地址无效/);
 }
 
+function testDeepSeekWebSidebarIntegration() {
+  const prefs = fs.readFileSync(path.join(root, "src", "prefs.js"), "utf8");
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const preferencesXHTML = fs.readFileSync(path.join(root, "src", "preferences.xhtml"), "utf8");
+  const preferencesJS = fs.readFileSync(path.join(root, "src", "preferences.js"), "utf8");
+  const workbenchXHTML = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  const workbenchJS = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const workbenchCSS = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+
+  const host = new context.LitMTrans.Controller({ rootURI: "chrome://litmtrans/" });
+  let created = 0, navigations = 0;
+  const attributes = {};
+  const slot = { firstElementChild: null, appendChild(node) { this.firstElementChild = node; } };
+  const doc = {
+    getElementById(id) { return id === "deepseek-web-frame" ? slot : null; },
+    createXULElement(name) {
+      assert.strictEqual(name, "browser"); created++;
+      return { style: {}, addProgressListener() {}, loadURI() { navigations++; }, setAttribute(key, value) { attributes[key] = value; },
+        getAttribute(key) { return attributes[key]; } };
+    }
+  };
+  const runtime = { browser: { contentDocument: doc } };
+  context.ChromeUtils = { generateQI() { return () => {}; } };
+  context.Ci.nsIWebProgress = { NOTIFY_STATE_NETWORK: 1 };
+  context.Services.scriptSecurityManager = { getSystemPrincipal() { return {}; } };
+  host.loadDeepSeekWeb(runtime);
+  host.loadDeepSeekWeb(runtime);
+  assert.strictEqual(created, 1, "switching modes must preserve the existing website session");
+  assert.strictEqual(navigations, 1, "switching modes must not restart navigation");
+  assert.strictEqual(attributes.type, "content", "website must use an isolated content browser");
+  host.loadDeepSeekWeb(runtime, true);
+  clearTimeout(runtime.deepSeekLoadTimer);
+  assert.strictEqual(navigations, 2, "explicit reload must navigate again");
+  assert.throws(() => host.loadDeepSeekWeb({}), /网页容器尚未就绪/);
+  assert(prefs.includes('pref("extensions.litmtrans.chatEngine", "api");'), "prefs must define chatEngine with default api");
+  assert(!controller.includes("setResponseHeader"), "web sidebar must not rewrite global response headers");
+  assert(!workbenchCSS.includes(".embedded-ai-topbar:has(#chat-navigator-button[hidden])"), "mode tabs must remain visible without chat history");
+  assert(controller.includes('case "save-chat-engine":'), "controller must handle save-chat-engine bridge action");
+  assert(preferencesXHTML.includes('id="litmtrans-pref-chat-engine-web"'), "preferences must provide DeepSeek web checkbox");
+  assert(preferencesJS.includes('this.$("chat-engine-web").checked'), "preferences.js must load and save chatEngine");
+  assert(workbenchXHTML.includes('id="ai-mode-web-button"') && workbenchXHTML.includes('id="ai-mode-api-button"'), "workbench must provide dual-mode tabs");
+  assert(workbenchXHTML.includes('id="deepseek-web-container"') && workbenchXHTML.includes('id="deepseek-web-frame"'), "workbench must provide deepseek web container and frame");
+  assert(workbenchJS.includes("function setAIMode") && workbenchJS.includes("function sendToDeepSeekWeb"), "workbench.js must provide mode switcher and bridge sender");
+  assert(workbenchCSS.includes(".deepseek-web-container") && workbenchCSS.includes(".deepseek-web-frame"), "workbench.css must style the web container");
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -271,6 +317,6 @@ function testDirectExternalLinkOpening() {
     testWorkbenchStreamScrollUsesExclusiveImageTier,
     testConciseStructuredOperationMessages,
     testDirectExternalLinkOpening,
+    testDeepSeekWebSidebarIntegration,
   };
 };
-

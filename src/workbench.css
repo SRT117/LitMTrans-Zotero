@@ -434,8 +434,7 @@ body.layout-translated
 .ai-sidebar { position: relative; align-self: stretch; min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .sidebar-split-handle { display: none; }
 .embedded-ai-topbar { min-width: 0; display: flex; justify-content: flex-end; align-items: center; gap: 5px; padding: 5px 7px; border-bottom: 1px solid var(--line); }
-.embedded-ai-topbar:has(#chat-navigator-button[hidden]) { display: none; }
-.embedded-ai-topbar .button { width: 100%; min-height: 30px; min-width: 0; max-width: 100%; padding: 3px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.embedded-ai-topbar .button { width: auto; min-height: 30px; min-width: 0; max-width: 100%; padding: 3px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .embedded-ai-topbar select { min-width: 0; width: 100%; min-height: 30px; border: 1px solid var(--line); background: var(--surface-2); padding: 3px 5px; }
 .settings-section input, .settings-section select, .settings-section textarea { width: 100%; min-height: 31px; border: 1px solid var(--line); background: var(--surface-2); padding: 4px 7px; }
 .editable-language { display: grid; grid-template-columns: minmax(0, 1fr) 36px; gap: 0; min-width: 0; }
@@ -457,6 +456,17 @@ body.layout-translated
 #litmtrans-reference-focus > span { animation: reference-focus .25s ease-out; }
 @keyframes reference-focus { from { opacity: .2; transform: scale(1.035); } to { opacity: 1; transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { #litmtrans-reference-focus > span { animation: none; } }
+.ai-api-view { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; }
+.embedded-ai-topbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.embedded-ai-mode-tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.ai-mode-tab { min-height: 24px; padding: 2px 8px; border: 0; background: var(--surface-2); color: var(--muted); font: 500 11px var(--sans); cursor: pointer; }
+.ai-mode-tab:hover { color: var(--ink); background: var(--surface-3); }
+.ai-mode-tab.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.deepseek-web-container { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; background: var(--surface); }
+.deepseek-web-quickbar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--line); background: var(--surface-2); overflow-x: auto; flex-shrink: 0; }
+.deepseek-web-quickbar .button { min-height: 24px; padding: 2px 7px; font-size: 10px; white-space: nowrap; }
+.deepseek-web-status { padding: 8px; color: var(--muted); font-size: 12px; }
+.deepseek-web-frame { display: flex; flex: 1 1 0; width: 100%; min-height: 0; border: 0; background: var(--surface); }
 .chat-messages { min-height: 0; flex: 1 1 0; overflow-y: auto; overscroll-behavior: contain; padding: 11px 9px 26px; }
 .chat-empty { min-height: 100%; display: grid; place-content: center; justify-items: center; gap: 9px; padding: 24px; color: var(--muted); text-align: center; }
 .chat-message { margin: 0 0 14px; }

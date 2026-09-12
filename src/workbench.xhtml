@@ -127,36 +127,53 @@
 
       <aside class="ai-sidebar" aria-label="文献对话">
         <div class="embedded-ai-topbar">
+          <div class="embedded-ai-mode-tabs" role="tablist">
+            <button id="ai-mode-api-button" class="ai-mode-tab active" type="button" role="tab" aria-selected="true" title="API深度问答模式">API对话</button>
+            <button id="ai-mode-web-button" class="ai-mode-tab" type="button" role="tab" aria-selected="false" title="DeepSeek官方网页端免Key模式">DeepSeek网页</button>
+          </div>
           <button id="chat-navigator-button" class="button" type="button" title="查看并跳转到已发送的问题" hidden="hidden">对话定位</button>
         </div>
 
-        <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
-          <div id="chat-empty" class="chat-empty">
-            <p>询问文献的方法、公式、结果和局限，也可以在阅读器中选中文字后发送到这里。</p>
-          </div>
-        </div>
-        <div id="chat-navigator-popup" class="chat-navigator-popup" hidden="hidden" aria-label="用户消息导航"></div>
-
-        <form id="chat-form" class="chat-composer">
-          <div id="selection-chip" class="selection-chip" hidden="hidden">
-            <div class="selection-chip-label">本轮引用（按添加顺序）</div>
-            <div id="selection-text" class="selection-text"></div>
-            <button id="clear-selection-button" class="selection-clear" type="button" aria-label="移除全部引用" title="移除全部引用">×</button>
-          </div>
-          <div id="chat-document-preview" class="chat-document-preview" hidden="hidden" aria-label="本轮附加文档"></div>
-          <div id="chat-image-preview" class="chat-image-preview" hidden="hidden" aria-label="待发送图片"></div>
-          <textarea id="chat-input" rows="4" placeholder="输入问题，也可以直接粘贴图片。按Ctrl+Enter发送"></textarea>
-          <div class="composer-footer">
-            <div class="composer-tools">
-              <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/jp2,image/svg+xml" multiple="multiple" hidden="hidden" />
-              <button id="chat-document-button" class="button button-quiet" type="button" title="添加完整文件；发送后会保留在当前文献对话历史中">添加文件</button>
-              <button id="remove-pending-documents-button" class="button button-quiet" type="button">移除本轮文件</button>
-              <button id="clear-chat-button" class="button button-quiet" type="button">清空历史</button>
+        <div id="ai-api-view" class="ai-api-view">
+          <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
+            <div id="chat-empty" class="chat-empty">
+              <p>询问文献的方法、公式、结果和局限，也可以在阅读器中选中文字后发送到这里。</p>
             </div>
-            <button id="chat-send-button" class="button button-primary" type="submit">发送</button>
-            <span id="context-status" class="context-status">本轮将附上当前文献全文</span>
           </div>
-        </form>
+          <div id="chat-navigator-popup" class="chat-navigator-popup" hidden="hidden" aria-label="用户消息导航"></div>
+
+          <form id="chat-form" class="chat-composer">
+            <div id="selection-chip" class="selection-chip" hidden="hidden">
+              <div class="selection-chip-label">本轮引用（按添加顺序）</div>
+              <div id="selection-text" class="selection-text"></div>
+              <button id="clear-selection-button" class="selection-clear" type="button" aria-label="移除全部引用" title="移除全部引用">×</button>
+            </div>
+            <div id="chat-document-preview" class="chat-document-preview" hidden="hidden" aria-label="本轮附加文档"></div>
+            <div id="chat-image-preview" class="chat-image-preview" hidden="hidden" aria-label="待发送图片"></div>
+            <textarea id="chat-input" rows="4" placeholder="输入问题，也可以直接粘贴图片。按Ctrl+Enter发送"></textarea>
+            <div class="composer-footer">
+              <div class="composer-tools">
+                <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/jp2,image/svg+xml" multiple="multiple" hidden="hidden" />
+                <button id="chat-document-button" class="button button-quiet" type="button" title="添加完整文件；发送后会保留在当前文献对话历史中">添加文件</button>
+                <button id="remove-pending-documents-button" class="button button-quiet" type="button">移除本轮文件</button>
+                <button id="clear-chat-button" class="button button-quiet" type="button">清空历史</button>
+              </div>
+              <button id="chat-send-button" class="button button-primary" type="submit">发送</button>
+              <span id="context-status" class="context-status">本轮将附上当前文献全文</span>
+            </div>
+          </form>
+        </div>
+
+        <div id="deepseek-web-container" class="deepseek-web-container" hidden="hidden">
+          <div class="deepseek-web-quickbar">
+            <button id="deepseek-web-mindmap-button" class="button button-quiet" type="button" title="向网页端发送生成Mermaid思维导图指令">思维导图</button>
+            <button id="deepseek-web-flowchart-button" class="button button-quiet" type="button" title="向网页端发送生成Mermaid逻辑流程图指令">研究逻辑</button>
+            <button id="deepseek-web-reload-button" class="button button-quiet" type="button" title="重新加载网页">刷新</button>
+            <button id="deepseek-web-external-button" class="button button-quiet" type="button" title="在外部默认浏览器中打开">浏览器打开</button>
+          </div>
+          <div id="deepseek-web-status" class="deepseek-web-status" role="status" hidden="hidden"></div>
+          <div id="deepseek-web-frame" class="deepseek-web-frame" aria-label="DeepSeek网页版"></div>
+        </div>
       </aside>
     </main>
   </div>

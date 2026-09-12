@@ -214,6 +214,7 @@ var LitMTransControllerPreferences = {
       this.$("chat-thinking-mode").value = settings.chatThinkingMode || "default";
       this.setSelectValue(this.$("chat-reasoning-effort"), settings.chatReasoningEffort || "default");
       this.$("chat-api-key").value = settings.chatAPIKey || "";
+      this.$("chat-engine-web").checked = settings.chatEngine === "deepseek_web";
       this.$("target-language").value = settings.targetLanguage || "简体中文";
       this.$("machine-source-language").value = settings.machineSourceLanguage || "英文";
       this.$("translation-mode").value = settings.translationMode || "full_context";
@@ -235,12 +236,16 @@ var LitMTransControllerPreferences = {
   },
 
   updateChatModelSectionVisibility() {
-    if (this.isWebMachineTranslationProvider(this.$("provider").value)) {
-      this.$("chat-uses-translation-model").checked = false;
+    const isWebEngine = Boolean(this.$("chat-engine-web")?.checked);
+    const sharedToggle = this.$("chat-uses-translation-model");
+    if (sharedToggle) {
+      sharedToggle.disabled = isWebEngine || this.isWebMachineTranslationProvider(this.$("provider").value);
     }
-    const shared = this.$("chat-uses-translation-model").checked;
-    document.getElementById("litmtrans-pref-chat-model-group").hidden = shared;
+    const shared = !isWebEngine && Boolean(sharedToggle?.checked);
+    document.getElementById("litmtrans-pref-chat-model-group").hidden = false;
     document.querySelector(".litmtrans-pref-board")?.classList.toggle("litmtrans-shared-chat-model", shared);
+    const formContainer = this.$("chat-form-container");
+    if (formContainer) formContainer.hidden = Boolean(isWebEngine || shared);
   },
 
   updateCustomTranslationInstruction(forceOpen = false) {
@@ -265,6 +270,7 @@ var LitMTransControllerPreferences = {
         : Boolean(this.settings?.deepseekFastLayoutTranslation),
       translationProviderProfiles: { ...(this.settings?.translationProviderProfiles || {}), [translationProvider]: { baseURL: this.$("base-url").value.trim(), model: this.$("model").value.trim(), thinkingMode: this.$("thinking-mode").value, reasoningEffort: this.$("reasoning-effort").value } },
       chatUsesTranslationModel: sharedChatModel,
+      chatEngine: this.$("chat-engine-web").checked ? "deepseek_web" : "api",
       chatProvider, chatBaseURL: this.$("chat-base-url").value.trim(), chatModel: this.$("chat-model").value.trim(),
       chatThinkingMode: this.$("chat-thinking-mode").value, chatReasoningEffort: this.$("chat-reasoning-effort").value,
       chatProviderProfiles: { ...(this.settings?.chatProviderProfiles || {}), [chatProvider]: { baseURL: this.$("chat-base-url").value.trim(), model: this.$("chat-model").value.trim(), thinkingMode: this.$("chat-thinking-mode").value, reasoningEffort: this.$("chat-reasoning-effort").value } },
@@ -367,6 +373,9 @@ var LitMTransControllerPreferences = {
       if (this.isWebMachineTranslationProvider(this.$("provider").value)) {
         this.$("chat-uses-translation-model").checked = false;
       }
+      this.updateChatModelSectionVisibility();
+    });
+    this.$("chat-engine-web").addEventListener("change", () => {
       this.updateChatModelSectionVisibility();
     });
     this.$("provider").addEventListener("change", () => this.providerChanged(""));

@@ -23,6 +23,8 @@
     layoutPageZoom: 1,
     readerView: "both",
     syncScroll: false,
+    aiMode: "api",
+    aiModeInitialized: false,
     cleanReadingSnapshot: null,
     modeScrollPositions: { stream: null, layout: null },
     readerSyncPage: 0,
@@ -112,6 +114,10 @@
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
       "system-messages-button", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
+      "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
+      "deepseek-web-container", "deepseek-web-frame",
+      "deepseek-web-mindmap-button", "deepseek-web-flowchart-button",
+      "deepseek-web-reload-button", "deepseek-web-external-button",
       "chat-render-markdown", "selection-chip", "selection-text", "clear-selection-button", "chat-messages", "chat-empty", "chat-navigator-button", "chat-navigator-popup",
       "chat-form", "chat-input",
       "chat-document-preview", "chat-document-button", "remove-pending-documents-button", "chat-image-preview", "chat-image-input", "context-status", "chat-send-button",
@@ -829,6 +835,11 @@
     renderedTranslationMarkdown = null;
     renderedSourceMarkdown = null;
     state.settings = data?.settings || state.settings;
+    if (!state.aiModeInitialized) {
+      state.aiModeInitialized = true;
+      const preferredMode = state.settings?.chatEngine === "deepseek_web" ? "web" : "api";
+      setAIMode(preferredMode, { syncPref: false });
+    }
     const isLayoutDebug = Boolean(els["debug-boxes-check"]?.checked || state.settings?.layoutDevelopmentMode);
     document.body.classList.toggle("layout-debug", isLayoutDebug);
     if (els["debug-boxes-check"]) els["debug-boxes-check"].checked = isLayoutDebug;
@@ -892,7 +903,6 @@
       renderMode();
     }).catch(error => {
       if (Number(state.data?.item?.attachmentID || 0) === attachmentID) {
-        sourcePDFAttachmentID = null;
         sourcePDFLoading = false;
         renderMode();
       }
@@ -3385,8 +3395,10 @@
     if (!popup) return;
     popup.replaceChildren();
     const messages = (state.currentSession?.messages || []).filter(message => message?.role === "user");
+    const showNavigator = state.aiMode !== "web" && messages.length > 0;
     els["chat-navigator-button"].disabled = !messages.length;
-    if (!messages.length) {
+    els["chat-navigator-button"].hidden = !showNavigator;
+    if (!showNavigator) {
       popup.hidden = true;
       return;
     }
@@ -4443,9 +4455,82 @@
     });
   }
 
+  function setAIMode(mode, { syncPref = true } = {}) {
+    const isWeb = mode === "web" || mode === "deepseek_web";
+    state.aiMode = isWeb ? "web" : "api";
+    if (els["ai-mode-api-button"]) {
+      els["ai-mode-api-button"].classList.toggle("active", !isWeb);
+      els["ai-mode-api-button"].setAttribute("aria-selected", String(!isWeb));
+    }
+    if (els["ai-mode-web-button"]) {
+      els["ai-mode-web-button"].classList.toggle("active", isWeb);
+      els["ai-mode-web-button"].setAttribute("aria-selected", String(isWeb));
+    }
+    if (els["ai-api-view"]) els["ai-api-view"].hidden = isWeb;
+    if (els["deepseek-web-container"]) els["deepseek-web-container"].hidden = !isWeb;
+    if (isWeb) {
+      void hostCall("load-deepseek-web").catch(error => toast(`DeepSeek网页加载失败：${error.message || error}`));
+      syncDeepSeekWebBounds();
+    } else {
+      void hostCall("set-deepseek-web-bounds", { visible: false });
+    }
+    if (syncPref) {
+      void hostCall("save-chat-engine", { chatEngine: isWeb ? "deepseek_web" : "api" }).catch(() => {});
+    }
+    renderMessageNavigator();
+  }
+
+  function syncDeepSeekWebBounds() {
+    if (state.aiMode !== "web" || els["deepseek-web-container"]?.hidden) {
+      void hostCall("set-deepseek-web-bounds", { visible: false });
+      return;
+    }
+    const frame = els["deepseek-web-frame"];
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    if (rect.width > 20 && rect.height > 20) {
+      void hostCall("set-deepseek-web-bounds", {
+        visible: true,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height
+      });
+    } else {
+      void hostCall("set-deepseek-web-bounds", { visible: false });
+    }
+  }
+
+  async function sendToDeepSeekWeb(text) {
+    if (!text) return;
+    setAIMode("web", { syncPref: false });
+    try {
+      await hostCall("clipboard-write-text", { text: String(text) });
+      toast("已复制，请在DeepSeek输入框中粘贴并发送。");
+    } catch (error) {
+      toast(`复制失败：${error.message || error}。请重试。`);
+    }
+  }
+
+  function prepareDeepSeekDocumentPrompt(prompt) {
+    const markdown = String(state.data?.parsed?.markdown || state.data?.translation?.markdown || "").trim();
+    if (!markdown) {
+      toast("请先解析文献，或在DeepSeek网页中上传论文后提问。");
+      return;
+    }
+    void sendToDeepSeekWeb(prompt + "\n\n[论文正文]\n" + markdown);
+  }
+
   function prepareReaderAsk(quote, prompt) {
     if (!quote) return;
     if (document.body.classList.contains("clean-reader-mode")) exitCleanReader({ focusChat: true });
+    if (state.aiMode === "web") {
+      const quoteText = String(quote.text || "").trim();
+      const userPrompt = String(prompt || "请解释这段内容，并结合文献说明它在文中的作用。").trim();
+      const message = quoteText ? `[论文选文]\n${quoteText}\n\n[问题]\n${userPrompt}` : userPrompt;
+      void sendToDeepSeekWeb(message);
+      return;
+    }
     appendReferenceQuote(quote);
     renderSelection();
     if (!els["chat-input"].value.trim()) els["chat-input"].value = prompt;
@@ -6636,6 +6721,45 @@
     els["settings-dialog"].addEventListener("close", () => {
       els["settings-dialog"].style.height = "auto";
     });
+
+    if (els["ai-mode-api-button"]) {
+      els["ai-mode-api-button"].addEventListener("click", () => setAIMode("api"));
+    }
+    if (els["ai-mode-web-button"]) {
+      els["ai-mode-web-button"].addEventListener("click", () => setAIMode("web"));
+    }
+    if (els["deepseek-web-mindmap-button"]) {
+      els["deepseek-web-mindmap-button"].addEventListener("click", () => {
+        const title = String(state.data?.item?.title || "本文").trim();
+        const prompt = `请根据论文《${title}》的内容，以Mermaid的mindmap语法输出核心要点思维导图，包裹在\`\`\`mermaid\`\`\`代码块中，不要输出多余解释。中心节点为论文主题，包含问题背景、核心方法、关键发现、适用边界四个主分支。`;
+        prepareDeepSeekDocumentPrompt(prompt);
+      });
+    }
+    if (els["deepseek-web-flowchart-button"]) {
+      els["deepseek-web-flowchart-button"].addEventListener("click", () => {
+        const title = String(state.data?.item?.title || "本文").trim();
+        const prompt = `请根据论文《${title}》的内容，以Mermaid的graph TD语法输出研究逻辑与证据链流程图，包裹在\`\`\`mermaid\`\`\`代码块中，不要输出多余解释。节点体现从研究痛点、核心假设、方法设计、实验数据到最终推论的有向演进。`;
+        prepareDeepSeekDocumentPrompt(prompt);
+      });
+    }
+    if (els["deepseek-web-reload-button"]) {
+      els["deepseek-web-reload-button"].addEventListener("click", () => {
+        if (els["deepseek-web-frame"]) {
+          void hostCall("load-deepseek-web", { reload: true })
+            .catch(error => toast(`DeepSeek网页加载失败：${error.message || error}`));
+        }
+      });
+    }
+    if (els["deepseek-web-external-button"]) {
+      els["deepseek-web-external-button"].addEventListener("click", () => {
+        void hostCall("open-external-url", { url: "https://chat.deepseek.com" });
+      });
+    }
+    if (typeof ResizeObserver !== "undefined" && els["deepseek-web-frame"]) {
+      const observer = new ResizeObserver(() => syncDeepSeekWebBounds());
+      observer.observe(els["deepseek-web-frame"]);
+    }
+    window.addEventListener("resize", () => syncDeepSeekWebBounds());
 
     els["clear-selection-button"].addEventListener("click", () => {
       state.selectedText = "";

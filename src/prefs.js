@@ -11,6 +11,7 @@ pref("extensions.litmtrans.chatBaseURL", "");
 pref("extensions.litmtrans.chatModel", "");
 pref("extensions.litmtrans.chatThinkingMode", "default");
 pref("extensions.litmtrans.chatReasoningEffort", "default");
+pref("extensions.litmtrans.chatEngine", "api");
 pref("extensions.litmtrans.chatRenderMarkdown", true);
 pref("extensions.litmtrans.chatImageSize", "auto");
 pref("extensions.litmtrans.chatImageQuality", "auto");

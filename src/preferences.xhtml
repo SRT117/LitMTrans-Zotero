@@ -54,7 +54,11 @@
             <html:span class="litmtrans-pref-card-mark">对话</html:span>
             <html:div><html:h2>对话模型设置</html:h2><html:p>关闭“使用同一个模型”后，可单独设置文献对话模型。</html:p></html:div>
           </html:div>
-          <html:div class="litmtrans-pref-form-stack">
+          <html:div class="litmtrans-shared-toggle">
+            <html:input id="litmtrans-pref-chat-engine-web" type="checkbox"/>
+            <html:label for="litmtrans-pref-chat-engine-web"><html:strong>使用DeepSeek官方网页端对话（免API密钥）</html:strong><html:span>在侧栏打开官方网页，登录DeepSeek账号后使用。</html:span></html:label>
+          </html:div>
+          <html:div id="litmtrans-pref-chat-form-container" class="litmtrans-pref-form-stack">
             <html:label><html:span id="litmtrans-pref-chat-provider-label">服务商</html:span><html:select id="litmtrans-pref-chat-provider"/></html:label>
             <html:label>API密钥<html:input id="litmtrans-pref-chat-api-key" type="password" autocomplete="off" placeholder="未配置"/></html:label>
             <html:label>API地址<html:input id="litmtrans-pref-chat-base-url" type="url" placeholder="https://api.example.com/v1"/></html:label>

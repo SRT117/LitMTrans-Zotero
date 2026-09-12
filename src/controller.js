@@ -243,6 +243,77 @@
       this._initialized = false;
     }
 
+    loadDeepSeekWeb(runtime, reload = false) {
+      const doc = runtime.browser?.contentDocument;
+      let browser = runtime.deepSeekBrowser;
+      if (!browser) {
+        const slot = doc?.getElementById("deepseek-web-frame");
+        if (!slot) throw new Error("网页容器尚未就绪，请重试。");
+        browser = slot.firstElementChild;
+        if (!browser) {
+          const createDoc = runtime.window?.document || doc;
+          browser = createDoc.createXULElement("browser");
+          browser.setAttribute("type", "content");
+          browser.setAttribute("maychangeremoteness", "true");
+          browser.setAttribute("disableglobalhistory", "true");
+          browser.style.cssText = "display:flex;flex:1;min-width:0;min-height:0;width:100%;height:100%";
+          slot.appendChild(browser);
+        }
+      }
+      if (!browser) throw new Error("网页容器尚未就绪，请重试。");
+      const status = doc?.getElementById("deepseek-web-status");
+      const showStatus = text => {
+        if (status) { status.textContent = text; status.hidden = !text; }
+      };
+      if (!browser.getAttribute("data-deepseek-listener")) {
+        browser.setAttribute("data-deepseek-listener", "true");
+        browser.addProgressListener({
+          QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
+          onStateChange(progress, request, flags, statusCode) {
+            if (!progress.isTopLevel || !(flags & Ci.nsIWebProgressListener.STATE_STOP)) return;
+            clearTimeout(runtime.deepSeekLoadTimer);
+            showStatus(statusCode ? "网页加载失败，请刷新或在浏览器中打开。" : "");
+          }
+        }, Ci.nsIWebProgress.NOTIFY_STATE_NETWORK);
+      }
+      if (reload || !browser.getAttribute("data-deepseek-loaded")) {
+        showStatus("正在加载DeepSeek…");
+        clearTimeout(runtime.deepSeekLoadTimer);
+        runtime.deepSeekLoadTimer = setTimeout(() => {
+          showStatus("网页加载时间较长，请刷新或在浏览器中打开。");
+        }, 25000);
+        try {
+          browser.loadURI(Services.io.newURI("https://chat.deepseek.com/"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+          browser.setAttribute("data-deepseek-loaded", "true");
+        } catch (error) {
+          clearTimeout(runtime.deepSeekLoadTimer);
+          showStatus("网页加载失败，请刷新或在浏览器中打开。");
+          throw error;
+        }
+      }
+      return { opened: true };
+    }
+
+    setDeepSeekWebBounds(runtime, bounds = {}) {
+      const browser = runtime.deepSeekBrowser;
+      if (!browser) return { ok: false };
+      const visible = Boolean(bounds.visible);
+      if (!visible) {
+        browser.style.display = "none";
+        return { ok: true, visible: false };
+      }
+      const left = Math.max(0, Math.round(Number(bounds.left) || 0));
+      const top = Math.max(0, Math.round(Number(bounds.top) || 0));
+      const width = Math.max(0, Math.round(Number(bounds.width) || 0));
+      const height = Math.max(0, Math.round(Number(bounds.height) || 0));
+      browser.style.display = "flex";
+      browser.style.left = `${left}px`;
+      browser.style.top = `${top}px`;
+      browser.style.width = `${width}px`;
+      browser.style.height = `${height}px`;
+      return { ok: true, visible: true, left, top, width, height };
+    }
+
     registerItemDeletionObserver() {
       if (this.itemNotifierID !== null || typeof Zotero.Notifier?.registerObserver !== "function") return false;
       const observer = {
@@ -2008,6 +2079,7 @@
       container.style.display = "flex";
       container.style.flex = "1 1 auto";
       container.style.alignSelf = "stretch";
+      container.style.position = "relative";
       const browser = win.document.createXULElement("browser");
       browser.setAttribute("flex", "1");
       browser.setAttribute("type", "content");
@@ -2018,12 +2090,20 @@
       browser.style.minHeight = "100%";
       container.appendChild(browser);
 
+      const deepSeekBrowser = win.document.createXULElement("browser");
+      deepSeekBrowser.setAttribute("type", "content");
+      deepSeekBrowser.setAttribute("maychangeremoteness", "true");
+      deepSeekBrowser.setAttribute("disableglobalhistory", "true");
+      deepSeekBrowser.style.cssText = "position:absolute;display:none;z-index:20;background:#ffffff;border:none;box-sizing:border-box;";
+      container.appendChild(deepSeekBrowser);
+
       const runtime = {
         tabID,
         attachmentID: attachment.id,
         window: win,
         container,
         browser,
+        deepSeekBrowser,
         bridgeInstalled: false,
         pendingOpen: { quote: options.quote || null, prompt: String(options.prompt || "") }
       };
@@ -2040,8 +2120,10 @@
       const runtime = this.tabs.get(tabID);
       if (!runtime) return;
       this.stopOperations(tabID);
+      clearTimeout(runtime.deepSeekLoadTimer);
       try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
       try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
+      try { runtime.deepSeekBrowser?.remove?.(); } catch (_) {}
       try { runtime.browser?.remove(); } catch (_) {}
       this.tabs.delete(tabID);
     }
@@ -2822,6 +2904,18 @@
           this.openPreferences(runtime.window);
           return { opened: true };
 
+        case "load-deepseek-web":
+          return this.loadDeepSeekWeb(runtime, Boolean(payload.reload));
+
+        case "set-deepseek-web-bounds":
+          return this.setDeepSeekWebBounds(runtime, payload);
+
+        case "save-chat-engine": {
+          const engine = payload?.chatEngine === "deepseek_web" ? "deepseek_web" : "api";
+          U.setPref("chatEngine", engine);
+          return { chatEngine: engine };
+        }
+
         case "open-external-url":
           return this.openExternalURL(payload.url);
 
@@ -2870,6 +2964,7 @@
         chatThinkingMode: chat.thinkingMode,
         chatReasoningEffort: chat.reasoningEffort,
         chatUsesTranslationModel,
+        chatEngine: U.getPref("chatEngine", "api"),
         translationShowReasoning: translation.showReasoning,
         chatShowReasoning: chat.showReasoning,
         translationReasoningPreferences: translation.reasoningPreferences,
@@ -3045,6 +3140,9 @@
       // translation model becomes the authoritative chat model again.
       else if (wasWebMachine && !isWebMachine) shareChatModel = true;
       U.setPref("chatUsesTranslationModel", shareChatModel);
+      if (Object.prototype.hasOwnProperty.call(values || {}, "chatEngine")) {
+        U.setPref("chatEngine", values.chatEngine === "deepseek_web" ? "deepseek_web" : "api");
+      }
       if (values && values.layoutReaderFonts && typeof values.layoutReaderFonts === "object" && !Array.isArray(values.layoutReaderFonts)) {
         const fonts = {};
         for (const [documentID, value] of Object.entries(values.layoutReaderFonts)) {

@@ -91,7 +91,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
     if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
         $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
         $result | ConvertTo-Json -Depth 20
-        if (-not $result.ok -or ($Operation -in @("multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "gemini-transport-probe", "edge-local-probe") -and -not $result.passed)) {
+        if (-not $result.ok -or ($Operation -in @("multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "gemini-transport-probe", "edge-local-probe", "deepseek-web-probe") -and -not $result.passed)) {
             exit 1
         }
         exit 0
