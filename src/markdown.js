@@ -354,7 +354,9 @@
     if (/^\s*\\operatorname\s*\{\s*e\s*q\s*\.?\s*\}\s*$/i.test(body)) return true;
     if (/^\s*[-+]?\d+(?:\s*\.\s*\d+)?\s*\^\s*\{\s*\\circ\s*\}\s*\\mathrm\s*\{\s*[CFK]\s*\}\s*$/i.test(body)) return true;
     if (/^\s*(?:\\mathrm\s*\{\s*)?a\s*l\s*\.\s*\^\s*\{\s*(?:\d\s*)+(?:[-,]\s*(?:\d\s*)+)*\}\s*\}?\s*$/i.test(body)) return true;
-    return /^\s*\\mathrm\s*\{\s*(?:[A-Za-z]\s*){1,8}\.\s*\^\s*\{\s*(?:\d\s*)+(?:[-,]\s*(?:\d\s*)+)*\}\s*\}\s*$/i.test(body);
+    if (/^\s*\\mathrm\s*\{\s*(?:[A-Za-z]\s*){1,8}\.\s*\^\s*\{\s*(?:\d\s*)+(?:[-,]\s*(?:\d\s*)+)*\}\s*\}\s*$/i.test(body)) return true;
+    const stripped = body.replace(/\\mathrm\s*\{([^{}]*)\}/gi, "$1").replace(/[\s()\[\]{};,]+/g, " ").trim();
+    return /^(?:i\s*\.\s*e|e\s*\.\s*g|et(?:\s+|~|\\ )*al|etc|cf|vs)\s*\.?$/i.test(stripped);
   }
 
   // Layout translation uses a deliberately narrower automatic retry gate.
@@ -394,7 +396,7 @@
 
   function repairEquationReferenceTranslation(source, translated) {
     const numbers = sourceEquationReferenceNumbers(source);
-    let result = String(translated || "").replace(
+    let result = repairTranslatedImagePlaceholders(String(translated || "")).replace(
       /(?<![A-Za-z0-9])(?:\\?[~～〜]\s*)([A-Za-z]?\d+[A-Za-z]?|[a-z])\s*[!！](?![A-Za-z0-9])/gi,
       "($1)"
     );
@@ -408,6 +410,27 @@
     return result
       .replace(/(?:方程|公式)\s*[。.]\s*(式\s*\()/g, "$1")
       .replace(/\)\s*(和|与|及)\s*式/g, ") $1式");
+  }
+
+  function repairTranslatedImagePlaceholders(text) {
+    if (!text) return "";
+    let s = String(text);
+    // 1. 匹配类似 [https://images/image_004.jpg](https://images/image_004.jpg) 或 [image_004.jpg](images/image_004.jpg)
+    s = s.replace(/(?<!!)\[[^\]]*\]\((?:https?:\/\/(?:images\/)?)?(?:images\/)?(image_\d+\.[a-zA-Z0-9]+)\)/gi, (m, file) => {
+      const id = file.replace(/\.[^.]+$/, "").toUpperCase();
+      return `\n\n![${id}](images/${file})\n\n`;
+    });
+    // 2. 匹配带有 https:// 前缀的图片语法 ![IMAGE_004](https://images/image_004.jpg)
+    s = s.replace(/!\[([^\]]*)\]\((?:https?:\/\/(?:images\/)?)?(?:images\/)?(image_\d+\.[a-zA-Z0-9]+)\)/gi, (m, alt, file) => {
+      const id = alt || file.replace(/\.[^.]+$/, "").toUpperCase();
+      return `\n\n![${id}](images/${file})\n\n`;
+    });
+    // 3. 匹配单独成行的超链接或路径 https://images/image_004.jpg 或 images/image_004.jpg
+    s = s.replace(/^[ \t]*(?:https?:\/\/(?:images\/)?)?(?:images\/)?(image_\d+\.[a-zA-Z0-9]+)[ \t]*$/gim, (m, file) => {
+      const id = file.replace(/\.[^.]+$/, "").toUpperCase();
+      return `\n\n![${id}](images/${file})\n\n`;
+    });
+    return s;
   }
 
   const TEX_COMMANDS = Object.freeze({
@@ -982,7 +1005,7 @@
   }
 
   function renderMarkdown(markdown, options = {}) {
-    const prepared = repairFragmentedInlineMath(repairMalformedPipeTables(markdown));
+    const prepared = repairTranslatedImagePlaceholders(repairFragmentedInlineMath(repairMalformedPipeTables(markdown)));
     const lines = U.cleanText(prepared).split("\n");
     const output = [];
     let i = 0;
@@ -1164,6 +1187,7 @@
     normalizeBareTeXFragments,
     normalizeEscapedTeXDelimiters,
     repairMalformedPipeTables,
+    repairTranslatedImagePlaceholders,
     renderMarkdown,
     extractHeadings,
     splitTableRow

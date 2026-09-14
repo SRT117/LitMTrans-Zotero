@@ -2624,12 +2624,20 @@
         messages,
         0
       );
+      const probeGuideMsg = `[探针3-排版指南] 开始请求术语指南: engine=${settings.engine}, provider=${settings.provider}, hasRuntime=${Boolean(settings.runtime)}`;
+      emit?.({ type: "log", message: probeGuideMsg });
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeGuideMsg}`); } catch (_) {}
       const result = await this.llm.complete(messages, {
+        purpose: "layout",
+        documentID,
         provider: settings.provider,
         baseURL: settings.baseURL,
         model: settings.model,
         apiKey: settings.apiKey,
         promptCacheKey: settings.promptCacheKey,
+        engine: settings.engine,
+        runtime: settings.runtime,
+        emit,
         timeout: LAYOUT_REQUEST_TIMEOUT,
         firstEventTimeout: LAYOUT_FIRST_EVENT_TIMEOUT,
         inactivityTimeout: LAYOUT_INACTIVITY_TIMEOUT,
@@ -2642,16 +2650,57 @@
         onText: delta => emit?.({ type: "guide-delta", delta, scope: "layout" }),
         onReasoning: delta => emit?.({ type: "reasoning", delta, scope: "layout-guide" })
       });
+      const probeGuideDone = `[探针3-排版指南] 术语指南完成, length=${result?.text?.length || 0}`;
+      emit?.({ type: "log", message: probeGuideDone });
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeGuideDone}`); } catch (_) {}
       await this.storage.writeText(paths.guide, result.text);
       await this.storage.writeJSON(paths.guide + ".json", { identity, createdAt: new Date().toISOString() });
       return result.text;
     }
 
     parseTranslationResponse(text, group, options = {}) {
-      const payload = U.extractJSONObject(text);
-      const rows = Array.isArray(payload?.translations) ? payload.translations : [];
       const expected = new Map(group.map(record => [record.id, record]));
       const translations = {};
+
+      let payload = null;
+      try {
+        payload = U.extractJSONObject(text);
+      } catch (extractError) {
+        // 【截断/受损容灾兜底】：当常规全量 JSON 解析失败（如 API 输出截断、未闭合引号或尾部受损）时，
+        // 借助独立 JSON 片段扫描机制抢救所有已经完整输出的 {"id": "...", "text": "..."}，避免整组判废重来。
+        for (const candidate of completeJSONObjectCandidates(text)) {
+          let candidatePayload;
+          try {
+            candidatePayload = U.extractJSONObject(candidate);
+          } catch (_) {
+            continue;
+          }
+          const candidateRows = Array.isArray(candidatePayload?.translations)
+            ? candidatePayload.translations
+            : (candidatePayload && typeof candidatePayload === "object" ? [candidatePayload] : []);
+          for (const row of candidateRows) {
+            const id = String(row?.id || "");
+            const record = expected.get(id);
+            if (!record) continue;
+            const rawText = options.sanitizeUnsafe ? sanitizeModelText(row?.text) : String(row?.text || "");
+            if (hasUnsafeControlCharacters(rawText)) continue;
+            const translated = restoreSymbolGlossaryRowBreaks(
+              record,
+              repairEquationReferenceTranslation(record?.text, M.normalizeTranslatedInlineHTML(rawText).trim())
+            );
+            if (!expected.has(id) || !translated) continue;
+            translations[id] = translated;
+          }
+        }
+        // 如果成功挽救出部分有效译文，返回已完成内容，未完成部分将自然流向补译（classifyRetryRecords）
+        if (Object.keys(translations).length > 0) {
+          return { translations, formulaReplacements: {} };
+        }
+        // 若一个 block 都未能抢救，抛出原始异常维持原重试行为
+        throw extractError;
+      }
+
+      const rows = Array.isArray(payload?.translations) ? payload.translations : [];
       for (const row of rows) {
         const id = String(row?.id || "");
         const record = expected.get(id);
@@ -2785,7 +2834,7 @@
       const retryUser = retryDetails ? (
         retryFormatOnly
           ? "This is a surgical formula/JSON-format check. Do not explain your reasoning, retranslate, or polish prose. retry_reasons and retry_details are fallible program guesses, not factual conclusions; independently verify the source, current_translation, and math structure. If normalized math is already equivalent (whitespace, redundant braces, \\mathrm wrappers, or OCR list markers), or you cannot confirm a real error, return current_translation unchanged. Otherwise repair only the named missing/altered delimiter or math token and keep surrounding prose, citations, and identifiers unchanged. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]}; use normal JSON escaping.\n\n"
-          : "Review only the complete blocks listed below. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Independently decide the most accurate output from the source and current_translation; change a block only when you confirm a real problem, and return current_translation unchanged if you cannot confirm one. For retranslate, translate strictly within the visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n"
+          : `Review only the complete blocks listed below. Target language is ${settings.targetLanguage || "Simplified Chinese"}. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Independently decide the most accurate output from the source and current_translation; change a block only when you confirm a real problem, and return current_translation unchanged if you cannot confirm one. For retranslate, translate strictly within the visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n`
       ) + JSON.stringify({ blocks_to_correct: retryPayload }, null, 2) : "";
       const retryContext = retryDetails && Array.isArray(settings.retryContextGroup)
         ? settings.retryContextGroup.map(record => ({ id: record.id, page: record.page, type: record.type, text: record.text }))
@@ -2806,33 +2855,56 @@
       );
       let streamed = "";
       let latestUsage = null;
-      const result = await this.llm.complete(primaryMessages, {
-        provider: settings.provider,
-        baseURL: settings.baseURL,
-        model: settings.model,
-        apiKey: settings.apiKey,
-        thinkingMode: settings.thinkingMode,
-        reasoningEffort: settings.reasoningEffort,
-        ...(retryFormatOnly ? { thinkingMode: "disabled", reasoningEffort: "minimal" } : {}),
-        promptCacheKey: settings.promptCacheKey,
-        timeout: LAYOUT_REQUEST_TIMEOUT,
-        firstEventTimeout: LAYOUT_FIRST_EVENT_TIMEOUT,
-        inactivityTimeout: LAYOUT_INACTIVITY_TIMEOUT,
-        signal,
-        onRateLimitWait: ({ waitMs }) => emit?.({
-          type: "status",
-          phase: "rate-limit-wait",
-          message: `Gemini请求频率受限，约 ${Math.ceil(waitMs / 1000)} 秒后继续处理第 ${index + 1} 组`
-        }),
-        responseFormat: "json_object",
-        onText: delta => {
-          streamed += delta;
-          emit?.({ type: "layout-raw-delta", delta, group: index + 1, groupCount: count, attempt: "primary" });
-        },
-        onUsage: usage => { latestUsage = usage && typeof usage === "object" ? { ...usage } : null; },
-        onReasoning: delta => emit?.({ type: "reasoning", delta, scope: "layout", group: index + 1 })
-      });
-      const parsed = this.parseTranslationResponse(result.text, group);
+      let result;
+      try {
+        result = await this.llm.complete(primaryMessages, {
+          purpose: "layout",
+          documentID,
+          provider: settings.provider,
+          baseURL: settings.baseURL,
+          model: settings.model,
+          apiKey: settings.apiKey,
+          targetLanguage: settings.targetLanguage,
+          thinkingMode: settings.thinkingMode,
+          reasoningEffort: settings.reasoningEffort,
+          ...(retryFormatOnly ? { thinkingMode: "disabled", reasoningEffort: "minimal" } : {}),
+          promptCacheKey: settings.promptCacheKey,
+          engine: settings.engine,
+          runtime: settings.runtime,
+          emit,
+          timeout: LAYOUT_REQUEST_TIMEOUT,
+          firstEventTimeout: LAYOUT_FIRST_EVENT_TIMEOUT,
+          inactivityTimeout: LAYOUT_INACTIVITY_TIMEOUT,
+          signal,
+          onRateLimitWait: ({ waitMs }) => emit?.({
+            type: "status",
+            phase: "rate-limit-wait",
+            message: `Gemini请求频率受限，约 ${Math.ceil(waitMs / 1000)} 秒后继续处理第 ${index + 1} 组`
+          }),
+          responseFormat: "json_object",
+          onText: delta => {
+            streamed += delta;
+            emit?.({ type: "layout-raw-delta", delta, group: index + 1, groupCount: count, attempt: "primary" });
+          },
+          onUsage: usage => { latestUsage = usage && typeof usage === "object" ? { ...usage } : null; },
+          onReasoning: delta => emit?.({ type: "reasoning", delta, scope: "layout", group: index + 1 })
+        });
+      } catch (completeError) {
+        U.throwIfAborted(signal);
+        if (signal?.aborted || completeError?.name === "AbortError") {
+          throw completeError;
+        }
+        if (streamed && streamed.length > 50) {
+          try {
+            const partial = this.parseTranslationResponse(streamed, group, { sanitizeUnsafe: true });
+            if (Object.keys(partial.translations).length > 0) {
+              result = { text: streamed, usage: latestUsage };
+            }
+          } catch (_) {}
+        }
+        if (!result) throw completeError;
+      }
+      const parsed = this.parseTranslationResponse(result.text, group, { sanitizeUnsafe: true });
       const retryClassified = settings.deferLayoutRetry
         ? []
         : classifyRetryRecords(group, parsed.translations, settings.targetLanguage, settings.enableUntranslatedCheck);
@@ -2871,7 +2943,7 @@
               content: (
                 retryFormatOnly
                   ? "Surgical formula/JSON-format repair only. Do not explain reasoning, retranslate, or polish prose. Treat retry_details as a heuristic signal; if normalized math is equivalent (whitespace, redundant braces, \\mathrm wrappers, or OCR list markers), return current_translation unchanged. Otherwise fix only the named math delimiter/token and keep prose, citations, and identifiers unchanged. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]}.\n\n"
-                  : `Review only these blocks (attempt ${attempt}/${maxAttempts}). retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Change a block only when the source and current_translation show a real problem. Translate only the visible block, never complete, merge, or duplicate a neighbouring block. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n` +
+                  : `Review only these blocks (attempt ${attempt}/${maxAttempts}). Target language is ${settings.targetLanguage || "Simplified Chinese"}. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Change a block only when the source and current_translation show a real problem. Translate only the visible block, never complete, merge, or duplicate a neighbouring block. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n` +
                 JSON.stringify({ blocks_to_correct: retrySource }, null, 2)
               )
             }
@@ -2888,12 +2960,17 @@
             0
           );
           const retry = await this.llm.complete(retryMessages, {
+            purpose: "layout",
+            documentID,
             provider: settings.provider,
             baseURL: settings.baseURL,
             model: settings.model,
             apiKey: settings.apiKey,
+            targetLanguage: settings.targetLanguage,
             ...(retryFormatOnly ? { thinkingMode: "disabled", reasoningEffort: "minimal" } : {}),
             promptCacheKey: settings.promptCacheKey,
+            engine: settings.engine,
+            runtime: settings.runtime,
             timeout: LAYOUT_REQUEST_TIMEOUT,
             firstEventTimeout: LAYOUT_FIRST_EVENT_TIMEOUT,
             inactivityTimeout: LAYOUT_INACTIVITY_TIMEOUT,
@@ -2913,7 +2990,7 @@
             }),
             onReasoning: delta => emit?.({ type: "reasoning", delta, scope: `layout-retry-${attempt}`, group: index + 1 })
           });
-          const corrected = this.parseTranslationResponse(retry.text, retryRecords);
+          const corrected = this.parseTranslationResponse(retry.text, retryRecords, { sanitizeUnsafe: true });
           parsed.translations = { ...parsed.translations, ...corrected.translations };
           parsed.formulaReplacements = { ...parsed.formulaReplacements, ...corrected.formulaReplacements };
           currentClassified = classifyRetryRecords(group, parsed.translations, settings.targetLanguage, settings.enableUntranslatedCheck)
@@ -3081,19 +3158,33 @@
       // one of the bounded recovery attempts. This remains a heuristic signal
       // for the model, never a conclusive instruction to rewrite content.
       settings.enableUntranslatedCheck = settings.enableUntranslatedCheck !== false;
-      const resolvedModel = await this.llm.ensureConfiguredModel(
-        this.llm.resolveConfig({
-          purpose: "translation",
-          provider: settings.provider,
-          baseURL: settings.baseURL,
-          model: settings.model,
-          apiKey: settings.apiKey
-        }),
-        signal
-      );
-      settings.provider = resolvedModel.provider;
-      settings.baseURL = resolvedModel.baseURL;
-      settings.model = resolvedModel.model;
+      const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...options, ...settings });
+      const probeLayoutMsg = `[探针3-排版服务] translate: isWeb=${isWeb}, engine=${options.engine || settings.engine}, aiMode=${options.aiMode}, hasRuntime=${Boolean(options.runtime || settings.runtime)}`;
+      emit?.({ type: "log", message: probeLayoutMsg });
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeLayoutMsg}`); } catch (_) {}
+      let resolvedModel;
+      if (isWeb) {
+        resolvedModel = { provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
+        settings.provider = "deepseek_web";
+        settings.baseURL = "";
+        settings.model = "deepseek-web";
+        settings.engine = "deepseek_web";
+        settings.runtime = options.runtime;
+      } else {
+        resolvedModel = await this.llm.ensureConfiguredModel(
+          this.llm.resolveConfig({
+            purpose: "translation",
+            provider: settings.provider,
+            baseURL: settings.baseURL,
+            model: settings.model,
+            apiKey: settings.apiKey
+          }),
+          signal
+        );
+        settings.provider = resolvedModel.provider;
+        settings.baseURL = resolvedModel.baseURL;
+        settings.model = resolvedModel.model;
+      }
       // The preference remembers the user's DeepSeek choice while they switch
       // providers. It is only an active request when DeepSeek itself is
       // selected; otherwise Gemini and other providers must not emit a

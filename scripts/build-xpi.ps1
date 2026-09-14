@@ -1,28 +1,34 @@
 ﻿[CmdletBinding()]
-param()
+param(
+    [switch]$SkipValidate
+)
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 
-Push-Location $projectRoot
-try {
-    & node "scripts/validate.js"
-    if ($LASTEXITCODE -ne 0) { throw "Validation failed, aborting XPI build." }
-}
-finally {
-    Pop-Location
+if (-not $SkipValidate) {
+    Push-Location $projectRoot
+    try {
+        & node "scripts/validate.js"
+        if ($LASTEXITCODE -ne 0) { throw "Validation failed, aborting XPI build." }
+    }
+    finally {
+        Pop-Location
+    }
 }
 $manifest = Get-Content (Join-Path $projectRoot "manifest.json") -Raw -Encoding utf8 | ConvertFrom-Json
 $dist = Join-Path $projectRoot "dist"
 $stage = Join-Path $dist "addon"
 $xpi = Join-Path $dist ("litmtrans-{0}.xpi" -f $manifest.version)
 
-Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $xpi -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
-foreach ($entry in @("manifest.json", "src", "assets", "locale", "README.md", "CHANGELOG.md", "PRIVACY.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
-    Copy-Item -LiteralPath (Join-Path $projectRoot $entry) -Destination $stage -Recurse -Force
+foreach ($entry in @("manifest.json", "chrome.manifest", "src", "assets", "locale", "README.md", "CHANGELOG.md", "PRIVACY.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
+    $entryPath = Join-Path $projectRoot $entry
+    if (Test-Path -LiteralPath $entryPath) {
+        Copy-Item -LiteralPath $entryPath -Destination $stage -Recurse -Force
+    }
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot "src/bootstrap.js") -Destination (Join-Path $stage "bootstrap.js") -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "src/prefs.js") -Destination (Join-Path $stage "prefs.js") -Force

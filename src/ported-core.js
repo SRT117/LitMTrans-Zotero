@@ -1118,7 +1118,7 @@ var LitMTransPort;
     }
     LitMTransPort.iterFormulaContext = iterFormulaContext;
     function repairInvalidJsonEscapes(value) {
-        return String(value || "").replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+        return String(value || "").replace(/\\(?=[bf][a-zA-Z])|\\(?!["\\/bfnrtu])/g, "\\\\");
     }
     LitMTransPort.repairInvalidJsonEscapes = repairInvalidJsonEscapes;
     function extractJsonObject(value) {

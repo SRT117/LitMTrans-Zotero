@@ -29,23 +29,36 @@
             <html:span class="litmtrans-pref-card-mark">模型</html:span>
             <html:div><html:h2>翻译模型设置</html:h2><html:p>用于全文翻译和排版翻译。</html:p></html:div>
           </html:div>
-          <html:div class="litmtrans-shared-toggle">
-            <html:input id="litmtrans-pref-chat-uses-translation-model" type="checkbox"/>
-            <html:label for="litmtrans-pref-chat-uses-translation-model"><html:strong>翻译模型与对话模型使用同一个模型</html:strong><html:span>勾选后，两个用途会使用同一配置，并同步保存。</html:span></html:label>
+          <html:div class="litmtrans-shared-toggle litmtrans-web-mode-toggle">
+            <html:input id="litmtrans-pref-chat-engine-web" type="checkbox"/>
+            <html:label for="litmtrans-pref-chat-engine-web"><html:strong>使用DeepSeek官方网页模式（免API密钥）</html:strong><html:span>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</html:span></html:label>
           </html:div>
-          <html:div class="litmtrans-pref-form-stack">
-            <html:label><html:span id="litmtrans-pref-provider-label">服务商</html:span><html:select id="litmtrans-pref-provider"/></html:label>
-            <html:label>API密钥<html:input id="litmtrans-pref-api-key" type="password" autocomplete="off" placeholder="未配置"/></html:label>
-            <html:label>API地址<html:input id="litmtrans-pref-base-url" type="url" placeholder="https://api.example.com/v1"/></html:label>
-            <html:div class="litmtrans-field-with-action">
-              <html:label>模型<html:select id="litmtrans-pref-model"/></html:label>
-              <html:button id="litmtrans-pref-refresh-models" type="button">刷新模型列表</html:button>
+          <html:div id="litmtrans-pref-web-mode-notice" class="litmtrans-web-mode-notice" hidden="hidden">
+            <html:strong>已开启 DeepSeek 官方网页免 Key 模式</html:strong>
+            <html:p>文献翻译与阅读对话均通过 DeepSeek 官方网页端执行。在侧栏登录账号后即可直接使用，无需配置任何API服务商和密钥。如需设置目标语言等翻译偏好，可展开下方的【进阶配置】。</html:p>
+          </html:div>
+          <html:div id="litmtrans-pref-model-form-container">
+            <html:div id="litmtrans-pref-shared-toggle-container" class="litmtrans-shared-toggle">
+              <html:input id="litmtrans-pref-chat-uses-translation-model" type="checkbox"/>
+              <html:label for="litmtrans-pref-chat-uses-translation-model"><html:strong>翻译模型与对话模型使用同一个模型</html:strong><html:span>勾选后，两个用途会使用同一配置，并同步保存。</html:span></html:label>
             </html:div>
-            <html:div class="litmtrans-reasoning-row">
-              <html:label>思考模式<html:select id="litmtrans-pref-thinking-mode"><html:option value="default">服务商默认</html:option><html:option value="enabled">开启</html:option><html:option value="disabled">关闭</html:option></html:select></html:label>
-              <html:label>思考强度<html:select id="litmtrans-pref-reasoning-effort"><html:option value="default">服务商默认</html:option><html:option value="minimal">最低</html:option><html:option value="low">较低</html:option><html:option value="medium">中等</html:option><html:option value="high">高</html:option><html:option value="xhigh">极高</html:option><html:option value="max">最大</html:option></html:select></html:label>
+            <html:div class="litmtrans-pref-form-stack">
+              <html:div class="litmtrans-field-with-action">
+                <html:label><html:span id="litmtrans-pref-provider-label">服务商</html:span><html:select id="litmtrans-pref-provider"/></html:label>
+                <html:button id="litmtrans-pref-open-token-guide" type="button">获取API密钥</html:button>
+              </html:div>
+              <html:label>API密钥<html:input id="litmtrans-pref-api-key" type="password" autocomplete="off" placeholder="未配置"/></html:label>
+              <html:label>API地址<html:input id="litmtrans-pref-base-url" type="url" placeholder="https://api.example.com/v1"/></html:label>
+              <html:div class="litmtrans-field-with-action">
+                <html:label>模型<html:select id="litmtrans-pref-model"/></html:label>
+                <html:button id="litmtrans-pref-refresh-models" type="button">刷新模型列表</html:button>
+              </html:div>
+              <html:div class="litmtrans-reasoning-settings-row">
+                <html:label>思考模式<html:select id="litmtrans-pref-thinking-mode"><html:option value="default">服务商默认</html:option><html:option value="enabled">开启</html:option><html:option value="disabled">关闭</html:option></html:select></html:label>
+                <html:label>思考强度<html:select id="litmtrans-pref-reasoning-effort"><html:option value="default">服务商默认</html:option><html:option value="minimal">最低</html:option><html:option value="low">较低</html:option><html:option value="medium">中等</html:option><html:option value="high">高</html:option><html:option value="xhigh">极高</html:option><html:option value="max">最大</html:option></html:select></html:label>
+              </html:div>
+              <html:label id="litmtrans-pref-deepseek-fast-layout-group" class="litmtrans-fast-layout-toggle" hidden="hidden"><html:input id="litmtrans-pref-deepseek-fast-layout" type="checkbox"/><html:span><html:strong>DeepSeek快速排版翻译（仅在排版模式翻译下生效）</html:strong><html:small>利用官方服务的高缓存命中进行并发请求，实现高速翻译</html:small></html:span></html:label>
             </html:div>
-            <html:label id="litmtrans-pref-deepseek-fast-layout-group" class="litmtrans-fast-layout-toggle" hidden="hidden"><html:input id="litmtrans-pref-deepseek-fast-layout" type="checkbox"/><html:span><html:strong>DeepSeek快速排版翻译（仅在排版模式翻译下生效）</html:strong><html:small>利用官方服务的高缓存命中进行并发请求，实现高速翻译</html:small></html:span></html:label>
           </html:div>
         </html:section>
 
@@ -54,9 +67,9 @@
             <html:span class="litmtrans-pref-card-mark">对话</html:span>
             <html:div><html:h2>对话模型设置</html:h2><html:p>关闭“使用同一个模型”后，可单独设置文献对话模型。</html:p></html:div>
           </html:div>
-          <html:div class="litmtrans-shared-toggle">
-            <html:input id="litmtrans-pref-chat-engine-web" type="checkbox"/>
-            <html:label for="litmtrans-pref-chat-engine-web"><html:strong>使用DeepSeek官方网页端对话（免API密钥）</html:strong><html:span>在侧栏打开官方网页，登录DeepSeek账号后使用。</html:span></html:label>
+          <html:div id="litmtrans-pref-chat-web-mode-notice" class="litmtrans-web-mode-notice" hidden="hidden">
+            <html:strong>对话已启用 DeepSeek 官方网页端</html:strong>
+            <html:p>阅读对话将直接在右侧栏网页端中进行，免API密钥。</html:p>
           </html:div>
           <html:div id="litmtrans-pref-chat-form-container" class="litmtrans-pref-form-stack">
             <html:label><html:span id="litmtrans-pref-chat-provider-label">服务商</html:span><html:select id="litmtrans-pref-chat-provider"/></html:label>

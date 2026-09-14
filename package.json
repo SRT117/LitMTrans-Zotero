@@ -23,6 +23,8 @@
   ],
   "scripts": {
     "sync-vendor": "node scripts/sync-vendor.mjs",
+    "map": "node scripts/generate-repo-map.mjs",
+    "map:watch": "node scripts/generate-repo-map.mjs --watch",
     "prevalidate": "npm run sync-vendor",
     "compile:core": "tsc -p tsconfig.core.json",
     "test:runtime": "node tests/run-tests.js",

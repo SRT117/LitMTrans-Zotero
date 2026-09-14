@@ -171,6 +171,10 @@
       this.storage = new LitMTrans.Storage();
       this.secrets = new LitMTrans.Secrets();
       this.llm = new LitMTrans.LLMService(this.secrets);
+      if (LitMTrans.DeepSeekWeb?.Provider) {
+        this.deepSeekWebProvider = new LitMTrans.DeepSeekWeb.Provider(this);
+        this.llm.setWebProvider(this.deepSeekWebProvider);
+      }
       this.webMachine = new LitMTrans.WebMachineTranslationService({
         edgeDownloadConsent: (sourceLanguage, targetLanguage) => this.confirmEdgeModelDownload(sourceLanguage, targetLanguage)
       });
@@ -254,13 +258,16 @@
           const createDoc = runtime.window?.document || doc;
           browser = createDoc.createXULElement("browser");
           browser.setAttribute("type", "content");
+          browser.setAttribute("remote", "true");
           browser.setAttribute("maychangeremoteness", "true");
           browser.setAttribute("disableglobalhistory", "true");
           browser.style.cssText = "display:flex;flex:1;min-width:0;min-height:0;width:100%;height:100%";
           slot.appendChild(browser);
         }
+        runtime.deepSeekBrowser = browser;
       }
       if (!browser) throw new Error("网页容器尚未就绪，请重试。");
+      this.ensureDeepSeekDriver(runtime);
       const status = doc?.getElementById("deepseek-web-status");
       const showStatus = text => {
         if (status) { status.textContent = text; status.hidden = !text; }
@@ -269,10 +276,10 @@
         browser.setAttribute("data-deepseek-listener", "true");
         browser.addProgressListener({
           QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
-          onStateChange(progress, request, flags, statusCode) {
+          onStateChange: (progress, request, flags, statusCode) => {
             if (!progress.isTopLevel || !(flags & Ci.nsIWebProgressListener.STATE_STOP)) return;
             clearTimeout(runtime.deepSeekLoadTimer);
-            showStatus(statusCode ? "网页加载失败，请刷新或在浏览器中打开。" : "");
+            showStatus(statusCode ? "网页加载失败，请右键刷新或在浏览器中打开。" : "");
           }
         }, Ci.nsIWebProgress.NOTIFY_STATE_NETWORK);
       }
@@ -280,14 +287,14 @@
         showStatus("正在加载DeepSeek…");
         clearTimeout(runtime.deepSeekLoadTimer);
         runtime.deepSeekLoadTimer = setTimeout(() => {
-          showStatus("网页加载时间较长，请刷新或在浏览器中打开。");
+          showStatus("网页加载时间较长，请右键刷新或在浏览器中打开。");
         }, 25000);
         try {
           browser.loadURI(Services.io.newURI("https://chat.deepseek.com/"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
           browser.setAttribute("data-deepseek-loaded", "true");
         } catch (error) {
           clearTimeout(runtime.deepSeekLoadTimer);
-          showStatus("网页加载失败，请刷新或在浏览器中打开。");
+          showStatus("网页加载失败，请右键刷新或在浏览器中打开。");
           throw error;
         }
       }
@@ -297,9 +304,17 @@
     setDeepSeekWebBounds(runtime, bounds = {}) {
       const browser = runtime.deepSeekBrowser;
       if (!browser) return { ok: false };
+      let mask = runtime.deepSeekMask;
+      if (!mask && runtime.container && runtime.window) {
+        mask = runtime.window.document.createXULElement("box");
+        mask.style.cssText = "position:absolute;display:none;z-index:25;background:rgba(0,0,0,0.42);pointer-events:auto;";
+        runtime.container.appendChild(mask);
+        runtime.deepSeekMask = mask;
+      }
       const visible = Boolean(bounds.visible);
       if (!visible) {
         browser.style.display = "none";
+        if (mask) mask.style.display = "none";
         return { ok: true, visible: false };
       }
       const left = Math.max(0, Math.round(Number(bounds.left) || 0));
@@ -311,7 +326,110 @@
       browser.style.top = `${top}px`;
       browser.style.width = `${width}px`;
       browser.style.height = `${height}px`;
-      return { ok: true, visible: true, left, top, width, height };
+
+      const dimmed = Boolean(bounds.dimmed);
+      if (mask) {
+        if (dimmed) {
+          mask.style.display = "block";
+          mask.style.left = `${left}px`;
+          mask.style.top = `${top}px`;
+          mask.style.width = `${width}px`;
+          mask.style.height = `${height}px`;
+          if (!mask.getAttribute("data-bound-click")) {
+            mask.setAttribute("data-bound-click", "true");
+            mask.addEventListener("click", () => {
+              this.sendToPage(runtime, { type: "event", payload: { type: "close-active-dialog" } });
+            });
+          }
+        } else {
+          mask.style.display = "none";
+        }
+      }
+      return { ok: true, visible: true, dimmed, left, top, width, height };
+    }
+
+    ensureDeepSeekWebVisible(runtime) {
+      if (!runtime) return;
+      this.sendToPage(runtime, { type: "event", payload: { type: "ensure-ai-mode", mode: "web" } });
+    }
+
+    ensureDeepSeekDriver(runtime) {
+      if (!runtime?.deepSeekBrowser) return null;
+      if (runtime.deepSeekDriver) return runtime.deepSeekDriver;
+      if (!LitMTrans.DeepSeekWeb?.DeepSeekWebDriver) return null;
+      try {
+        const driver = new LitMTrans.DeepSeekWeb.DeepSeekWebDriver(runtime.deepSeekBrowser);
+        driver.onContextMenu = (data) => {
+          this.openDeepSeekContextMenu(runtime, data);
+        };
+        driver.ensureFrameScript?.();
+        runtime.deepSeekDriver = driver;
+        return driver;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    openDeepSeekContextMenu(runtime, payload = {}) {
+      if (!runtime) return { ok: false };
+      const hostWindow = runtime.browser?.ownerGlobal || runtime.window || Zotero.getMainWindow();
+      if (!hostWindow?.document) return { ok: false };
+
+      let popupset = runtime.popupset;
+      if (!popupset || !popupset.isConnected) {
+        popupset = hostWindow.document.createXULElement("popupset");
+        try {
+          (runtime.container || hostWindow.document.documentElement).appendChild(popupset);
+          runtime.popupset = popupset;
+        } catch (_) {}
+      }
+
+      const popup = hostWindow.document.createXULElement("menupopup");
+      popup.className = "litmtrans-deepseek-context-menu";
+      popupset.appendChild(popup);
+
+      popup.addEventListener("popuphidden", () => {
+        try { popup.remove(); } catch (_) {}
+      }, { once: true });
+
+      const selectedText = String(payload?.selectedText || "").trim();
+      if (selectedText) {
+        const copyItem = hostWindow.document.createXULElement("menuitem");
+        copyItem.setAttribute("label", "复制");
+        copyItem.addEventListener("command", () => {
+          try {
+            this.writeClipboardText(selectedText);
+          } catch (_) {}
+        });
+        popup.appendChild(copyItem);
+        popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
+      }
+
+      const reloadItem = hostWindow.document.createXULElement("menuitem");
+      reloadItem.setAttribute("label", "刷新");
+      reloadItem.addEventListener("command", () => {
+        void this.loadDeepSeekWeb(runtime, true);
+      });
+      popup.appendChild(reloadItem);
+
+      const openExternalItem = hostWindow.document.createXULElement("menuitem");
+      openExternalItem.setAttribute("label", "在浏览器中打开");
+      openExternalItem.addEventListener("command", () => {
+        void this.openExternalURL("https://chat.deepseek.com/");
+      });
+      popup.appendChild(openExternalItem);
+
+      const screenX = Number(payload?.screenX || 0);
+      const screenY = Number(payload?.screenY || 0);
+      if (Number.isFinite(screenX) && Number.isFinite(screenY) && screenX > 0 && screenY > 0) {
+        popup.openPopupAtScreen(screenX, screenY, true);
+      } else {
+        const anchor = runtime.deepSeekBrowser || runtime.browser;
+        if (anchor) {
+          popup.openPopup(anchor, "overlap", 10, 10, true, false);
+        }
+      }
+      return { ok: true };
     }
 
     registerItemDeletionObserver() {
@@ -1276,14 +1394,7 @@
     }
 
     decodeImageDataURL(dataURL, win = null) {
-      const match = String(dataURL || "").match(/^data:(image\/(?:png|jpeg|webp|gif|bmp|jp2|svg\+xml));base64,([A-Za-z0-9+/=\s]+)$/i);
-      if (!match) throw new Error("图片数据格式无效");
-      const decoder = win?.atob?.bind(win) || globalThis.atob?.bind(globalThis);
-      if (!decoder) throw new Error("当前Zotero环境不能解码图片数据");
-      const binary = decoder(match[2].replace(/\s+/g, ""));
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-      return { mimeType: String(match[1]).toLowerCase(), bytes };
+      return U.decodeImageDataURL(dataURL, win);
     }
 
     async selectImageExportPath(win, defaultName, mimeType) {
@@ -1323,14 +1434,27 @@
 
     copyImageData(runtime, payload) {
       const decoded = this.decodeImageDataURL(payload.dataURL, runtime.window);
+      const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
+      transferable.init(null);
+
+      if (decoded.mimeType === "image/svg+xml") {
+        const text = new TextDecoder().decode(decoded.bytes);
+        const str = Cc["@mozilla.org/supports-string;1"].createInstance(Ci.nsISupportsString);
+        str.data = text;
+        transferable.addDataFlavor("image/svg+xml");
+        transferable.setTransferData("image/svg+xml", str);
+        transferable.addDataFlavor("text/unicode");
+        transferable.setTransferData("text/unicode", str);
+        Services.clipboard.setData(transferable, null, Services.clipboard.kGlobalClipboard);
+        return { copied: true };
+      }
+
       const imageTools = Cc["@mozilla.org/image/tools;1"].getService(Ci.imgITools);
       const buffer = decoded.bytes.buffer.slice(
         decoded.bytes.byteOffset,
         decoded.bytes.byteOffset + decoded.bytes.byteLength
       );
       const image = imageTools.decodeImageFromArrayBuffer(buffer, decoded.mimeType);
-      const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
-      transferable.init(null);
       transferable.addDataFlavor("application/x-moz-nativeimage");
       transferable.setTransferData("application/x-moz-nativeimage", image);
       Services.clipboard.setData(transferable, null, Services.clipboard.kGlobalClipboard);
@@ -2092,22 +2216,37 @@
 
       const deepSeekBrowser = win.document.createXULElement("browser");
       deepSeekBrowser.setAttribute("type", "content");
+      deepSeekBrowser.setAttribute("remote", "true");
       deepSeekBrowser.setAttribute("maychangeremoteness", "true");
       deepSeekBrowser.setAttribute("disableglobalhistory", "true");
       deepSeekBrowser.style.cssText = "position:absolute;display:none;z-index:20;background:#ffffff;border:none;box-sizing:border-box;";
       container.appendChild(deepSeekBrowser);
 
+      const deepSeekMask = win.document.createXULElement("box");
+      deepSeekMask.style.cssText = "position:absolute;display:none;z-index:25;background:rgba(0,0,0,0.42);pointer-events:auto;";
+      container.appendChild(deepSeekMask);
+
+      const documentID = `${attachment.libraryID}-${attachment.key}`;
+      const itemTitle = String(parentItem?.getField("title") || attachment.getField("title") || "");
       const runtime = {
         tabID,
         attachmentID: attachment.id,
+        documentID,
+        itemTitle,
         window: win,
         container,
         browser,
         deepSeekBrowser,
+        deepSeekMask,
         bridgeInstalled: false,
         pendingOpen: { quote: options.quote || null, prompt: String(options.prompt || "") }
       };
       this.tabs.set(tabID, runtime);
+      deepSeekBrowser.addEventListener("contextmenu", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.openDeepSeekContextMenu(runtime, { screenX: event.screenX, screenY: event.screenY });
+      });
       browser.addEventListener("load", event => {
         if (event.target === browser.contentDocument) this.installBridge(runtime);
       }, true);
@@ -2123,6 +2262,7 @@
       clearTimeout(runtime.deepSeekLoadTimer);
       try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
       try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
+      try { runtime.deepSeekMask?.remove?.(); } catch (_) {}
       try { runtime.deepSeekBrowser?.remove?.(); } catch (_) {}
       try { runtime.browser?.remove(); } catch (_) {}
       this.tabs.delete(tabID);
@@ -2696,13 +2836,21 @@
         case "translate":
           return this.withOperation(runtime, "translate", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            return this.pipeline.translateStream(context, payload, emit, signal);
+            const engine = payload.engine || (payload.aiMode === "web" ? "deepseek_web" : undefined);
+            const probeMsg = `[探针2-控制器] translate: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
+            emit?.({ type: "log", message: probeMsg });
+            try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
+            return this.pipeline.translateStream(context, { ...payload, engine, runtime }, emit, signal);
           });
 
         case "translate-layout":
           return this.withOperation(runtime, "layout", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            return this.pipeline.translateLayout(context, payload, emit, signal);
+            const engine = payload.engine || (payload.aiMode === "web" ? "deepseek_web" : undefined);
+            const probeMsg = `[探针2-控制器] translate-layout: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
+            emit?.({ type: "log", message: probeMsg });
+            try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
+            return this.pipeline.translateLayout(context, { ...payload, engine, runtime }, emit, signal);
           });
 
         case "manual-translation-command": {
@@ -2755,6 +2903,10 @@
         case "chat-send":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
+            const engine = payload.engine || (payload.aiMode === "web" ? "deepseek_web" : undefined);
+            const probeMsg = `[探针2-控制器] chat-send: doc=${context.documentID}, taskType=${payload.taskType}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
+            emit?.({ type: "log", message: probeMsg });
+            try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
             return this.chat.send(context.documentID, payload.sessionID, payload.text, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
@@ -2763,12 +2915,12 @@
               images: Array.isArray(payload.images) ? payload.images : [],
               documents: Array.isArray(payload.documents) ? payload.documents : [],
               documentOptions: payload.documentOptions,
-              // taskType is deliberately separate from the renderer protocol.
-              // The chat service owns all fixed task prompts so UI input can
-              // never overwrite the stable schema or cache prefix.
               taskType: String(payload.taskType || ""),
               mindmap: Boolean(payload.mindmap),
-              flowchart: Boolean(payload.flowchart)
+              flowchart: Boolean(payload.flowchart),
+              engine,
+              aiMode: payload.aiMode,
+              runtime
             }, emit, signal);
           });
 
@@ -2909,6 +3061,9 @@
 
         case "set-deepseek-web-bounds":
           return this.setDeepSeekWebBounds(runtime, payload);
+
+        case "open-deepseek-context-menu":
+          return this.openDeepSeekContextMenu(runtime, payload);
 
         case "save-chat-engine": {
           const engine = payload?.chatEngine === "deepseek_web" ? "deepseek_web" : "api";

@@ -2,15 +2,46 @@
 param(
     # Supplying this makes the manifest transformation reproducible in CI and
     # lets us cover older supported Zotero majors without launching them.
-    [string]$ZoteroVersion
+    [string]$ZoteroVersion,
+    [switch]$NoSync
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$manifestPath = Join-Path $projectRoot "dist\addon\manifest.json"
+$dist = Join-Path $projectRoot "dist"
+$stage = Join-Path $dist "addon"
+$manifestPath = Join-Path $stage "manifest.json"
+
+if (-not $NoSync) {
+    $portedCore = Join-Path $projectRoot "src\ported-core.js"
+    if (-not (Test-Path -LiteralPath $portedCore -PathType Leaf)) {
+        $localTsc = Join-Path $projectRoot "node_modules\typescript\bin\tsc"
+        if (Test-Path -LiteralPath $localTsc -PathType Leaf) {
+            & node $localTsc -p (Join-Path $projectRoot "tsconfig.core.json")
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $stage)) {
+        New-Item -ItemType Directory -Path $stage -Force | Out-Null
+    }
+
+    foreach ($entry in @("manifest.json", "chrome.manifest", "src", "assets", "locale", "README.md", "CHANGELOG.md", "PRIVACY.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
+        $srcPath = Join-Path $projectRoot $entry
+        if (Test-Path -LiteralPath $srcPath) {
+            Copy-Item -LiteralPath $srcPath -Destination $stage -Recurse -Force
+        }
+    }
+    Copy-Item -LiteralPath (Join-Path $projectRoot "src/bootstrap.js") -Destination (Join-Path $stage "bootstrap.js") -Force
+    Copy-Item -LiteralPath (Join-Path $projectRoot "src/prefs.js") -Destination (Join-Path $stage "prefs.js") -Force
+
+    $generateMap = Join-Path $projectRoot "scripts\generate-repo-map.mjs"
+    if (Test-Path -LiteralPath $generateMap -PathType Leaf) {
+        & node $generateMap
+    }
+}
 
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    throw "开发临时插件缺少 manifest：$manifestPath"
+    throw "Development staged addon missing manifest: $manifestPath"
 }
 
 # Bound the staged development copy to the Zotero major version that will load
@@ -19,14 +50,14 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
 if (-not $ZoteroVersion) {
     $zoteroBinary = $env:ZOTERO_PLUGIN_ZOTERO_BIN_PATH
     if (-not $zoteroBinary -or -not (Test-Path -LiteralPath $zoteroBinary -PathType Leaf)) {
-        throw "无法确定用于临时加载的 Zotero 版本。请设置 ZOTERO_PLUGIN_ZOTERO_BIN_PATH，或传入 -ZoteroVersion。"
+        throw "Cannot determine Zotero version for staging. Please set ZOTERO_PLUGIN_ZOTERO_BIN_PATH or pass -ZoteroVersion."
     }
     $ZoteroVersion = (Get-Item -LiteralPath $zoteroBinary).VersionInfo.ProductVersion
 }
 
 $versionMatch = [regex]::Match($ZoteroVersion, '^(?<major>\d+)\.')
 if (-not $versionMatch.Success) {
-    throw "无法从 Zotero 版本 '$ZoteroVersion' 提取主版本号。"
+    throw "Cannot extract major version from Zotero version '$ZoteroVersion'."
 }
 $strictMaxVersion = "$($versionMatch.Groups['major'].Value).*"
 
@@ -36,4 +67,4 @@ $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | Convert
 $manifest.applications.zotero | Add-Member -NotePropertyName "update_url" -NotePropertyValue "https://127.0.0.1/litmtrans/updates.json" -Force
 $manifest.applications.zotero | Add-Member -NotePropertyName "strict_max_version" -NotePropertyValue $strictMaxVersion -Force
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding utf8
-Write-Host "已准备 Zotero $($versionMatch.Groups['major'].Value) 临时加载清单（仅 dist/addon）。" -ForegroundColor DarkGray
+Write-Host "Prepared Zotero $($versionMatch.Groups['major'].Value) dev manifest (dist/addon)." -ForegroundColor DarkGray

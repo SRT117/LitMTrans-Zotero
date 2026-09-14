@@ -4,6 +4,7 @@ param(
     [string]$ZoteroMajor = "10",
     [switch]$KeepUpdated,
     [switch]$PrepareOnly,
+    [switch]$Validate,
     [int]$ServerPort = 23129
 )
 
@@ -143,15 +144,15 @@ function Install-BaseReleaseExtension {
 Push-Location $projectRoot
 $serverProc = $null
 try {
-    Write-Host "[1/4] 验证并构建待更新的最新未发布版本..." -ForegroundColor Cyan
-    & node "scripts/validate.js"
-    if ($LASTEXITCODE -ne 0) { throw "静态验证失败，终止启动。" }
+    if ($Validate) {
+        Write-Host "运行静态验证与单测..." -ForegroundColor Cyan
+        & node "scripts/validate.js"
+        if ($LASTEXITCODE -ne 0) { throw "静态验证失败，终止启动。" }
+    }
 
-    & (Join-Path $PSScriptRoot "build-xpi.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "最新插件构建失败，终止启动。" }
-
+    Write-Host "[1/4] 同步待更新的最新未发布版本..." -ForegroundColor Cyan
     $env:ZOTERO_PLUGIN_ZOTERO_BIN_PATH = $testVersion.BinaryPath
-    & (Join-Path $PSScriptRoot "prepare-dev-addon.ps1")
+    & (Join-Path $PSScriptRoot "prepare-dev-addon.ps1") -ZoteroVersion $testVersion.Version
 
     # 为更新包设置一个更高版本号（如 2.0.1-preview），以便触发升级检测
     $updateStage = Join-Path $serverRoot "stage"

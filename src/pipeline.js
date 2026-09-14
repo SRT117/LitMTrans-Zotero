@@ -247,9 +247,15 @@
       if (!String(parsed.markdown || "").trim()) {
         throw new Error("当前文档尚未完成解析");
       }
+      const probeMsg = `[探针2.5-流水线] translateStream: engine=${payload.engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(payload.runtime)}`;
+      emit?.({ type: "log", message: probeMsg });
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
       return this.runTranslationWithPersistentLog(context.documentID, "stream", emit, () => this.translation.translate(context.documentID, parsed.markdown, {
         force: Boolean(payload.force),
-        mode: String(payload.mode || this.getSettings().translationMode || "full_context")
+        mode: String(payload.mode || this.getSettings().translationMode || "full_context"),
+        engine: payload.engine,
+        aiMode: payload.aiMode,
+        runtime: payload.runtime
       }, this.logTranslationEvent(context.documentID, "stream", emit), signal));
     }
 
@@ -258,9 +264,13 @@
       if (!parsed.hasLayout) throw new Error("当前MinerU结果没有可用的页面布局数据");
       const settings = this.getSettings();
       const loggedEmit = this.logTranslationEvent(context.documentID, "layout", emit);
+      const probeMsg = `[探针2.5-流水线] translateLayout: engine=${payload.engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(payload.runtime)}`;
+      loggedEmit?.({ type: "log", message: probeMsg });
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
       return this.runTranslationWithPersistentLog(context.documentID, "layout", emit, async () => {
-        const webMachine = U.isWebMachineProvider(settings.provider);
-        const reference = webMachine
+        const isWeb = payload.engine === "deepseek_web" || payload.aiMode === "web" || settings.provider === "deepseek_web";
+        const webMachine = !isWeb && U.isWebMachineProvider(settings.provider);
+        const reference = (webMachine || isWeb)
           ? { corpus: "", identity: "" }
           : await this.translation.buildReferenceCorpus(context.documentID, settings, loggedEmit, signal);
         if (webMachine && Array.isArray(settings.translationReferencePaths) && settings.translationReferencePaths.length) {
@@ -272,14 +282,17 @@
           loggedEmit?.({ type: "log", message: `${label}不使用自定义翻译要求，已忽略本次设置。` });
         }
         return this.layout.translate(context.documentID, {
-        force: Boolean(payload.force),
-        mode: String(payload.mode || settings.translationMode || "full_context"),
-        // Character-mix retry is an opt-in compatibility mode.
-        enableUntranslatedCheck: Boolean(payload.enableUntranslatedCheck),
-        referenceContext: reference.corpus,
-        referenceIdentity: reference.identity,
-        // Machine translation has no prompt context.
-        customTranslationInstruction: webMachine ? "" : settings.customTranslationInstruction
+          force: Boolean(payload.force),
+          mode: String(payload.mode || settings.translationMode || "full_context"),
+          // Character-mix retry is an opt-in compatibility mode.
+          enableUntranslatedCheck: Boolean(payload.enableUntranslatedCheck),
+          referenceContext: reference.corpus,
+          referenceIdentity: reference.identity,
+          // Machine translation has no prompt context.
+          customTranslationInstruction: webMachine ? "" : settings.customTranslationInstruction,
+          engine: payload.engine,
+          aiMode: payload.aiMode,
+          runtime: payload.runtime
         }, loggedEmit, signal);
       });
     }

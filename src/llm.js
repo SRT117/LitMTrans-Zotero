@@ -353,12 +353,12 @@
   }
 
   function decodeImageDataURL(value) {
-    const match = String(value || "").match(/^data:(image\/(?:png|jpeg|webp|gif|bmp|jp2|svg\+xml));base64,([A-Za-z0-9+/=\s]+)$/i);
-    if (!match) return null;
-    return {
-      mimeType: String(match[1]).toLowerCase(),
-      bytes: decodeBase64Bytes(match[2])
-    };
+    try {
+      return U.decodeImageDataURL(value);
+    }
+    catch (_) {
+      return null;
+    }
   }
 
   function detectImageMimeType(bytes, fallback = "image/png") {
@@ -683,6 +683,11 @@
       this.rateLimitNow = () => Date.now();
       this.rateLimitSleep = (milliseconds, signal) => U.sleep(milliseconds, signal);
       this.manualTransport = null;
+      this.webProvider = null;
+    }
+
+    setWebProvider(provider) {
+      this.webProvider = provider;
     }
 
     beginManualTransport(response = "") {
@@ -931,8 +936,30 @@
       return this.getSettings(scope);
     }
 
+    isWebEngineActive(options = {}) {
+      if (options.engine === "deepseek_web" || options.provider === "deepseek_web" || options.aiMode === "web") return true;
+      if (options.engine === "api" || options.aiMode === "api") return false;
+      const chatEngine = U.getPref("chatEngine", "api");
+      if (chatEngine === "deepseek_web") return true;
+      if (options.purpose !== "chat" && U.getPref("translationProvider", "") === "deepseek_web") return true;
+      return false;
+    }
+
     resolveConfig(overrides = {}) {
       const purpose = overrides.purpose === "chat" ? "chat" : "translation";
+      if (this.isWebEngineActive(overrides)) {
+        return {
+          purpose,
+          provider: "deepseek_web",
+          baseURL: "",
+          model: "deepseek-web",
+          apiKey: "",
+          promptCacheKey: String(overrides.promptCacheKey || "").trim(),
+          thinkingMode: "default",
+          reasoningEffort: "default",
+          showReasoning: true
+        };
+      }
       const settings = this.getSettings(purpose);
       const spec = U.providerSpec(String(overrides.provider || settings.provider).toLowerCase());
       const provider = spec.id;
@@ -1050,6 +1077,9 @@
     }
 
     async ensureConfiguredModel(config, signal = null) {
+      if (this.isWebEngineActive(config)) {
+        return { ...config, provider: "deepseek_web", model: "deepseek-web" };
+      }
       if (config.model) return config;
       const label = config.purpose === "chat" ? "对话" : "翻译";
       throw new Error(`尚未选择${label}模型；请先刷新模型列表并明确选择模型。`);
@@ -1205,6 +1235,13 @@
         const error = new Error("MANUAL_TRANSPORT_PAUSE");
         error.manualTransportPause = true;
         throw error;
+      }
+      const isWebEngine = this.isWebEngineActive(options);
+      const probeLLMMsg = `[探针4-LLM] complete: isWebEngine=${isWebEngine}, hasWebProvider=${Boolean(this.webProvider)}, purpose=${options.purpose}, engine=${options.engine}, aiMode=${options.aiMode}`;
+      options.emit?.({ type: "log", message: probeLLMMsg });
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeLLMMsg}`); } catch (_) {}
+      if (isWebEngine && this.webProvider) {
+        return this.webProvider.complete(messages, options);
       }
       const preliminary = this.resolveConfig(options);
       const gemini = isGeminiProvider(preliminary.provider, preliminary.baseURL);

@@ -237,12 +237,19 @@ var LitMTransControllerPreferences = {
 
   updateChatModelSectionVisibility() {
     const isWebEngine = Boolean(this.$("chat-engine-web")?.checked);
+    const webNotice = document.getElementById("litmtrans-pref-web-mode-notice");
+    if (webNotice) webNotice.hidden = !isWebEngine;
+    const modelForm = document.getElementById("litmtrans-pref-model-form-container");
+    if (modelForm) modelForm.hidden = isWebEngine;
+    const chatWebNotice = document.getElementById("litmtrans-pref-chat-web-mode-notice");
+    if (chatWebNotice) chatWebNotice.hidden = !isWebEngine;
     const sharedToggle = this.$("chat-uses-translation-model");
     if (sharedToggle) {
       sharedToggle.disabled = isWebEngine || this.isWebMachineTranslationProvider(this.$("provider").value);
     }
     const shared = !isWebEngine && Boolean(sharedToggle?.checked);
-    document.getElementById("litmtrans-pref-chat-model-group").hidden = false;
+    const chatGroup = document.getElementById("litmtrans-pref-chat-model-group");
+    if (chatGroup) chatGroup.hidden = !isWebEngine && shared;
     document.querySelector(".litmtrans-pref-board")?.classList.toggle("litmtrans-shared-chat-model", shared);
     const formContainer = this.$("chat-form-container");
     if (formContainer) formContainer.hidden = Boolean(isWebEngine || shared);

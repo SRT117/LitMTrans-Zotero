@@ -89,7 +89,7 @@ namespace LitMTransPort {
     });
   }
   export function repairInvalidJsonEscapes(value: string): string {
-    return String(value || "").replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+    return String(value || "").replace(/\\(?=[bf][a-zA-Z])|\\(?!["\\/bfnrtu])/g, "\\\\");
   }
   export function extractJsonObject(value: string): Record<string, unknown> {
     const text = String(value || "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();

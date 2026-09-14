@@ -110,19 +110,17 @@
       "both-panes-button", "source-only-button", "translation-only-button",
       "sync-scroll-check",
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button",
-      "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
+      "copy-source-markdown-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
       "system-messages-button", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
       "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
       "deepseek-web-container", "deepseek-web-frame",
-      "deepseek-web-mindmap-button", "deepseek-web-flowchart-button",
-      "deepseek-web-reload-button", "deepseek-web-external-button",
       "chat-render-markdown", "selection-chip", "selection-text", "clear-selection-button", "chat-messages", "chat-empty", "chat-navigator-button", "chat-navigator-popup",
       "chat-form", "chat-input",
       "chat-document-preview", "chat-document-button", "remove-pending-documents-button", "chat-image-preview", "chat-image-input", "context-status", "chat-send-button",
       "chat-model-settings-dialog", "embedded-chat-provider", "embedded-provider-cards-button", "embedded-chat-base-url", "embedded-chat-model", "embedded-refresh-chat-models", "embedded-chat-api-key", "embedded-chat-thinking-mode", "embedded-chat-reasoning-effort", "embedded-chat-show-reasoning", "embedded-chat-render-markdown", "embedded-chat-api-key-state", "embedded-chat-image-group", "embedded-chat-image-note", "embedded-chat-image-size", "embedded-chat-image-quality", "embedded-chat-image-format", "save-embedded-chat-settings",
-      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section",
+      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "setting-chat-engine-web", "setting-web-mode-notice", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-web-mode-notice", "setting-chat-form-container",
       "setting-api-key", "setting-thinking-mode", "setting-reasoning-effort", "setting-deepseek-fast-layout-group", "setting-deepseek-fast-layout",
       "setting-chat-provider", "setting-chat-provider-label", "setting-chat-base-url", "setting-chat-model", "refresh-chat-models-button",
       "setting-chat-api-key", "setting-chat-thinking-mode", "setting-chat-reasoning-effort", "provider-cards-button",
@@ -214,7 +212,11 @@
   };
 
   function imageResolver(target) {
-    const value = String(target || "").trim();
+    let value = String(target || "").trim();
+    const fixMatch = value.match(/(?:https?:\/\/)?(?:images\/)?(image_\d+\.[a-zA-Z0-9]+)/i);
+    if (fixMatch) {
+      value = `images/${fixMatch[1]}`;
+    }
     if (/^(?:resource|data|file|chrome):/i.test(value)) return value;
     const imageRecord = (state.data?.parsed?.imageMap || []).find(record =>
       record?.cleanTarget === value || record?.originalTarget === value
@@ -568,6 +570,7 @@
     }
     const chip = els["document-state"];
     chip.textContent = text;
+    chip.title = text;
     chip.className = `status-chip status-${kind}`;
   }
 
@@ -626,6 +629,15 @@
 
   function handleEvent(event) {
     const type = String(event?.type || "");
+    if (type === "close-active-dialog") {
+      const activeDialog = document.querySelector("dialog[open]");
+      activeDialog?.close?.();
+      return;
+    }
+    if (type === "ensure-ai-mode") {
+      setAIMode(event.mode || "web", { syncPref: false });
+      return;
+    }
     if (type === "operation") {
       if (event.running) {
         state.running.add(event.operation);
@@ -2700,14 +2712,78 @@
     return /\.(?:png|jpe?g|webp|gif|bmp|jp2|svg)$/i.test(String(file?.name || ""));
   }
 
+  function inferImageMimeType(url = "", fallback = "image/png") {
+    const clean = String(url || "").split("?")[0].toLowerCase();
+    if (clean.endsWith(".png")) return "image/png";
+    if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+    if (clean.endsWith(".webp")) return "image/webp";
+    if (clean.endsWith(".gif")) return "image/gif";
+    if (clean.endsWith(".bmp")) return "image/bmp";
+    if (clean.endsWith(".jp2")) return "image/jp2";
+    if (clean.endsWith(".svg")) return "image/svg+xml";
+    return fallback;
+  }
+
   async function imageDescriptorDataURL(image) {
-    if (/^data:image\//i.test(String(image?.dataURL || ""))) return String(image.dataURL);
+    const rawDataURL = String(image?.dataURL || "");
+    if (/^data:image\//i.test(rawDataURL)) return rawDataURL;
+    if (/^data:(?:application\/octet-stream|;)/i.test(rawDataURL)) {
+      try {
+        const decoded = U.decodeImageDataURL(rawDataURL);
+        return `data:${decoded.mimeType};base64,${U.encodeBytesBase64(decoded.bytes)}`;
+      }
+      catch (_) {}
+    }
     const url = String(image?.url || "");
     if (!url) throw new Error("图片资源地址无效");
-    const response = await fetch(url, { credentials: "omit", cache: "no-store" });
-    if (!response.ok) throw new Error(`读取图片失败：HTTP ${response.status}`);
-    const blob = await response.blob();
-    return readFileAsDataURL(blob);
+    let blob;
+    try {
+      const response = await fetch(url, { credentials: "omit", cache: "no-store" });
+      if (!response.ok) throw new Error(`读取图片失败：HTTP ${response.status}`);
+      blob = await response.blob();
+    }
+    catch (fetchErr) {
+      const previewImg = els["image-preview-image"];
+      if (previewImg && (previewImg.src === url || previewImg.currentSrc === url) && previewImg.naturalWidth) {
+        const canvas = document.createElement("canvas");
+        canvas.width = previewImg.naturalWidth;
+        canvas.height = previewImg.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(previewImg, 0, 0);
+          return canvas.toDataURL("image/png");
+        }
+      }
+      throw fetchErr;
+    }
+
+    let mimeType = String(blob?.type || "").toLowerCase();
+    if (mimeType === "image/jpg") mimeType = "image/jpeg";
+    if (!mimeType || !mimeType.startsWith("image/")) {
+      try {
+        const buffer = await blob.slice(0, 64).arrayBuffer();
+        const detected = U.detectImageMimeType(new Uint8Array(buffer), image?.mimeType || "");
+        if (detected && detected.startsWith("image/")) {
+          mimeType = detected;
+        }
+      }
+      catch (_) {}
+      if (!mimeType || !mimeType.startsWith("image/")) {
+        const urlMime = inferImageMimeType(url || image?.name || "");
+        if (urlMime) mimeType = urlMime;
+      }
+      if (mimeType && mimeType.startsWith("image/")) {
+        blob = new Blob([blob], { type: mimeType });
+      }
+    }
+    const dataURL = await readFileAsDataURL(blob);
+    if (!/^data:image\//i.test(dataURL) && mimeType && mimeType.startsWith("image/")) {
+      const comma = dataURL.indexOf(",");
+      if (comma !== -1) {
+        return `data:${mimeType};base64,${dataURL.slice(comma + 1)}`;
+      }
+    }
+    return dataURL;
   }
 
   function applyPreviewScale(scale, anchor = null) {
@@ -2761,6 +2837,7 @@
     els["image-preview-image"].src = state.previewImage.url;
     els["image-preview-image"].alt = state.previewImage.name;
     els["image-preview-dialog"].showModal();
+    syncDeepSeekWebBounds();
   }
 
   async function addImageDescriptorToComposer(image) {
@@ -2807,25 +2884,24 @@
     if (!state.previewImage) return;
     try {
       const dataURL = await imageDescriptorDataURL(state.previewImage);
-      const response = await fetch(dataURL);
-      const blob = await response.blob();
-      if (navigator.clipboard?.write && typeof ClipboardItem === "function") {
-        await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
-      }
-      else {
-        await hostCall("copy-image", { dataURL });
-      }
-      toast("图片已复制");
-    }
-    catch (error) {
       try {
-        const dataURL = await imageDescriptorDataURL(state.previewImage);
         await hostCall("copy-image", { dataURL });
         toast("图片已复制");
+        return;
       }
-      catch (fallbackError) {
-        toast(fallbackError.message || error.message || "复制图片失败", "error");
+      catch (hostError) {
+        const response = await fetch(dataURL);
+        const blob = await response.blob();
+        if (navigator.clipboard?.write && typeof ClipboardItem === "function") {
+          await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+          toast("图片已复制");
+          return;
+        }
+        throw hostError;
       }
+    }
+    catch (error) {
+      toast(error.message || "复制图片失败", "error");
     }
   }
 
@@ -4272,6 +4348,7 @@
     els["formula-preview-body"].innerHTML = Markdown.renderTeX(equation.body || previewTex, true);
     fitFormulaPreview();
     els["formula-preview-dialog"].showModal();
+    syncDeepSeekWebBounds();
   }
 
   function readerPaneForTarget(target) {
@@ -4416,6 +4493,7 @@
     state.cleanReadingSnapshot = cleanReadingSnapshot();
     document.body.classList.add("clean-reader-mode");
     updateCleanReaderButton(true);
+    syncDeepSeekWebBounds();
     requestAnimationFrame(() => {
       restoreModeScrollPosition(state.mode);
       queueLayoutPageScaleRefresh(els["translation-layout"]);
@@ -4446,6 +4524,7 @@
       renderMode();
       renderReaderView();
     }
+    syncDeepSeekWebBounds();
     requestAnimationFrame(() => {
       restoreModeScrollPosition(state.mode);
       queueLayoutPageScaleRefresh(els["translation-layout"]);
@@ -4481,20 +4560,23 @@
   }
 
   function syncDeepSeekWebBounds() {
-    if (state.aiMode !== "web" || els["deepseek-web-container"]?.hidden) {
+    const isCleanReader = document.body.classList.contains("clean-reader-mode");
+    if (state.aiMode !== "web" || els["deepseek-web-container"]?.hidden || isCleanReader) {
       void hostCall("set-deepseek-web-bounds", { visible: false });
       return;
     }
     const frame = els["deepseek-web-frame"];
     if (!frame) return;
     const rect = frame.getBoundingClientRect();
+    const hasOpenDialog = Boolean(document.querySelector("dialog[open]"));
     if (rect.width > 20 && rect.height > 20) {
       void hostCall("set-deepseek-web-bounds", {
         visible: true,
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-        height: rect.height
+        dimmed: hasOpenDialog,
+        left: Math.ceil(rect.left),
+        top: Math.round(rect.top),
+        width: Math.floor(rect.width),
+        height: Math.round(rect.height)
       });
     } else {
       void hostCall("set-deepseek-web-bounds", { visible: false });
@@ -4503,34 +4585,15 @@
 
   async function sendToDeepSeekWeb(text) {
     if (!text) return;
-    setAIMode("web", { syncPref: false });
-    try {
-      await hostCall("clipboard-write-text", { text: String(text) });
-      toast("已复制，请在DeepSeek输入框中粘贴并发送。");
-    } catch (error) {
-      toast(`复制失败：${error.message || error}。请重试。`);
+    if (els["chat-input"]) {
+      els["chat-input"].value = text;
+      els["chat-input"].focus();
     }
-  }
-
-  function prepareDeepSeekDocumentPrompt(prompt) {
-    const markdown = String(state.data?.parsed?.markdown || state.data?.translation?.markdown || "").trim();
-    if (!markdown) {
-      toast("请先解析文献，或在DeepSeek网页中上传论文后提问。");
-      return;
-    }
-    void sendToDeepSeekWeb(prompt + "\n\n[论文正文]\n" + markdown);
   }
 
   function prepareReaderAsk(quote, prompt) {
     if (!quote) return;
     if (document.body.classList.contains("clean-reader-mode")) exitCleanReader({ focusChat: true });
-    if (state.aiMode === "web") {
-      const quoteText = String(quote.text || "").trim();
-      const userPrompt = String(prompt || "请解释这段内容，并结合文献说明它在文中的作用。").trim();
-      const message = quoteText ? `[论文选文]\n${quoteText}\n\n[问题]\n${userPrompt}` : userPrompt;
-      void sendToDeepSeekWeb(message);
-      return;
-    }
     appendReferenceQuote(quote);
     renderSelection();
     if (!els["chat-input"].value.trim()) els["chat-input"].value = prompt;
@@ -4597,10 +4660,16 @@
       if (image) {
         event.preventDefault();
         const pane = readerPaneForTarget(image);
+        const srcUrl = String(image.currentSrc || image.src || "");
+        const urlFileName = srcUrl.split("/").pop()?.split("?")[0] || "";
+        const blockId = image.closest(".layout-block")?.dataset?.blockId || "";
+        const mimeType = inferImageMimeType(srcUrl, "image/png");
+        const ext = mimeType === "image/jpeg" ? ".jpg" : (mimeType === "image/svg+xml" ? ".svg" : `.${mimeType.replace("image/", "")}`);
+        const name = blockId ? `${blockId}${ext}` : (urlFileName || `layout-image${ext}`);
         openImagePreview({
-          name: image.closest(".layout-block")?.dataset?.blockId || "layout-image.png",
-          mimeType: "image/png",
-          url: image.currentSrc || image.src,
+          name,
+          mimeType,
+          url: srcUrl,
           quote: pane ? readerImageQuote(image, pane) : null
         });
       }
@@ -4645,10 +4714,12 @@
       }
       else if (imageQuote) {
         addAction("在对话中提问…", () => {
+          const srcUrl = String(image?.currentSrc || image?.src || "");
+          const mimeType = inferImageMimeType(srcUrl, "image/png");
           void addImageDescriptorToComposer({
             name: imageQuote.imageAlt || "reader-image.png",
-            mimeType: "image/png",
-            url: String(image?.currentSrc || image?.src || ""),
+            mimeType,
+            url: srcUrl,
             quote: imageQuote
           }).catch(error => toast(error.message || "读取图片失败", "error"));
         });
@@ -5098,6 +5169,9 @@
     setSelectValue(els["setting-reasoning-effort"], settings.translationReasoningEffort || settings.reasoningEffort || "default");
     els["setting-deepseek-fast-layout"].checked = Boolean(settings.deepseekFastLayoutTranslation);
     els["setting-api-key"].value = settings.apiKey || "";
+    if (els["setting-chat-engine-web"]) {
+      els["setting-chat-engine-web"].checked = settings.chatEngine === "deepseek_web";
+    }
     els["setting-chat-uses-translation-model"].checked = settings.chatUsesTranslationModel !== false;
     els["setting-chat-provider"].value = settings.chatProvider ?? "oneapi";
     els["setting-chat-provider"].dataset.activeProvider = els["setting-chat-provider"].value;
@@ -5171,11 +5245,23 @@
   }
 
   function updateChatModelSectionVisibility() {
-    const shared = !isWebMachineTranslationProvider(els["setting-provider"]?.value)
-      && els["setting-chat-uses-translation-model"].checked;
-    if (!shared) els["setting-chat-uses-translation-model"].checked = false;
-    els["setting-chat-model-section"].hidden = shared;
+    const isWebEngine = Boolean(els["setting-chat-engine-web"]?.checked);
+    const webNotice = els["setting-web-mode-notice"];
+    if (webNotice) webNotice.hidden = !isWebEngine;
+    const modelForm = els["setting-model-form-container"];
+    if (modelForm) modelForm.hidden = isWebEngine;
+    const chatWebNotice = els["setting-chat-web-mode-notice"];
+    if (chatWebNotice) chatWebNotice.hidden = !isWebEngine;
+    const sharedToggle = els["setting-chat-uses-translation-model"];
+    if (sharedToggle) {
+      sharedToggle.disabled = isWebEngine || isWebMachineTranslationProvider(els["setting-provider"]?.value);
+    }
+    const shared = !isWebEngine && Boolean(sharedToggle?.checked);
+    const chatSection = els["setting-chat-model-section"];
+    if (chatSection) chatSection.hidden = !isWebEngine && shared;
     els["settings-dialog"].querySelector(".settings-grid")?.classList.toggle("shared-chat-model", shared);
+    const chatForm = els["setting-chat-form-container"];
+    if (chatForm) chatForm.hidden = Boolean(isWebEngine || shared);
     if (els["settings-dialog"].open) requestAnimationFrame(() => fitSettingsDialog(els["settings-dialog"]));
   }
 
@@ -5462,7 +5548,9 @@
         reasoningEffort: els["setting-chat-reasoning-effort"].value
       }
     };
-    const sharedChatModel = !isWebMachineTranslationProvider(translationProvider)
+    const isWebEngine = Boolean(els["setting-chat-engine-web"]?.checked);
+    const sharedChatModel = !isWebEngine
+      && !isWebMachineTranslationProvider(translationProvider)
       && els["setting-chat-uses-translation-model"].checked;
     const payload = {
       translationProvider,
@@ -5475,6 +5563,7 @@
         : Boolean(state.settings?.deepseekFastLayoutTranslation),
       translationProviderProfiles,
       chatUsesTranslationModel: sharedChatModel,
+      chatEngine: isWebEngine ? "deepseek_web" : "api",
       mineruModel: "vlm",
       // MinerU's stable parsing profile is intentionally not user-configurable.
       mineruOCR: false,
@@ -5751,11 +5840,11 @@
     }
   }
 
-  async function copyText(text) {
+  async function copyText(text, successMessage = "已复制") {
     const value = String(text || "");
     try {
       await navigator.clipboard.writeText(value);
-      toast("已复制");
+      toast(successMessage);
       return;
     }
     catch (_) {}
@@ -5767,7 +5856,7 @@
     textarea.select();
     document.execCommand("copy");
     textarea.remove();
-    toast("已复制");
+    toast(successMessage);
   }
 
   function bindScrollSync() {
@@ -6094,6 +6183,7 @@
       document.documentElement.style.setProperty("--sidebar-width", `${next}px`);
       handle.setAttribute("aria-valuemax", String(maximum));
       handle.setAttribute("aria-valuenow", String(next));
+      syncDeepSeekWebBounds();
     };
     const move = event => {
       if (!dragging) return;
@@ -6366,9 +6456,12 @@
         );
         if (force && !window.confirm("确认重新进行排版翻译？当前译文会继续用于阅读和导出，直到新译文完成并通过校验后自动替换。")) return;
         if (force) setStatus("正在重新翻译 · 当前仍显示上一版，完成后自动替换", null, "running");
+        const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web" || state.settings?.translationProvider === "deepseek_web";
+        const engine = isWeb ? "deepseek_web" : undefined;
+        addLog(`[探针1-工作台] 触发排版翻译: isWeb=${isWeb}, engine=${engine}, aiMode=${state.aiMode}`, "info");
         await runAction(
           "translate-layout",
-          { mode: translationMode, force },
+          { mode: translationMode, force, engine, aiMode: state.aiMode },
           { success: force ? "新版排版译文已完成" : "排版翻译完成" }
         );
         return;
@@ -6377,7 +6470,10 @@
       if (force && !window.confirm("确定重新翻译吗？\n\nLitMTrans会按照当前设置重新生成译文，现有译文会保留到新版完成。")) return;
       state.liveTranslationActive = false;
       state.liveTranslationParts = [];
-      await runAction("translate", { mode: translationMode, force }, { success: force ? "重新翻译完成" : "全文翻译完成" });
+      const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web" || state.settings?.translationProvider === "deepseek_web";
+      const engine = isWeb ? "deepseek_web" : undefined;
+      addLog(`[探针1-工作台] 触发流式翻译: isWeb=${isWeb}, engine=${engine}, aiMode=${state.aiMode}`, "info");
+      await runAction("translate", { mode: translationMode, force, engine, aiMode: state.aiMode }, { success: force ? "重新翻译完成" : "全文翻译完成" });
     };
     els["translate-button"].addEventListener("click", () => { void startTranslation(); });
     const openManualTranslation = async () => {
@@ -6681,6 +6777,14 @@
         `${value || Number(state.settings?.readerFontPt) || 12}pt`
       );
     });
+    els["copy-source-markdown-button"]?.addEventListener("click", () => {
+      const markdown = state.data?.parsed?.markdown;
+      if (!markdown) {
+        toast("尚未解析文献，暂无可复制的原文Markdown", "warning");
+        return;
+      }
+      void copyText(markdown, "已复制原文Markdown");
+    });
     els["swap-panes-button"].addEventListener("click", () => {
       state.swapped = !state.swapped;
       els["reader-split"].classList.toggle("swapped", state.swapped);
@@ -6689,6 +6793,7 @@
       toggleLayoutDebugMode(els["debug-boxes-check"].checked);
     });
     const submitPaperAITask = async taskType => {
+      addLog(`[探针1-工作台] 点击AI任务: ${taskType}, aiMode=${state.aiMode}, settings.chatEngine=${state.settings?.chatEngine}`, "info");
       if (!await ensureParsedBeforeChatSend()) return;
       if (state.running.has("chat")) {
         toast("正在生成回答，请稍候", "warning");
@@ -6728,38 +6833,69 @@
     if (els["ai-mode-web-button"]) {
       els["ai-mode-web-button"].addEventListener("click", () => setAIMode("web"));
     }
-    if (els["deepseek-web-mindmap-button"]) {
-      els["deepseek-web-mindmap-button"].addEventListener("click", () => {
-        const title = String(state.data?.item?.title || "本文").trim();
-        const prompt = `请根据论文《${title}》的内容，以Mermaid的mindmap语法输出核心要点思维导图，包裹在\`\`\`mermaid\`\`\`代码块中，不要输出多余解释。中心节点为论文主题，包含问题背景、核心方法、关键发现、适用边界四个主分支。`;
-        prepareDeepSeekDocumentPrompt(prompt);
-      });
-    }
-    if (els["deepseek-web-flowchart-button"]) {
-      els["deepseek-web-flowchart-button"].addEventListener("click", () => {
-        const title = String(state.data?.item?.title || "本文").trim();
-        const prompt = `请根据论文《${title}》的内容，以Mermaid的graph TD语法输出研究逻辑与证据链流程图，包裹在\`\`\`mermaid\`\`\`代码块中，不要输出多余解释。节点体现从研究痛点、核心假设、方法设计、实验数据到最终推论的有向演进。`;
-        prepareDeepSeekDocumentPrompt(prompt);
-      });
-    }
-    if (els["deepseek-web-reload-button"]) {
-      els["deepseek-web-reload-button"].addEventListener("click", () => {
-        if (els["deepseek-web-frame"]) {
+    const triggerDeepSeekContextMenu = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const screenX = Number(event.screenX || 0);
+      const screenY = Number(event.screenY || 0);
+      const clientX = Number(event.clientX || 0);
+      const clientY = Number(event.clientY || 0);
+      void hostCall("open-deepseek-context-menu", { screenX, screenY }).catch(() => {
+        let menu = document.querySelector(".deepseek-web-context-menu");
+        menu?.remove();
+        menu = document.createElement("div");
+        menu.className = "layout-formula-menu deepseek-web-context-menu";
+        const addAction = (label, action) => {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.textContent = label;
+          item.addEventListener("click", () => {
+            menu.remove();
+            action();
+          });
+          menu.appendChild(item);
+        };
+        addAction("刷新", () => {
           void hostCall("load-deepseek-web", { reload: true })
             .catch(error => toast(`DeepSeek网页加载失败：${error.message || error}`));
-        }
+        });
+        addAction("在浏览器中打开", () => {
+          void hostCall("open-external-url", { url: "https://chat.deepseek.com" });
+        });
+        menu.style.left = `${Math.max(10, clientX)}px`;
+        menu.style.top = `${Math.max(10, clientY)}px`;
+        document.body.appendChild(menu);
+        const closeMenu = (e) => {
+          if (!menu.contains(e.target)) {
+            menu.remove();
+            document.removeEventListener("mousedown", closeMenu);
+          }
+        };
+        setTimeout(() => document.addEventListener("mousedown", closeMenu), 0);
       });
+    };
+
+    if (els["deepseek-web-container"]) {
+      els["deepseek-web-container"].addEventListener("contextmenu", triggerDeepSeekContextMenu);
     }
-    if (els["deepseek-web-external-button"]) {
-      els["deepseek-web-external-button"].addEventListener("click", () => {
-        void hostCall("open-external-url", { url: "https://chat.deepseek.com" });
-      });
+    if (els["ai-mode-web-button"]) {
+      els["ai-mode-web-button"].addEventListener("contextmenu", triggerDeepSeekContextMenu);
     }
     if (typeof ResizeObserver !== "undefined" && els["deepseek-web-frame"]) {
       const observer = new ResizeObserver(() => syncDeepSeekWebBounds());
       observer.observe(els["deepseek-web-frame"]);
     }
     window.addEventListener("resize", () => syncDeepSeekWebBounds());
+
+    const dialogObserver = new MutationObserver(() => syncDeepSeekWebBounds());
+    dialogObserver.observe(document.body, {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ["open"]
+    });
+    for (const dialog of document.querySelectorAll("dialog")) {
+      dialog.addEventListener("close", () => syncDeepSeekWebBounds());
+    }
 
     els["clear-selection-button"].addEventListener("click", () => {
       state.selectedText = "";
@@ -6983,6 +7119,8 @@
       state.reasoning = "";
       state.streamingChatText = "";
       try {
+        const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
+        addLog(`[探针2-工作台] 提交chat-send: isWeb=${isWeb}, engine=${isWeb ? "deepseek_web" : "api"}, taskType=${taskType || "none"}`, "info");
         const result = await hostCall("chat-send", {
           sessionID: state.currentSession?.id,
           text,
@@ -6992,7 +7130,9 @@
           contextMode: "source",
           selectedText: state.selectedText,
           referenceQuotes: state.referenceQuotes,
-          taskType
+          taskType,
+          engine: isWeb ? "deepseek_web" : "api",
+          aiMode: state.aiMode
         });
         state.pendingComposerSubmission = null;
         state.pendingImages = [];
@@ -7151,6 +7291,11 @@
       }
       updateChatModelSectionVisibility();
     });
+    if (els["setting-chat-engine-web"]) {
+      els["setting-chat-engine-web"].addEventListener("change", () => {
+        updateChatModelSectionVisibility();
+      });
+    }
     els["provider-card-api-key"].addEventListener("input", () => {
       const hasValue = Boolean(els["provider-card-api-key"].value.trim());
       const existing = providerCardByID(state.editingProviderCardID);
@@ -7202,6 +7347,8 @@
           : Boolean(settings.streamSyncScroll ?? settings.syncScroll);
         els["sync-scroll-check"].checked = state.syncScroll;
         populateSettings(settings);
+        const preferredMode = settings.chatEngine === "deepseek_web" ? "web" : "api";
+        setAIMode(preferredMode, { syncPref: false });
         renderMode();
         // Connection/model settings affect future translation requests only.
         // Rebuilding an already fitted layout here discards its stable DOM and

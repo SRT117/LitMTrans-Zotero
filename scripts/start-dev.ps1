@@ -2,7 +2,8 @@
 param(
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
-    [switch]$PrepareOnly
+    [switch]$PrepareOnly,
+    [switch]$Validate
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,16 +37,16 @@ if (-not $env:ZOTERO_PLUGIN_KILL_COMMAND) {
 
 Push-Location $projectRoot
 try {
-    Write-Host "[1/3] 运行完整静态验证..." -ForegroundColor Cyan
-    & node "scripts/validate.js"
-    if ($LASTEXITCODE -ne 0) { throw "静态验证失败，未启动Zotero。" }
+    if ($Validate) {
+        Write-Host "运行完整静态验证与单测..." -ForegroundColor Cyan
+        & node "scripts/validate.js"
+        if ($LASTEXITCODE -ne 0) { throw "静态验证失败，未启动Zotero。" }
+    }
 
-    Write-Host "[2/3] 构建测试插件..." -ForegroundColor Cyan
-    & (Join-Path $PSScriptRoot "build-xpi.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "插件构建失败，未启动Zotero。" }
-    & (Join-Path $PSScriptRoot "prepare-dev-addon.ps1")
+    Write-Host "同步测试插件 (dist/addon)..." -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot "prepare-dev-addon.ps1") -ZoteroVersion $testVersion.Version
 
-    Write-Host "[3/3] 启动隔离的Zotero测试库..." -ForegroundColor Cyan
+    Write-Host "启动隔离的Zotero测试库..." -ForegroundColor Cyan
     Write-Host "此窗口使用当前源码的构建结果；无需手动安装XPI。" -ForegroundColor DarkGray
     & (Join-Path $projectRoot "node_modules\.bin\zotero-plugin.cmd") serve
 }

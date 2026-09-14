@@ -21,9 +21,7 @@ AGENTS.md
 CLAUDE.md
 zotero_ai_three_views_codex_execution_spec_v4.md
 docs/deepseek-web-provider-upgrade-plan.md
-repomix.config.json
-repomix-output.*
-scripts/pack-context.mjs
+.patch
 .env
 .env.local
 .env.*.local

@@ -1,6 +1,8 @@
 var LitMTrans;
 var LitMTransController;
 var LitMTransChromeHandle;
+var LitMTransDeepSeekActorError;
+var LitMTransDeepSeekActorFile;
 // Explicit aliases: the bootstrap global is privileged but is not a regular
 // browser Window. Do not rely on version-specific implicit Cc/Ci globals.
 var Cc = Components.classes;
@@ -22,12 +24,72 @@ async function startup({ id, version, rootURI }) {
   litmtransLog(`Starting ${version}`);
   await Zotero.initializationPromise;
 
-  const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"]
-    .getService(Ci.amIAddonManagerStartup);
-  const manifestURI = Services.io.newURI(rootURI + "manifest.json");
-  LitMTransChromeHandle = aomStartup.registerChrome(manifestURI, [
-    ["content", "litmtrans", ""]
-  ]);
+  try {
+    ChromeUtils.importESModule("chrome://zotero/content/actors/ActorManager.mjs");
+  } catch (_) {}
+
+  try {
+    const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"]
+      .getService(Ci.amIAddonManagerStartup);
+    const manifestURI = Services.io.newURI(rootURI + "manifest.json");
+    LitMTransChromeHandle = aomStartup.registerChrome(manifestURI, [
+      ["content", "litmtrans", "", "contentaccessible=yes"]
+    ]);
+  } catch (chromeErr) {
+    litmtransLog(`registerChrome failed: ${chromeErr}`);
+  }
+
+  LitMTransDeepSeekActorError = null;
+  let actorRootURI = rootURI + "src/deepseek-web/";
+  let actorFileName = "DeepSeekActorChild.sys.mjs";
+  try {
+    // 开发目录与 XPI 均从原包读取同一份模块，再使用相同的沙箱可读路径加载。
+    {
+      const actorDirectory = PathUtils.join(Zotero.Profile.dir, "chrome", "litmtrans-deepseek");
+      await IOUtils.makeDirectory(actorDirectory, { createAncestors: true });
+      actorFileName = `DeepSeekActorChild-${Services.uuid.generateUUID().toString().replace(/[{}]/g, "")}.sys.mjs`;
+      const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
+      const channel = NetUtil.newChannel({
+        uri: actorRootURI + "DeepSeekActorChild.sys.mjs",
+        loadUsingSystemPrincipal: true
+      });
+      const actorSource = await Zotero.File.getContentsAsync(channel, "UTF-8");
+      LitMTransDeepSeekActorFile = PathUtils.join(actorDirectory, actorFileName);
+      await IOUtils.writeUTF8(LitMTransDeepSeekActorFile, actorSource);
+      actorRootURI = PathUtils.toFileURI(actorDirectory) + "/";
+    }
+    const resHandler = Services.io.getProtocolHandler("resource")
+      .QueryInterface(Ci.nsIResProtocolHandler);
+    resHandler.setSubstitution("litmtrans-deepseek-actors", Services.io.newURI(actorRootURI));
+  } catch (resErr) {
+    LitMTransDeepSeekActorError = String(resErr);
+    litmtransLog(`setSubstitution failed: ${resErr}`);
+  }
+
+  try {
+    ChromeUtils.unregisterWindowActor("LitMTransDeepSeek");
+  } catch (_) {}
+
+  // ESM 缓存不会随 unregisterWindowActor 清空，开发重载必须使用新的模块地址。
+  const childURI = `resource://litmtrans-deepseek-actors/${actorFileName}?startup=${Date.now()}`;
+  litmtransLog(`Register DeepSeek actor: ${childURI}`);
+  try {
+    if (LitMTransDeepSeekActorError) throw new Error(LitMTransDeepSeekActorError);
+    ChromeUtils.registerWindowActor("LitMTransDeepSeek", {
+      child: {
+        esModuleURI: childURI,
+      },
+      matches: [
+        "https://chat.deepseek.com/*",
+        "https://*.deepseek.com/*"
+      ],
+      allFrames: false,
+    });
+    litmtransLog("LitMTransDeepSeek actor registered");
+  } catch (actorErr) {
+    LitMTransDeepSeekActorError = String(actorErr);
+    litmtransLog(`registerWindowActor failed: ${actorErr}`);
+  }
 
   const scripts = [
     // Keep ZIP decompression independent from the host's nsIZipReader.
@@ -52,11 +114,16 @@ async function startup({ id, version, rootURI }) {
     "src/chat.js",
     "src/pipeline.js",
     "src/icon-reader.js",
+    "src/deepseek-web/stream.js",
+    "src/deepseek-web/pdf-pages.js",
+    "src/deepseek-web/driver.js",
+    "src/deepseek-web/provider.js",
     "src/controller.js"
   ];
   for (const script of scripts) {
     Services.scriptloader.loadSubScript(rootURI + script);
   }
+  LitMTrans.DeepSeekWeb.actorRegistrationError = LitMTransDeepSeekActorError;
 
   LitMTrans.Utils.migrateLegacyPreferences();
   LitMTransController = LitMTrans.createController({ id, version, rootURI });
@@ -98,6 +165,20 @@ async function shutdown(data, reason) {
   catch (_) {}
   LitMTransController = undefined;
   LitMTrans = undefined;
+  try {
+    ChromeUtils.unregisterWindowActor("LitMTransDeepSeek");
+  } catch (_) {}
+  try {
+    const resHandler = Services.io.getProtocolHandler("resource")
+      .QueryInterface(Ci.nsIResProtocolHandler);
+    resHandler.setSubstitution("litmtrans-deepseek-actors", null);
+  } catch (_) {}
+  if (LitMTransDeepSeekActorFile) {
+    try {
+      await IOUtils.remove(LitMTransDeepSeekActorFile, { ignoreAbsent: true });
+    } catch (error) { Zotero.logError(error); }
+    LitMTransDeepSeekActorFile = null;
+  }
   if (LitMTransChromeHandle) {
     LitMTransChromeHandle.destruct();
     LitMTransChromeHandle = null;

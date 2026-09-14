@@ -24,7 +24,7 @@
         <div class="identity-copy">
           <div class="identity-line">
             <h1 id="document-title">LitMTrans</h1>
-            <span id="document-state" class="status-chip status-neutral">正在连接Zotero…</span>
+            <span id="document-state" class="status-chip status-neutral" title="正在连接Zotero…">正在连接Zotero…</span>
           </div>
           <div id="document-subtitle" class="document-subtitle">附件</div>
         </div>
@@ -85,6 +85,7 @@
             <button id="paper-mindmap-button" class="link-button" type="button" title="建立整篇论文的知识结构图">思维导图</button>
             <button id="paper-logic-flow-button" class="link-button" type="button" title="重建论文的研究逻辑与证据链">思路流程</button>
           </div>
+          <button id="copy-source-markdown-button" class="link-button" type="button" title="复制清洗图片占位后的原文Markdown">复制原文Markdown</button>
           <button id="swap-panes-button" class="link-button" type="button" title="交换左右栏">交换左右</button>
           <label id="debug-boxes-control" class="compact-check" title="显示公式与排版区块边界框（快捷键：Ctrl+Shift+D）"><input id="debug-boxes-check" type="checkbox" /> 调试框</label>
         </div>
@@ -165,12 +166,6 @@
         </div>
 
         <div id="deepseek-web-container" class="deepseek-web-container" hidden="hidden">
-          <div class="deepseek-web-quickbar">
-            <button id="deepseek-web-mindmap-button" class="button button-quiet" type="button" title="向网页端发送生成Mermaid思维导图指令">思维导图</button>
-            <button id="deepseek-web-flowchart-button" class="button button-quiet" type="button" title="向网页端发送生成Mermaid逻辑流程图指令">研究逻辑</button>
-            <button id="deepseek-web-reload-button" class="button button-quiet" type="button" title="重新加载网页">刷新</button>
-            <button id="deepseek-web-external-button" class="button button-quiet" type="button" title="在外部默认浏览器中打开">浏览器打开</button>
-          </div>
           <div id="deepseek-web-status" class="deepseek-web-status" role="status" hidden="hidden"></div>
           <div id="deepseek-web-frame" class="deepseek-web-frame" aria-label="DeepSeek网页版"></div>
         </div>
@@ -301,66 +296,79 @@
 
         <section class="settings-section translation-model-section settings-card-model">
           <h3>翻译模型设置</h3>
-          <label class="inline-check shared-model-toggle"><input id="setting-chat-uses-translation-model" type="checkbox" checked="checked" /> 翻译模型与对话模型使用同一个模型</label>
-          <div class="field-with-action">
-            <label><span id="setting-provider-label">服务商</span><select id="setting-provider"></select></label>
-            <button id="translation-provider-cards-button" class="button" type="button">记忆卡片</button>
+          <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span><strong>使用DeepSeek官方网页模式（免API密钥）</strong><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
+          <div id="setting-web-mode-notice" class="web-mode-notice" hidden="hidden">
+            <strong>已开启 DeepSeek 官方网页免 Key 模式</strong>
+            <p>文献翻译与阅读对话均通过 DeepSeek 官方网页端执行。在侧栏登录账号后即可直接使用，无需配置任何API服务商和密钥。如需设置目标语言等翻译偏好，可展开下方的【进阶配置】。</p>
           </div>
-          <label>API密钥<input id="setting-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
-          <label>API地址<input id="setting-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
-          <div class="field-with-action">
-            <label>模型<select id="setting-model"></select></label>
-            <button id="refresh-models-button" class="button" type="button">刷新模型列表</button>
+          <div id="setting-model-form-container">
+            <label class="inline-check shared-model-toggle"><input id="setting-chat-uses-translation-model" type="checkbox" checked="checked" /> 翻译模型与对话模型使用同一个模型</label>
+            <div class="field-with-action">
+              <label><span id="setting-provider-label">服务商</span><select id="setting-provider"></select></label>
+              <button id="translation-provider-cards-button" class="button" type="button">记忆卡片</button>
+            </div>
+            <label>API密钥<input id="setting-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
+            <label>API地址<input id="setting-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+            <div class="field-with-action">
+              <label>模型<select id="setting-model"></select></label>
+              <button id="refresh-models-button" class="button" type="button">刷新模型列表</button>
+            </div>
+            <div class="reasoning-settings-row">
+              <label>思考模式<select id="setting-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
+              <label>思考强度
+                <select id="setting-reasoning-effort">
+                  <option value="default">服务商默认</option>
+                  <option value="minimal">最低</option>
+                  <option value="low">较低</option>
+                  <option value="medium">中等</option>
+                  <option value="high">高</option>
+                  <option value="xhigh">极高</option>
+                  <option value="max">最大</option>
+                </select>
+              </label>
+            </div>
+            <label id="setting-deepseek-fast-layout-group" class="inline-check fast-layout-toggle" hidden="hidden"><input id="setting-deepseek-fast-layout" type="checkbox" /> <span><strong>DeepSeek快速排版翻译（仅在排版模式翻译下生效）</strong><small>利用官方服务的高缓存命中进行并发请求，实现高速翻译</small></span></label>
           </div>
-          <div class="reasoning-settings-row">
-            <label>思考模式<select id="setting-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
-            <label>思考强度
-              <select id="setting-reasoning-effort">
-                <option value="default">服务商默认</option>
-                <option value="minimal">最低</option>
-                <option value="low">较低</option>
-                <option value="medium">中等</option>
-                <option value="high">高</option>
-                <option value="xhigh">极高</option>
-                <option value="max">最大</option>
-              </select>
-            </label>
-          </div>
-          <label id="setting-deepseek-fast-layout-group" class="inline-check fast-layout-toggle" hidden="hidden"><input id="setting-deepseek-fast-layout" type="checkbox" /> <span><strong>DeepSeek快速排版翻译（仅在排版模式翻译下生效）</strong><small>利用官方服务的高缓存命中进行并发请求，实现高速翻译</small></span></label>
         </section>
 
         <section id="setting-chat-model-section" class="settings-section chat-model-section settings-card-chat">
           <h3>对话模型设置</h3>
-          <div class="field-with-action">
-            <label><span id="setting-chat-provider-label">服务商</span><select id="setting-chat-provider"></select></label>
-            <button id="provider-cards-button" class="button" type="button">记忆卡片</button>
+          <div id="setting-chat-web-mode-notice" class="web-mode-notice" hidden="hidden">
+            <strong>对话已启用 DeepSeek 官方网页端</strong>
+            <p>阅读对话将直接在右侧栏网页端中进行，免API密钥。</p>
           </div>
-          <label>API密钥<input id="setting-chat-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
-          <label>API地址<input id="setting-chat-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
-          <div class="field-with-action">
-            <label>模型<select id="setting-chat-model"></select></label>
-            <button id="refresh-chat-models-button" class="button" type="button">刷新模型列表</button>
-          </div>
-          <div class="reasoning-settings-row">
-            <label>思考模式<select id="setting-chat-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
-            <label>思考强度
-              <select id="setting-chat-reasoning-effort">
-                <option value="default">服务商默认</option>
-                <option value="minimal">最低</option>
-                <option value="low">较低</option>
-                <option value="medium">中等</option>
-                <option value="high">高</option>
-                <option value="xhigh">极高</option>
-                <option value="max">最大</option>
-              </select>
-            </label>
-          </div>
-          <div id="setting-chat-image-group" class="conditional-settings" hidden="hidden">
-            <p class="settings-note conditional-settings-note">当前模型支持图片生成或编辑，可在此设置输出规格。</p>
-            <label>图片尺寸<input id="setting-chat-image-size" type="text" list="chat-image-size-list" placeholder="auto / 1024x1024" /></label>
-            <datalist id="chat-image-size-list"><option value="auto"></option><option value="1024x1024"></option><option value="1536x1024"></option><option value="1024x1536"></option><option value="2048x2048"></option><option value="2048x1152"></option><option value="1152x2048"></option><option value="3840x2160"></option><option value="2160x3840"></option></datalist>
-            <label>图片画质<select id="setting-chat-image-quality"><option value="auto">auto</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
-            <label>图片格式<select id="setting-chat-image-format"><option value="png">png</option><option value="jpeg">jpeg</option><option value="webp">webp</option></select></label>
+          <div id="setting-chat-form-container">
+            <div class="field-with-action">
+              <label><span id="setting-chat-provider-label">服务商</span><select id="setting-chat-provider"></select></label>
+              <button id="provider-cards-button" class="button" type="button">记忆卡片</button>
+            </div>
+            <label>API密钥<input id="setting-chat-api-key" type="password" autocomplete="off" placeholder="未配置" /></label>
+            <label>API地址<input id="setting-chat-base-url" type="url" placeholder="https://api.example.com/v1" /></label>
+            <div class="field-with-action">
+              <label>模型<select id="setting-chat-model"></select></label>
+              <button id="refresh-chat-models-button" class="button" type="button">刷新模型列表</button>
+            </div>
+            <div class="reasoning-settings-row">
+              <label>思考模式<select id="setting-chat-thinking-mode"><option value="default">服务商默认</option><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
+              <label>思考强度
+                <select id="setting-chat-reasoning-effort">
+                  <option value="default">服务商默认</option>
+                  <option value="minimal">最低</option>
+                  <option value="low">较低</option>
+                  <option value="medium">中等</option>
+                  <option value="high">高</option>
+                  <option value="xhigh">极高</option>
+                  <option value="max">最大</option>
+                </select>
+              </label>
+            </div>
+            <div id="setting-chat-image-group" class="conditional-settings" hidden="hidden">
+              <p class="settings-note conditional-settings-note">当前模型支持图片生成或编辑，可在此设置输出规格。</p>
+              <label>图片尺寸<input id="setting-chat-image-size" type="text" list="chat-image-size-list" placeholder="auto / 1024x1024" /></label>
+              <datalist id="chat-image-size-list"><option value="auto"></option><option value="1024x1024"></option><option value="1536x1024"></option><option value="1024x1536"></option><option value="2048x2048"></option><option value="2048x1152"></option><option value="1152x2048"></option><option value="3840x2160"></option><option value="2160x3840"></option></datalist>
+              <label>图片画质<select id="setting-chat-image-quality"><option value="auto">auto</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+              <label>图片格式<select id="setting-chat-image-format"><option value="png">png</option><option value="jpeg">jpeg</option><option value="webp">webp</option></select></label>
+            </div>
           </div>
         </section>
 

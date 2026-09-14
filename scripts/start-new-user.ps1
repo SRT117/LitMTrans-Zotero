@@ -2,7 +2,8 @@
 param(
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
-    [switch]$PrepareOnly
+    [switch]$PrepareOnly,
+    [switch]$Validate
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,15 +77,15 @@ function Wait-IsolatedZotero {
 
 Push-Location $projectRoot
 try {
-    Write-Host "[1/3] 静态检查与构建最新待测插件..." -ForegroundColor Cyan
-    & node "scripts/validate.js"
-    if ($LASTEXITCODE -ne 0) { throw "静态验证失败，终止启动。" }
+    if ($Validate) {
+        Write-Host "运行静态验证与单测..." -ForegroundColor Cyan
+        & node "scripts/validate.js"
+        if ($LASTEXITCODE -ne 0) { throw "静态验证失败，终止启动。" }
+    }
 
-    & (Join-Path $PSScriptRoot "build-xpi.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "插件构建失败，终止启动。" }
-
+    Write-Host "[1/3] 同步最新待测插件..." -ForegroundColor Cyan
     $env:ZOTERO_PLUGIN_ZOTERO_BIN_PATH = $testVersion.BinaryPath
-    & (Join-Path $PSScriptRoot "prepare-dev-addon.ps1")
+    & (Join-Path $PSScriptRoot "prepare-dev-addon.ps1") -ZoteroVersion $testVersion.Version
 
     # 安装最新构建的扩展到新用户 Profile 中
     $extensionsDir = Join-Path $profilePath "extensions"

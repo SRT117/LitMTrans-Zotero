@@ -44,6 +44,71 @@
     return base64Function("atob")(String(value || ""));
   }
 
+  function encodeBytesBase64(bytes) {
+    const source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let offset = 0; offset < source.length; offset += chunkSize) {
+      binary += String.fromCharCode(...source.subarray(offset, Math.min(source.length, offset + chunkSize)));
+    }
+    return base64Encode(binary);
+  }
+
+  function detectImageMimeType(bytes, fallback = "image/png") {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (data.length >= 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
+    if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+    if (data.length >= 12 && String.fromCharCode(...data.subarray(0, 4)) === "RIFF" && String.fromCharCode(...data.subarray(8, 12)) === "WEBP") return "image/webp";
+    if (data.length >= 6 && ["GIF87a", "GIF89a"].includes(String.fromCharCode(...data.subarray(0, 6)))) return "image/gif";
+    if (data.length >= 2 && data[0] === 0x42 && data[1] === 0x4d) return "image/bmp";
+    if (data.length >= 12 && data[0] === 0x00 && data[1] === 0x00 && data[2] === 0x00 && data[3] === 0x0c && data[4] === 0x6a && data[5] === 0x50 && data[6] === 0x20 && data[7] === 0x20) return "image/jp2";
+    const prefix = new TextDecoder().decode(data.subarray(0, Math.min(data.length, 256))).replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    if (prefix.startsWith("<svg") || (prefix.startsWith("<?xml") && prefix.includes("<svg"))) return "image/svg+xml";
+    return String(fallback || "image/png").toLowerCase();
+  }
+
+  function decodeImageDataURL(value, win = null) {
+    const raw = String(value || "").trim();
+    const commaIndex = raw.indexOf(",");
+    if (commaIndex === -1 || !/^data:/i.test(raw)) throw new Error("图片数据格式无效");
+    const header = raw.slice(0, commaIndex);
+    const mimeMatch = header.match(/^data:([^;,]+)/i);
+    let declaredMime = (mimeMatch ? mimeMatch[1] : "").toLowerCase().trim();
+    if (declaredMime === "image/jpg" || declaredMime === "image/pjpeg") declaredMime = "image/jpeg";
+    else if (declaredMime === "image/x-png") declaredMime = "image/png";
+    else if (declaredMime === "image/x-ms-bmp") declaredMime = "image/bmp";
+
+    const isBase64 = /;\s*base64(?:\s*;|\s*$)/i.test(header);
+    const payload = raw.slice(commaIndex + 1);
+    let bytes;
+    if (isBase64) {
+      const decoder = win?.atob?.bind(win) || globalThis.atob?.bind(globalThis) || (typeof base64Decode === "function" ? base64Decode : null);
+      if (!decoder) throw new Error("当前Zotero环境不能解码图片数据");
+      const cleanB64 = payload.replace(/\s+/g, "");
+      const binary = decoder(cleanB64);
+      bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    }
+    else {
+      const text = decodeURIComponent(payload);
+      bytes = new TextEncoder().encode(text);
+    }
+
+    const detectedMime = detectImageMimeType(bytes, declaredMime || "image/png");
+    const mimeType = (declaredMime && declaredMime.startsWith("image/") && declaredMime !== "image/x-unknown")
+      ? declaredMime
+      : detectedMime;
+
+    const validMimes = new Set([
+      "image/png", "image/jpeg", "image/webp", "image/gif",
+      "image/bmp", "image/jp2", "image/svg+xml"
+    ]);
+    if (!validMimes.has(mimeType)) {
+      throw new Error("图片数据格式无效");
+    }
+    return { mimeType, bytes };
+  }
+
   const PROVIDERS = Object.freeze({
     free_machine: {
       id: "free_machine",
@@ -67,6 +132,17 @@
       supportsChat: false,
       webMachine: true,
       localMachine: true
+    },
+    deepseek_web: {
+      id: "deepseek_web",
+      name: "DeepSeek 官方网页端",
+      defaultBaseURL: "https://chat.deepseek.com",
+      defaultModel: "deepseek-web",
+      appendV1: false,
+      supportsReasoning: true,
+      supportsImages: true,
+      supportsChat: true,
+      webDriver: true
     },
     deepseek: {
       id: "deepseek",
@@ -434,6 +510,7 @@
 
   function normalizeProviderID(providerID) {
     const requested = String(providerID || "oneapi").trim().toLowerCase();
+    if (requested === "deepseek_web") return "deepseek_web";
     const canonical = PROVIDER_ALIASES[requested]
       || (requested.endsWith("_web") ? "free_machine" : requested);
     return PROVIDERS[canonical] ? canonical : "oneapi";
@@ -444,6 +521,7 @@
   }
 
   function isWebMachineProvider(providerID) {
+    if (providerID === "deepseek_web") return false;
     return Boolean(providerSpec(providerID).webMachine);
   }
 
@@ -607,8 +685,14 @@
       }
       const next = text[index + 1];
       if (next && validSimple.has(next)) {
-        output += char + next;
-        index++;
+        // 若 \b 或 \f 后面紧跟英文字母（如 \bar, \beta, \boldsymbol, \frac 等），实为 LaTeX 宏命令，需转义为 \\
+        if ((next === "b" || next === "f") && /[a-zA-Z]/.test(text[index + 2] || "")) {
+          output += "\\\\";
+        }
+        else {
+          output += char + next;
+          index++;
+        }
       }
       else if (next === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(index + 2, index + 6))) {
         output += text.slice(index, index + 6);
@@ -760,6 +844,9 @@
     redactLocalPaths,
     throttled,
     imageAnchorKey,
-    sharedImageAnchorKeys
+    sharedImageAnchorKeys,
+    encodeBytesBase64,
+    detectImageMimeType,
+    decodeImageDataURL
   };
 })(this);

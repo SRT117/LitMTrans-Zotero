@@ -502,17 +502,7 @@
   }
 
   function decodeImageDataURL(value) {
-    const match = String(value || "").match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/i);
-    if (!match) throw new Error("图片数据格式无效");
-    const mimeType = String(match[1] || "").toLowerCase();
-    if (!IMAGE_MIME_EXTENSIONS[mimeType]) throw new Error(`不支持的图片格式：${mimeType || "未知"}`);
-    let binary;
-    try { binary = U.base64Decode(match[2].replace(/\s+/g, "")); }
-    catch (_) { throw new Error("图片 Base64 数据损坏"); }
-    if (!binary.length) throw new Error("图片内容为空");
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-    return { mimeType, bytes };
+    return U.decodeImageDataURL(value);
   }
 
   function encodeBytesBase64(bytes) {
@@ -2071,11 +2061,19 @@
     }
 
     async generateReply(documentID, session, userIndex, options = {}, emit = null, signal = null) {
-      const resolvedModel = await this.llm.ensureConfiguredModel(
-        this.llm.resolveConfig({ purpose: "chat" }),
-        signal
-      );
-      const settings = { ...this.llm.getSettings("chat"), model: resolvedModel.model };
+      const isWeb = this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+      let resolvedModel;
+      let settings;
+      if (isWeb) {
+        resolvedModel = { provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
+        settings = { ...this.llm.getSettings("chat"), provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
+      } else {
+        resolvedModel = await this.llm.ensureConfiguredModel(
+          this.llm.resolveConfig({ purpose: "chat" }),
+          signal
+        );
+        settings = { ...this.llm.getSettings("chat"), model: resolvedModel.model };
+      }
       this.updateSessionModel(session, emit);
       const insertIndex = userIndex + 1;
       const sourceAlreadyInHistory = session.messages
@@ -2215,7 +2213,13 @@
       };
       const completionOptions = {
         purpose: "chat",
+        documentID,
+        provider: settings.provider,
+        engine: isWeb ? "deepseek_web" : undefined,
+        aiMode: isWeb ? "web" : options.aiMode,
         promptCacheKey: session.apiCacheSessionID,
+        runtime: options.runtime,
+        emit,
         // Reasoning models may take an arbitrary time before emitting a token.
         // The user, rather than a client deadline, controls when to stop.
         timeout: 0,
