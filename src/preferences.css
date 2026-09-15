@@ -38,9 +38,13 @@
 .litmtrans-pref-header #litmtrans-pref-message.error { color: var(--color-red-70, #b42318); }
 .litmtrans-pref-header button { flex: 0 0 auto; min-height: 32px; padding: 4px 16px; font: inherit; font-weight: 600; }
 .litmtrans-pref-header button.primary { background: #000; color: #fff; border-color: #000; }
+.litmtrans-pref-header .litmtrans-pref-header-links { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
 .litmtrans-pref-header button.litmtrans-token-guide-link { min-height: 0; padding: 0; border: 0; background: transparent; color: var(--litmtrans-link); font-size: .88em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .litmtrans-pref-header button.litmtrans-token-guide-link:hover { color: var(--litmtrans-link-hover); text-decoration: underline; }
 .litmtrans-pref-header button.litmtrans-token-guide-link:focus-visible { outline: 2px solid var(--litmtrans-link); outline-offset: 2px; }
+.litmtrans-pref-header .litmtrans-pref-github-link { color: var(--litmtrans-link); font-size: .88em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.litmtrans-pref-header .litmtrans-pref-github-link:hover { color: var(--litmtrans-link-hover); }
+.litmtrans-pref-header .litmtrans-pref-github-link:focus-visible { outline: 2px solid var(--litmtrans-link); outline-offset: 2px; }
 .litmtrans-pref-board { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 0 2px 2px; }
 .litmtrans-pref-column { min-width: 0; display: grid; gap: 12px; align-content: start; }
 .litmtrans-pref-card {

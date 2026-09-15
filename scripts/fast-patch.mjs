@@ -378,8 +378,9 @@ function parsePatch(patchText) {
 // 应用 Patch
 function cmdApply(patchSource) {
   let patchContent = '';
-  if (fs.existsSync(patchSource)) {
-    patchContent = fs.readFileSync(patchSource, 'utf8');
+  const patchFilePath = fs.existsSync(patchSource) ? path.resolve(patchSource) : null;
+  if (patchFilePath) {
+    patchContent = fs.readFileSync(patchFilePath, 'utf8');
   } else {
     patchContent = patchSource;
   }
@@ -474,6 +475,16 @@ function cmdApply(patchSource) {
       }
     } catch {
       // 忽略辅助脚本错误
+    }
+  }
+
+  // 自动垃圾清理：成功落盘后自动删除临时补丁文件，免去 AI 额外调用一次 rm 命令
+  if (patchFilePath && path.extname(patchFilePath).toLowerCase() === '.patch') {
+    try {
+      fs.unlinkSync(patchFilePath);
+      console.log(`🧹 [AUTO CLEANUP] 已自动清理临时补丁文件: ${path.basename(patchFilePath)}`);
+    } catch {
+      // 忽略清理失败
     }
   }
 }

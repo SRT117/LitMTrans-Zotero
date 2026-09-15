@@ -268,35 +268,9 @@
       }
       if (!browser) throw new Error("网页容器尚未就绪，请重试。");
       this.ensureDeepSeekDriver(runtime);
-      const status = doc?.getElementById("deepseek-web-status");
-      const showStatus = text => {
-        if (status) { status.textContent = text; status.hidden = !text; }
-      };
-      if (!browser.getAttribute("data-deepseek-listener")) {
-        browser.setAttribute("data-deepseek-listener", "true");
-        browser.addProgressListener({
-          QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
-          onStateChange: (progress, request, flags, statusCode) => {
-            if (!progress.isTopLevel || !(flags & Ci.nsIWebProgressListener.STATE_STOP)) return;
-            clearTimeout(runtime.deepSeekLoadTimer);
-            showStatus(statusCode ? "网页加载失败，请右键刷新或在浏览器中打开。" : "");
-          }
-        }, Ci.nsIWebProgress.NOTIFY_STATE_NETWORK);
-      }
       if (reload || !browser.getAttribute("data-deepseek-loaded")) {
-        showStatus("正在加载DeepSeek…");
-        clearTimeout(runtime.deepSeekLoadTimer);
-        runtime.deepSeekLoadTimer = setTimeout(() => {
-          showStatus("网页加载时间较长，请右键刷新或在浏览器中打开。");
-        }, 25000);
-        try {
-          browser.loadURI(Services.io.newURI("https://chat.deepseek.com/"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
-          browser.setAttribute("data-deepseek-loaded", "true");
-        } catch (error) {
-          clearTimeout(runtime.deepSeekLoadTimer);
-          showStatus("网页加载失败，请右键刷新或在浏览器中打开。");
-          throw error;
-        }
+        browser.loadURI(Services.io.newURI("https://chat.deepseek.com/"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+        browser.setAttribute("data-deepseek-loaded", "true");
       }
       return { opened: true };
     }
@@ -2259,7 +2233,6 @@
       const runtime = this.tabs.get(tabID);
       if (!runtime) return;
       this.stopOperations(tabID);
-      clearTimeout(runtime.deepSeekLoadTimer);
       try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
       try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
       try { runtime.deepSeekMask?.remove?.(); } catch (_) {}

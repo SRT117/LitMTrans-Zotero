@@ -97,6 +97,7 @@
   let manualTranslationSteps = [];
   let activeManualTranslationStep = 0;
   let lastActionError = "";
+  let copySourceMarkdownBusy = false;
   let manualLayoutTranslations = {};
 
   const $ = id => document.getElementById(id);
@@ -592,6 +593,9 @@
     els["export-pdf-button"].disabled = running || !state.data?.parsed?.markdown;
     els["chat-send-button"].disabled = state.running.has("chat") || state.running.has("document");
     els["chat-document-button"].disabled = state.running.has("chat") || state.running.has("document");
+    if (els["copy-source-markdown-button"]) {
+      els["copy-source-markdown-button"].disabled = copySourceMarkdownBusy || state.running.has("parse");
+    }
     renderPendingDocuments();
     if (!running && state.progress >= 100) setTimeout(() => {
       if (!state.running.size) els["progress-bar"].style.width = "0%";
@@ -5843,9 +5847,19 @@
   async function copyText(text, successMessage = "已复制") {
     const value = String(text || "");
     try {
-      await navigator.clipboard.writeText(value);
-      toast(successMessage);
-      return;
+      const result = await hostCall("clipboard-write-text", { text: value });
+      if (result?.copied) {
+        toast(successMessage);
+        return true;
+      }
+    }
+    catch (_) {}
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        toast(successMessage);
+        return true;
+      }
     }
     catch (_) {}
     const textarea = document.createElement("textarea");
@@ -5853,10 +5867,19 @@
     textarea.style.position = "fixed";
     textarea.style.opacity = "0";
     document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
+    let copied = false;
+    try {
+      textarea.select();
+      copied = document.execCommand("copy") === true;
+    }
+    catch (_) {}
     textarea.remove();
-    toast(successMessage);
+    if (copied) {
+      toast(successMessage);
+      return true;
+    }
+    toast("复制失败，请重试", "warning");
+    return false;
   }
 
   function bindScrollSync() {
@@ -6174,9 +6197,9 @@
     const handle = els["sidebar-split-handle"];
     if (!handle) return;
     const minimum = 240;
-    const preferredMaximum = 640;
+    const minimumReaderWidth = 500;
     let dragging = false;
-    const maximumWidth = () => Math.max(minimum, Math.min(preferredMaximum, els["app"].getBoundingClientRect().width - 500));
+    const maximumWidth = () => Math.max(minimum, els["app"].getBoundingClientRect().width - minimumReaderWidth);
     const apply = width => {
       const maximum = maximumWidth();
       const next = Math.max(Math.min(minimum, maximum), Math.min(maximum, Math.round(width)));
@@ -6210,7 +6233,12 @@
       apply(next);
       event.preventDefault();
     });
-    apply(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width")) || 350);
+    const clampToViewport = () => {
+      const current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width"));
+      apply(Number.isFinite(current) ? current : 350);
+    };
+    window.addEventListener("resize", clampToViewport);
+    clampToViewport();
   }
 
   function syncSplitHandleOrientation() {
@@ -6778,12 +6806,29 @@
       );
     });
     els["copy-source-markdown-button"]?.addEventListener("click", () => {
-      const markdown = state.data?.parsed?.markdown;
-      if (!markdown) {
-        toast("尚未解析文献，暂无可复制的原文Markdown", "warning");
-        return;
-      }
-      void copyText(markdown, "已复制原文Markdown");
+      if (copySourceMarkdownBusy || state.running.has("parse")) return;
+      copySourceMarkdownBusy = true;
+      const button = els["copy-source-markdown-button"];
+      button.disabled = true;
+      void (async () => {
+        try {
+          if (!hasParsedCurrentDocument()) {
+            if (!window.confirm("这篇文献尚未解析。是否立即解析？")) return;
+            const parsed = await runAction("parse");
+            if (!parsed) return;
+          }
+          const markdown = state.data?.parsed?.markdown;
+          if (!markdown) {
+            toast("暂无可复制的原文Markdown", "warning");
+            return;
+          }
+          await copyText(markdown, "已复制原文Markdown");
+        }
+        finally {
+          copySourceMarkdownBusy = false;
+          button.disabled = state.running.has("parse");
+        }
+      })();
     });
     els["swap-panes-button"].addEventListener("click", () => {
       state.swapped = !state.swapped;

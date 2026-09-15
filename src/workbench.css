@@ -469,7 +469,6 @@ body.layout-translated
 .ai-mode-tab:hover { color: var(--ink); background: var(--surface-3); }
 .ai-mode-tab.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .deepseek-web-container { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; background: var(--surface); }
-.deepseek-web-status { padding: 8px; color: var(--muted); font-size: 12px; }
 .deepseek-web-frame { display: flex; flex: 1 1 0; width: 100%; min-height: 0; border: 0; background: var(--surface); }
 .chat-messages { min-height: 0; flex: 1 1 0; overflow-y: auto; overscroll-behavior: contain; padding: 11px 9px 26px; }
 .chat-empty { min-height: 100%; display: grid; place-content: center; justify-items: center; gap: 9px; padding: 24px; color: var(--muted); text-align: center; }
@@ -754,9 +753,13 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .modal-header h2 { margin: 0; font-size: 17px; }
 .modal-header p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
-.modal-header .token-guide-link { margin: 4px 0 0; padding: 0; border: 0; background: transparent; color: var(--link); font: inherit; font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.modal-header .settings-header-links { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.modal-header .token-guide-link { padding: 0; border: 0; background: transparent; color: var(--link); font: inherit; font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .modal-header .token-guide-link:hover { color: var(--link-hover); text-decoration: underline; }
 .modal-header .token-guide-link:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.modal-header .github-link { color: var(--link); font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.modal-header .github-link:hover { color: var(--link-hover); }
+.modal-header .github-link:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .settings-grid { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 12px 16px; }
 .settings-section {
   --settings-section: #5368d9;
