@@ -2213,6 +2213,11 @@
         deepSeekBrowser,
         deepSeekMask,
         bridgeInstalled: false,
+        bridgeInstalling: false,
+        hostReadySent: false,
+        closed: false,
+        pdfPreviewInitializationTask: null,
+        pdfPreviewInitializationTasks: new Set(),
         pendingOpen: { quote: options.quote || null, prompt: String(options.prompt || "") }
       };
       this.tabs.set(tabID, runtime);
@@ -2233,6 +2238,10 @@
       const runtime = this.tabs.get(tabID);
       if (!runtime) return;
       this.stopOperations(tabID);
+      runtime.closed = true;
+      for (const task of runtime.pdfPreviewInitializationTasks || []) {
+        try { task.cancel?.(); } catch (_) {}
+      }
       try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
       try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
       try { runtime.deepSeekMask?.remove?.(); } catch (_) {}
@@ -2242,8 +2251,10 @@
     }
 
     installBridge(runtime) {
+      if (runtime.bridgeInstalling) return false;
       const contentWindow = runtime.browser?.contentWindow;
       if (!contentWindow) return;
+      runtime.bridgeInstalling = true;
       const target = contentWindow.wrappedJSObject || contentWindow;
       const hostCall = (method, payloadJSON, requestID) => {
         let payload = {};
@@ -2251,17 +2262,39 @@
         catch (_) {}
         void this.handleBridgeCall(runtime, String(method || ""), payload, String(requestID || ""));
       };
+      let injected = false;
       try {
         Cu.exportFunction(hostCall, target, { defineAs: "__LitMTrans_HOST_CALL__", allowCrossOriginArguments: true });
+        injected = typeof target.__LitMTrans_HOST_CALL__ === "function";
       }
-      catch (_) {
-        try { target.__LitMTrans_HOST_CALL__ = hostCall; } catch (error) { Zotero.logError(error); }
+      catch (error) {
+        this.log(`LitMTrans bridge exportFunction 失败: ${error}`);
       }
-      runtime.bridgeInstalled = true;
-      this.sendToPage(runtime, { type: "host-ready", payload: { version: this.version } });
+      if (!injected) {
+        try {
+          target.__LitMTrans_HOST_CALL__ = hostCall;
+          injected = typeof target.__LitMTrans_HOST_CALL__ === "function";
+        }
+        catch (error) {
+          this.log(`LitMTrans bridge fallback 注入失败: ${error}`);
+        }
+      }
+      runtime.bridgeInstalled = injected;
+      runtime.bridgeInstalling = false;
+      if (!injected) {
+        this.log("LitMTrans bridge 未建立：页面不可见 __LitMTrans_HOST_CALL__");
+        return false;
+      }
+      const readySent = this.sendToPage(runtime, { type: "host-ready", payload: { version: this.version } });
+      runtime.hostReadySent = readySent;
+      if (!readySent) {
+        this.log("LitMTrans bridge 已注入，但 host-ready 未送达页面");
+      }
       if (runtime.pendingOpen?.quote || runtime.pendingOpen?.prompt) {
-        this.sendToPage(runtime, { type: "open-context", payload: runtime.pendingOpen });
+        const contextSent = this.sendToPage(runtime, { type: "open-context", payload: runtime.pendingOpen });
+        if (!contextSent) this.log("LitMTrans bridge 已注入，但 open-context 未送达页面");
       }
+      return true;
     }
 
     sendToPage(runtime, message) {
@@ -2452,6 +2485,9 @@
         case "operation-state":
           return { operations: [...this.activeOperationMap(runtime.tabID).keys()] };
 
+        case "bridge-handshake":
+          return { ready: true, pluginVersion: this.version, tabID: runtime.tabID };
+
         case "pdf-page-count":
           return this.pdfPageCount(attachmentID);
 
@@ -2467,19 +2503,101 @@
           };
         }
 
+        case "fit-pdf-preview": {
+          if (!runtime.pdfPreview || Number(runtime.pdfPreviewAttachmentID) !== attachmentID) return { available: false };
+          const pdfWindow = runtime.pdfPreview._internalReader?._primaryView?._iframeWindow;
+          const viewer = pdfWindow?.PDFViewerApplication?.pdfViewer;
+          if (!viewer) return { available: false };
+          const container = pdfWindow.document.getElementById("viewerContainer");
+          for (let attempt = 0; attempt < 20; attempt++) {
+            if (Number(container?.clientWidth || 0) > 0 && Number(container?.clientHeight || 0) > 0) break;
+            await Zotero.Promise.delay(50);
+          }
+          if (!Number(container?.clientWidth || 0) || !Number(container?.clientHeight || 0)) return { available: false };
+          viewer.scrollMode = 0;
+          viewer.spreadMode = 0;
+          viewer.currentScaleValue = "page-width";
+          return { available: true, scale: viewer.currentScale, scaleValue: viewer.currentScaleValue };
+        }
+
         case "initialize-pdf-preview": {
+          const activeTask = runtime.pdfPreviewInitializationTask;
+          if (activeTask && !activeTask.done) return { available: false, initializing: true };
+          const task = {
+            done: false,
+            cancelled: false,
+            timedOut: false,
+            openStarted: false,
+            openSettled: true,
+            cleanupRequested: false,
+            cleanupDone: false,
+            preview: null,
+            cancel: null
+          };
+          const tasks = runtime.pdfPreviewInitializationTasks || (runtime.pdfPreviewInitializationTasks = new Set());
+          tasks.add(task);
+          runtime.pdfPreviewInitializationTask = task;
+          const runtimeIsActive = () => this.tabs.get(runtime.tabID) === runtime && !runtime.closed;
+          const finishTask = () => {
+            if (task.openStarted && !task.openSettled) return;
+            task.done = true;
+            tasks.delete(task);
+            if (runtime.pdfPreviewInitializationTask === task) runtime.pdfPreviewInitializationTask = null;
+          };
+          let cleanupPreview = () => {};
+          task.cancel = () => {
+            task.cancelled = true;
+            cleanupPreview();
+          };
+          const ensureTaskActive = () => {
+            if (task.cancelled || !runtimeIsActive()) {
+              task.cancelled = true;
+              cleanupPreview();
+              throw new Error("PDF阅读器初始化已取消");
+            }
+          };
+          const initializePreview = async () => {
           const attachment = await this.resolveAttachment(attachmentID);
           if (!attachment.isPDFAttachment?.()) return { available: false };
-          if (runtime.pdfPreview) return { available: true };
+          ensureTaskActive();
+          if (runtime.pdfPreview && Number(runtime.pdfPreviewAttachmentID) === attachmentID) return { available: true };
+          if (runtime.pdfPreview) {
+            try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
+            try { runtime.pdfPreview.uninit?.(); } catch (_) {}
+            runtime.pdfPreview = null;
+            runtime.pdfPreviewAttachmentID = 0;
+          }
           const frame = runtime.browser?.contentDocument?.getElementById("source-pdf");
           if (!frame) throw new Error("PDF阅读器尚未准备好，请稍后重试");
           await new Promise((resolve, reject) => {
-            const onLoad = () => resolve();
+            let timer = null;
+            const finish = callback => value => {
+              if (timer) clearTimeout(timer);
+              frame.removeEventListener("load", onLoad);
+              callback(value);
+            };
+            const onLoad = finish(resolve);
             frame.addEventListener("load", onLoad, { once: true });
+            timer = setTimeout(() => finish(reject)(new Error("Zotero PDF阅读器页面加载超时")), 15000);
             try { frame.setAttribute("src", "resource://zotero/reader/reader.html"); }
-            catch (error) { frame.removeEventListener("load", onLoad); reject(error); }
+            catch (error) { finish(reject)(error); }
           });
           const preview = await Zotero.Reader.openPreview(attachmentID, frame);
+          // ReaderPreview 面向缩略图，会在 _open() 及阅读器 resize 时强制使用 page-height。
+          // 这里是完整阅读窗格，必须在 _open() 注册监听器前禁用这个实例级策略。
+          const nativeUpdatePDFAttr = preview.updatePDFAttr;
+          const disableThumbnailPDFAttr = () => {};
+          try {
+            Object.defineProperty(preview, "updatePDFAttr", {
+              configurable: true,
+              enumerable: true,
+              writable: true,
+              value: disableThumbnailPDFAttr
+            });
+          }
+          catch (_) {
+            preview.updatePDFAttr = disableThumbnailPDFAttr;
+          }
           // Zotero's ReaderPreview explicitly starts PDF.js with
           // `textLayerMode: 0`. That is ideal for an inert thumbnail, but it
           // removes the DOM text layer altogether: the original PDF remains
@@ -2567,22 +2685,61 @@
             popup.openPopupAtScreen(screenPoint.x, screenPoint.y, true);
             return done.promise;
           };
-          const opened = await preview._open({});
-          if (!opened) {
+          task.preview = preview;
+          cleanupPreview = () => {
+            task.cleanupRequested = true;
+            if (task.openStarted && !task.openSettled) return;
+            if (task.cleanupDone) return;
+            task.cleanupDone = true;
             try { popupset?.remove(); } catch (_) {}
             try { preview.uninit?.(); } catch (_) {}
+            finishTask();
+          };
+          ensureTaskActive();
+          task.openStarted = true;
+          task.openSettled = false;
+          const openPromise = Promise.resolve().then(() => preview._open({}));
+          openPromise.then(
+            () => {
+              task.openSettled = true;
+              if (task.cleanupRequested || task.cancelled || task.timedOut || !runtimeIsActive()) cleanupPreview();
+            },
+            () => {
+              task.openSettled = true;
+              cleanupPreview();
+            }
+          );
+          let openTimer = null;
+          const opened = await Promise.race([
+            openPromise,
+            new Promise((_, reject) => {
+              openTimer = setTimeout(() => reject(new Error("Zotero PDF阅读器初始化超时")), 45000);
+            })
+          ]).catch(error => {
+            // 超时只会结束等待，不能取消 Zotero 内部的 _open()。等它迟到完成
+            // 或失败后再清理，避免旧实例与下一次重试并行存活。
+            task.timedOut = true;
+            cleanupPreview();
+            throw error;
+          }).finally(() => {
+            if (openTimer) clearTimeout(openTimer);
+          });
+          if (!opened) {
+            cleanupPreview();
             throw new Error("无法打开Zotero PDF阅读器");
           }
+          ensureTaskActive();
           // ReaderPreview is intended for compact, single-page previews. Its
           // defaults deliberately hide the viewer scroller and force page
           // mode, which is unsuitable for the workbench's reading pane.
           const pdfWindow = preview._internalReader?._primaryView?._iframeWindow;
           const pdfViewer = pdfWindow?.PDFViewerApplication?.pdfViewer;
           if (!pdfWindow || !pdfViewer) {
-            try { preview.uninit?.(); } catch (_) {}
+            cleanupPreview();
             throw new Error("Zotero PDF阅读器未能加载此页面");
           }
           pdfWindow.removeEventListener("resize", preview.updatePDFAttr);
+          pdfWindow.removeEventListener("resize", nativeUpdatePDFAttr);
           // The selection toolbar (including our “Ask AI” section) belongs
           // to the outer reader.html document, rather than PDF.js's nested
           // iframe. ReaderPreview hides that outer UI by default, so restore
@@ -2608,7 +2765,15 @@
           pdfViewer.scrollMode = 0;
           pdfViewer.spreadMode = 0;
           pdfViewer.currentScaleValue = "page-width";
+          const fitPDFToWidth = () => {
+            pdfViewer.scrollMode = 0;
+            pdfViewer.spreadMode = 0;
+            pdfViewer.currentScaleValue = "page-width";
+          };
+          pdfWindow.addEventListener("resize", fitPDFToWidth, { passive: true });
+          ensureTaskActive();
           runtime.pdfPreview = preview;
+          runtime.pdfPreviewAttachmentID = attachmentID;
           const eventBus = pdfWindow.PDFViewerApplication?.eventBus;
           const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
           const anchorRatio = .35;
@@ -2700,6 +2865,7 @@
               try { viewerContainer?.removeEventListener("scroll", readerScroll); } catch (_) {}
               try { pdfWindow.document.removeEventListener("selectionchange", emitSelection); } catch (_) {}
               try { viewerContainer?.removeEventListener("wheel", zoomOriginalPDF, true); } catch (_) {}
+              try { pdfWindow.removeEventListener("resize", fitPDFToWidth); } catch (_) {}
               try { if (locationFrame) pdfWindow.cancelAnimationFrame(locationFrame); } catch (_) {}
               try { if (selectionFrame) pdfWindow.cancelAnimationFrame(selectionFrame); } catch (_) {}
               try { readerStyle?.remove(); } catch (_) {}
@@ -2708,6 +2874,20 @@
             };
           }
           return { available: true, page: Number(pdfViewer.currentPageNumber || 1) };
+          };
+          try {
+            return await initializePreview();
+          }
+          catch (error) {
+            cleanupPreview();
+            if (task.timedOut) {
+              return { available: false, initializing: true, retryable: false, reopenRequired: true };
+            }
+            throw error;
+          }
+          finally {
+            if (!task.openStarted || task.openSettled) finishTask();
+          }
         }
 
         case "reader-preview-location": {

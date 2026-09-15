@@ -25,6 +25,7 @@
           <div class="identity-line">
             <h1 id="document-title">LitMTrans</h1>
             <span id="document-state" class="status-chip status-neutral" title="正在连接Zotero…">正在连接Zotero…</span>
+            <button id="reconnect-host-button" class="link-button" type="button" hidden="hidden">重新连接</button>
           </div>
           <div id="document-subtitle" class="document-subtitle">附件</div>
         </div>
@@ -98,6 +99,7 @@
                 <h2>开始翻译当前附件</h2>
                 <p>首次翻译会自动提取正文、公式、表格、图片与页面布局；结果只保存在本机Zotero配置目录。</p>
                 <button id="empty-parse-button" class="button button-primary" type="button">开始翻译</button>
+                <button id="retry-source-pdf-button" class="button" type="button" hidden="hidden">重试加载原始PDF</button>
               </div>
               <iframe id="source-pdf" class="source-pdf" title="Zotero Reader原始PDF" hidden="hidden"></iframe>
               <div id="source-content" class="markdown-body" hidden="hidden"></div>

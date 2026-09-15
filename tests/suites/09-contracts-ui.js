@@ -264,6 +264,38 @@ function testDirectExternalLinkOpening() {
   assert.throws(() => controller.openExternalURL(""), /官网地址无效/);
 }
 
+function testPDFPreviewLifecycle() {
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const workbenchXHTML = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  const styles = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+
+  assert(controller.includes('case "fit-pdf-preview":'), "controller must expose a post-layout PDF fitting action");
+  assert(controller.includes('Object.defineProperty(preview, "updatePDFAttr"'), "embedded PDF preview must disable thumbnail-only page-height rewrites");
+  assert(controller.indexOf('Object.defineProperty(preview, "updatePDFAttr"') < controller.indexOf("preview._open({})"), "PDF preview policy must be disabled before ReaderPreview opens");
+  assert(controller.includes('viewer.currentScaleValue = "page-width"'), "PDF fitting action must use PDF.js native page-width scaling");
+  assert(controller.includes("pdfWindow.addEventListener(\"resize\", fitPDFToWidth"), "PDF preview must preserve page-width on nested reader resize");
+  assert(controller.includes("pdfPreviewInitializationTask"), "PDF preview initialization must be runtime-scoped");
+  assert(controller.includes("pdfPreviewInitializationTasks"), "all pending PDF preview tasks must remain discoverable for tab cleanup");
+  assert(controller.includes("task.cancelled"), "late PDF preview initialization must honor cancellation");
+  assert(controller.includes("ensureTaskActive"), "PDF preview must not publish after its runtime is invalid");
+  assert(controller.includes("runtime.bridgeInstalled = injected"), "bridge status must reflect actual injection success");
+  assert(controller.includes("runtime.hostReadySent = readySent"), "bridge startup must record host-ready delivery");
+  assert(controller.includes('case "bridge-handshake":'), "controller must expose a bridge handshake operation");
+  assert(workbench.includes("function scheduleSourcePDFFit"), "workbench must fit PDF after the preview becomes visible");
+  assert(workbench.includes("sourcePDFFailedAttachmentID"), "failed PDF initialization must remain latched instead of immediately retrying");
+  assert(workbench.includes("retrySourcePDF"), "failed PDF initialization must expose an explicit retry path");
+  assert(workbench.includes("sourcePDFRetryBlocked"), "hung PDF initialization must require reopening instead of offering an endless retry");
+  assert(workbenchXHTML.includes('id="retry-source-pdf-button"'), "workbench must expose an explicit PDF retry control");
+  assert(workbench.includes("if (initializePromise) return initializePromise"), "workbench initialization must deduplicate host-ready and polling entry points");
+  assert(workbench.includes("function verifyHostBridge"), "workbench must verify a page-to-host request/response before initialization");
+  assert(workbench.includes("await verifyHostBridge()"), "workbench startup must wait for a successful bridge handshake");
+  assert(workbench.includes("function reconnectHost"), "bridge handshake failure must expose a bounded explicit reconnect path");
+  assert(workbenchXHTML.includes('id="reconnect-host-button"'), "workbench must expose a bridge reconnect control");
+  assert(workbench.includes('classList.toggle("is-initializing", preparingPDF)'), "PDF preview must retain a layout box during initialization");
+  assert(styles.includes(".source-pdf.is-initializing") && styles.includes("opacity: 0"), "initializing PDF preview must remain laid out behind the placeholder");
+}
+
 function testDeepSeekWebSidebarIntegration() {
   const prefs = fs.readFileSync(path.join(root, "src", "prefs.js"), "utf8");
   const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
@@ -317,6 +349,7 @@ function testDeepSeekWebSidebarIntegration() {
     testWorkbenchStreamScrollUsesExclusiveImageTier,
     testConciseStructuredOperationMessages,
     testDirectExternalLinkOpening,
+    testPDFPreviewLifecycle,
     testDeepSeekWebSidebarIntegration,
   };
 };

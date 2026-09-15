@@ -94,6 +94,15 @@
   let sourcePDFAvailable = false;
   let sourcePDFLoading = false;
   let sourcePDFAttachmentID = null;
+  let sourcePDFFailedAttachmentID = null;
+  let sourcePDFRetryBlocked = false;
+  let sourcePDFFittedAttachmentID = null;
+  let sourcePDFFitFrame = 0;
+  let sourcePDFFitRetries = 0;
+  let initializePromise = null;
+  let initializeCompleted = false;
+  let bridgeHandshakePromise = null;
+  let bridgeVerified = false;
   let manualTranslationSteps = [];
   let activeManualTranslationStep = 0;
   let lastActionError = "";
@@ -105,14 +114,14 @@
 
   function cacheElements() {
     for (const id of [
-      "app", "document-title", "document-subtitle", "document-state", "progress-bar", "progress-label",
+      "app", "document-title", "document-subtitle", "document-state", "reconnect-host-button", "progress-bar", "progress-label",
       "manual-translate-button", "translate-button", "stop-button", "export-pdf-button", "clean-reader-button", "clean-reader-ai-button", "settings-button",
       "log-toggle", "log-drawer", "log-content", "log-clear", "log-close", "stream-mode-button", "layout-mode-button",
       "both-panes-button", "source-only-button", "translation-only-button",
       "sync-scroll-check",
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button",
       "copy-source-markdown-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
-      "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "source-pdf", "source-content", "source-layout", "translation-content",
+      "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
       "system-messages-button", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
       "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
@@ -209,8 +218,50 @@
     }
     if (message.type === "event") handleEvent(message.payload || {});
     else if (message.type === "open-context") applyOpenContext(message.payload || {});
-    else if (message.type === "host-ready") void initialize();
+    else if (message.type === "host-ready") void startHost();
   };
+
+  async function verifyHostBridge() {
+    if (bridgeVerified) return true;
+    if (bridgeHandshakePromise) return bridgeHandshakePromise;
+    bridgeHandshakePromise = (async () => {
+      const result = await hostCall("bridge-handshake", {}, { timeout: 5000 });
+      if (!result?.ready) throw new Error("LitMTrans bridge握手未确认");
+      bridgeVerified = true;
+      return true;
+    })().finally(() => {
+      bridgeHandshakePromise = null;
+    });
+    return bridgeHandshakePromise;
+  }
+
+  async function startHost() {
+    try {
+      await verifyHostBridge();
+      await initialize();
+      if (initializeCompleted) els["reconnect-host-button"].hidden = true;
+    }
+    catch (error) {
+      setStatus(error.message, 0, "error");
+      els["reconnect-host-button"].hidden = false;
+      toast(error.message, "error");
+    }
+  }
+
+  async function reconnectHost() {
+    els["reconnect-host-button"].hidden = true;
+    setStatus("正在重新连接Zotero…", 0, "running");
+    bridgeVerified = false;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (hostFunction()) {
+        await startHost();
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    setStatus("LitMTrans未能重新连接，请关闭标签页后重试", 0, "error");
+    els["reconnect-host-button"].hidden = false;
+  }
 
   function imageResolver(target) {
     let value = String(target || "").trim();
@@ -909,20 +960,72 @@
     if (state.mode !== "layout") return;
     const attachmentID = Number(state.data?.item?.attachmentID || 0);
     if (!attachmentID || attachmentID === sourcePDFAttachmentID) return;
+    if (sourcePDFFailedAttachmentID === attachmentID) return;
     sourcePDFAttachmentID = attachmentID;
+    sourcePDFFailedAttachmentID = null;
+    sourcePDFRetryBlocked = false;
+    sourcePDFFittedAttachmentID = null;
+    sourcePDFFitRetries = 0;
     sourcePDFAvailable = false;
     sourcePDFLoading = true;
     void hostCall("initialize-pdf-preview").then(result => {
       if (Number(state.data?.item?.attachmentID || 0) !== attachmentID) return;
+      if (result?.initializing) {
+        sourcePDFLoading = false;
+        sourcePDFFailedAttachmentID = attachmentID;
+        sourcePDFRetryBlocked = true;
+        renderMode();
+        toast("PDF初始化仍未结束，请关闭标签页后重新打开", "error");
+        return;
+      }
       sourcePDFAvailable = Boolean(result?.available);
       sourcePDFLoading = false;
+      sourcePDFRetryBlocked = false;
+      if (!sourcePDFAvailable) {
+        sourcePDFFailedAttachmentID = attachmentID;
+      }
       renderMode();
     }).catch(error => {
       if (Number(state.data?.item?.attachmentID || 0) === attachmentID) {
         sourcePDFLoading = false;
+        sourcePDFFailedAttachmentID = attachmentID;
+        sourcePDFRetryBlocked = false;
         renderMode();
       }
       toast(error.message, "error");
+    });
+  }
+
+  function retrySourcePDF() {
+    const attachmentID = Number(state.data?.item?.attachmentID || 0);
+    if (!attachmentID) return;
+    sourcePDFAttachmentID = null;
+    sourcePDFFailedAttachmentID = null;
+    sourcePDFRetryBlocked = false;
+    sourcePDFAvailable = false;
+    sourcePDFLoading = false;
+    renderMode();
+  }
+
+  function scheduleSourcePDFFit(force = false) {
+    const attachmentID = Number(state.data?.item?.attachmentID || 0);
+    if (!sourcePDFAvailable || !attachmentID) return;
+    if (!force && sourcePDFFittedAttachmentID === attachmentID) return;
+    sourcePDFFittedAttachmentID = attachmentID;
+    if (sourcePDFFitFrame) cancelAnimationFrame(sourcePDFFitFrame);
+    sourcePDFFitFrame = requestAnimationFrame(() => {
+      sourcePDFFitFrame = requestAnimationFrame(() => {
+        sourcePDFFitFrame = 0;
+        void hostCall("fit-pdf-preview", { attachmentID }).then(result => {
+          if (!result?.available) {
+            sourcePDFFittedAttachmentID = null;
+            if (sourcePDFFitRetries++ < 5) setTimeout(() => scheduleSourcePDFFit(), 120);
+          }
+        }).catch(() => {
+          sourcePDFFittedAttachmentID = null;
+          if (sourcePDFFitRetries++ < 5) setTimeout(() => scheduleSourcePDFFit(), 120);
+        });
+      });
     });
   }
 
@@ -2539,7 +2642,7 @@
     const hasLayout = Boolean(state.data?.layout?.model?.pages?.length);
     const hasParsedSource = Boolean(state.data?.parsed?.markdown);
     if (layout) ensureSourcePDF();
-    const showPDF = layout && (sourcePDFLoading || sourcePDFAvailable);
+    const showPDF = layout && sourcePDFAvailable;
     const showParsedSource = !layout && hasParsedSource;
     els["app"].dataset.view = state.mode;
     els["stream-mode-button"].classList.toggle("active", !layout);
@@ -2565,8 +2668,17 @@
         );
       });
     }
+    const preparingPDF = layout && sourcePDFLoading && !sourcePDFAvailable;
+    const sourcePDFFailed = layout && sourcePDFFailedAttachmentID === Number(state.data?.item?.attachmentID || 0);
     els["source-placeholder"].hidden = showPDF || showParsedSource;
-    els["source-pdf"].hidden = !showPDF;
+    els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;
+    els["empty-parse-button"].hidden = layout;
+    // ReaderPreview needs a laid-out iframe to finish PDF.js initialization.
+    // Keep it in the layout tree behind the loading placeholder instead of
+    // using hidden="hidden" (display:none), which deadlocks Zotero 7.
+    els["source-pdf"].hidden = !(showPDF || preparingPDF);
+    els["source-pdf"].classList.toggle("is-initializing", preparingPDF);
+    if (showPDF) scheduleSourcePDFFit();
     els["source-content"].hidden = !showParsedSource;
     // This DOM target is used only for PDF print layout. Stream reading uses
     // parsed Markdown, while layout reading uses Zotero Reader.
@@ -2575,10 +2687,12 @@
       const title = els["source-placeholder"].querySelector("h2");
       const text = els["source-placeholder"].querySelector("p");
       if (layout) {
-        title.textContent = sourcePDFLoading ? "正在加载PDF" : "无法显示原始PDF";
+        title.textContent = sourcePDFLoading ? "正在加载PDF" : (sourcePDFFailed ? "原始PDF加载失败" : "无法显示原始PDF");
         text.textContent = sourcePDFLoading
           ? "原文将在Zotero PDF阅读器中显示。"
-          : "请确认当前附件是PDF，并且可以在Zotero中正常打开。";
+          : (sourcePDFFailed
+            ? (sourcePDFRetryBlocked ? "PDF初始化仍未结束，请关闭标签页后重新打开。" : "可以点击“重试加载原始PDF”，或关闭标签页后重新打开。")
+            : "请确认当前附件是PDF，并且可以在Zotero中正常打开。");
       }
       else {
         title.textContent = "尚未解析文档";
@@ -5608,24 +5722,33 @@
 
   async function initialize() {
     if (!hostFunction()) return;
-    try {
-      setStatus("正在读取文献状态…", 0, "running");
-      const data = await hostCall("initialize");
-      setData(data);
-      // Recover an already-completed translation if the application was closed
-      // between publication and attachment import. The persisted identity
-      // prevents any duplicate generation on ordinary reopen.
-      if (data?.layout?.meta?.complete) requestAnimationFrame(() => queueLayoutPDFAttachmentsAfterFinalPublication());
-      void reconcileOperationState();
-      syncWorkbenchViewport();
-      setStatus(data.capabilities?.hasParsed ? "已就绪" : "尚未解析", 0, data.capabilities?.hasParsed ? "success" : "neutral");
-    }
-    catch (error) {
-      if (!error.cancelled) {
-        setStatus(error.message, 0, "error");
-        toast(error.message, "error");
+    if (initializeCompleted) return;
+    if (initializePromise) return initializePromise;
+    initializePromise = (async () => {
+      try {
+        setStatus("正在读取文献状态…", 0, "running");
+        const data = await hostCall("initialize");
+        setData(data);
+        initializeCompleted = true;
+        // Recover an already-completed translation if the application was closed
+        // between publication and attachment import. The persisted identity
+        // prevents any duplicate generation on ordinary reopen.
+        if (data?.layout?.meta?.complete) requestAnimationFrame(() => queueLayoutPDFAttachmentsAfterFinalPublication());
+        void reconcileOperationState();
+        syncWorkbenchViewport();
+        setStatus(data.capabilities?.hasParsed ? "已就绪" : "尚未解析", 0, data.capabilities?.hasParsed ? "success" : "neutral");
       }
-    }
+      catch (error) {
+        if (!error.cancelled) {
+          setStatus(error.message, 0, "error");
+          toast(error.message, "error");
+        }
+      }
+      finally {
+        initializePromise = null;
+      }
+    })();
+    return initializePromise;
   }
 
   async function refreshState(options = {}) {
@@ -6583,6 +6706,8 @@
       } catch (error) { toast(String(error?.message || error), "error"); }
     });
     els["empty-parse-button"].addEventListener("click", () => els["translate-button"].click());
+    els["reconnect-host-button"].addEventListener("click", reconnectHost);
+    els["retry-source-pdf-button"].addEventListener("click", retrySourcePDF);
     els["stop-button"].addEventListener("click", async () => {
       await hostCall("stop");
       state.running.clear();
@@ -7423,12 +7548,13 @@
   async function waitForHost() {
     for (let attempt = 0; attempt < 120; attempt++) {
       if (hostFunction()) {
-        await initialize();
+        await startHost();
         return;
       }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     setStatus("LitMTrans未能正常启动，请关闭此标签页后重试", 0, "error");
+    els["reconnect-host-button"].hidden = false;
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -7439,6 +7565,7 @@
     window.addEventListener("resize", () => {
       syncWorkbenchViewport();
       syncSplitHandleOrientation();
+      scheduleSourcePDFFit(true);
     });
     void waitForHost();
   }, { once: true });

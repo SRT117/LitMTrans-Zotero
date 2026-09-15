@@ -28,16 +28,12 @@ async function startup({ id, version, rootURI }) {
     ChromeUtils.importESModule("chrome://zotero/content/actors/ActorManager.mjs");
   } catch (_) {}
 
-  try {
-    const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"]
-      .getService(Ci.amIAddonManagerStartup);
-    const manifestURI = Services.io.newURI(rootURI + "manifest.json");
-    LitMTransChromeHandle = aomStartup.registerChrome(manifestURI, [
-      ["content", "litmtrans", "", "contentaccessible=yes"]
-    ]);
-  } catch (chromeErr) {
-    litmtransLog(`registerChrome failed: ${chromeErr}`);
-  }
+  const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"]
+    .getService(Ci.amIAddonManagerStartup);
+  const manifestURI = Services.io.newURI(rootURI + "manifest.json");
+  LitMTransChromeHandle = aomStartup.registerChrome(manifestURI, [
+    ["content", "litmtrans", ""]
+  ]);
 
   LitMTransDeepSeekActorError = null;
   let actorRootURI = rootURI + "src/deepseek-web/";

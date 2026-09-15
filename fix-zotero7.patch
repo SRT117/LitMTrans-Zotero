@@ -1,0 +1,139 @@
+Index: src/controller.js
+===================================================================
+--- src/controller.js
++++ src/controller.js
+@@ -2480,8 +2480,9 @@
+           if (!Number(container?.clientWidth || 0) || !Number(container?.clientHeight || 0)) return { available: false };
+           viewer.scrollMode = 0;
+           viewer.spreadMode = 0;
+           viewer.currentScaleValue = "page-width";
++          try { viewer.update?.(); } catch (_) {}
+           return { available: true, scale: viewer.currentScale, scaleValue: viewer.currentScaleValue };
+         }
+ 
+         case "initialize-pdf-preview": {
+@@ -2509,10 +2510,24 @@
+             catch (error) { finish(reject)(error); }
+           });
+           const preview = await Zotero.Reader.openPreview(attachmentID, frame);
+-          // ReaderPreview 面向缩略图，会在 _open() 及阅读器 resize 时强制使用 page-height。
+-          // 这里是完整阅读窗格，必须在 _open() 注册监听器前禁用这个实例级策略。
++          // ReaderPreview 面向缩略图，默认 _getState() 会返回 { scale: "page-height" }，
++          // 并在 _open() 及阅读器 resize 时强制使用 page-height。
++          // 这里是完整阅读窗格，必须在 _open() 前覆写 _getState 与 updatePDFAttr，
++          // 并向 _open() 传入初始 state: { scale: "page-width" }。
++          preview._getState = async () => ({
++            pageIndex: 0,
++            scale: "page-width",
++            scrollMode: 0,
++            spreadMode: 0
++          });
+           const nativeUpdatePDFAttr = preview.updatePDFAttr;
+-          const disableThumbnailPDFAttr = () => {};
++          const updatePDFToWidth = () => {
++            try {
++              const viewer = preview._internalReader?._primaryView?._iframeWindow?.PDFViewerApplication?.pdfViewer;
++              if (viewer) {
++                viewer.scrollMode = 0;
++                viewer.spreadMode = 0;
++                viewer.currentScaleValue = "page-width";
++              }
++            } catch (_) {}
++          };
++          const disableThumbnailPDFAttr = updatePDFToWidth;
+           try {
+             Object.defineProperty(preview, "updatePDFAttr", {
+               configurable: true,
+               enumerable: true,
+               writable: true,
+               value: disableThumbnailPDFAttr
+             });
+           }
+           catch (_) {
+             preview.updatePDFAttr = disableThumbnailPDFAttr;
+           }
+@@ -2600,7 +2615,13 @@
+           task.openStarted = true;
+           task.openSettled = false;
+-          const openPromise = Promise.resolve().then(() => preview._open({}));
++          const initialReaderState = {
++            pageIndex: 0,
++            scale: "page-width",
++            scrollMode: 0,
++            spreadMode: 0
++          };
++          const openPromise = Promise.resolve().then(() => preview._open({ state: initialReaderState }));
+           openPromise.then(
+             () => {
+               task.openSettled = true;
+@@ -2661,12 +2682,18 @@
+           const fitPDFToWidth = () => {
+             pdfViewer.scrollMode = 0;
+             pdfViewer.spreadMode = 0;
+             pdfViewer.currentScaleValue = "page-width";
+           };
+           pdfWindow.addEventListener("resize", fitPDFToWidth, { passive: true });
++          if (eventBus?.on) {
++            eventBus.on("pagesloaded", fitPDFToWidth);
++            eventBus.on("pagesinit", fitPDFToWidth);
++          }
+           ensureTaskActive();
+           runtime.pdfPreview = preview;
+           runtime.pdfPreviewAttachmentID = attachmentID;
+           const eventBus = pdfWindow.PDFViewerApplication?.eventBus;
+           const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
+           const anchorRatio = .35;
+@@ -2756,6 +2783,8 @@
+               try { viewerContainer?.removeEventListener("scroll", readerScroll); } catch (_) {}
+               try { pdfWindow.document.removeEventListener("selectionchange", emitSelection); } catch (_) {}
+               try { viewerContainer?.removeEventListener("wheel", zoomOriginalPDF, true); } catch (_) {}
+               try { pdfWindow.removeEventListener("resize", fitPDFToWidth); } catch (_) {}
++              try { eventBus?.off?.("pagesloaded", fitPDFToWidth); } catch (_) {}
++              try { eventBus?.off?.("pagesinit", fitPDFToWidth); } catch (_) {}
+               try { if (locationFrame) pdfWindow.cancelAnimationFrame(locationFrame); } catch (_) {}
+               try { if (selectionFrame) pdfWindow.cancelAnimationFrame(selectionFrame); } catch (_) {}
+               try { readerStyle?.remove(); } catch (_) {}
+Index: src/workbench.js
+===================================================================
+--- src/workbench.js
++++ src/workbench.js
+@@ -6295,6 +6295,7 @@
+       const pointer = vertical ? event.clientY : event.clientX;
+       const ratio = Math.max(.22, Math.min(.78, (pointer - origin) / size));
+       document.documentElement.style.setProperty("--source-share", `${ratio * 100}%`);
++      scheduleSourcePDFFit(true);
+     };
+     handle.addEventListener("pointerdown", event => {
+       dragging = true;
+@@ -6303,6 +6304,7 @@
+     });
+     handle.addEventListener("pointermove", move);
+     handle.addEventListener("pointerup", event => {
+       dragging = false;
+       try { handle.releasePointerCapture(event.pointerId); } catch (_) {}
++      scheduleSourcePDFFit(true);
+     });
+     handle.addEventListener("keydown", event => {
+       const vertical = isStacked();
+@@ -6311,6 +6313,7 @@
+       const decrease = vertical ? event.key === "ArrowUp" : event.key === "ArrowLeft";
+       const next = Math.max(22, Math.min(78, current + (decrease ? -3 : 3)));
+       document.documentElement.style.setProperty("--source-share", `${next}%`);
++      scheduleSourcePDFFit(true);
+       event.preventDefault();
+     });
+   }
+Index: tests/suites/09-contracts-ui.js
+===================================================================
+--- tests/suites/09-contracts-ui.js
++++ tests/suites/09-contracts-ui.js
+@@ -270,7 +270,7 @@
+   const styles = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+ 
+   assert(controller.includes('case "fit-pdf-preview":'), "controller must expose a post-layout PDF fitting action");
+   assert(controller.includes('Object.defineProperty(preview, "updatePDFAttr"'), "embedded PDF preview must disable thumbnail-only page-height rewrites");
+-  assert(controller.indexOf('Object.defineProperty(preview, "updatePDFAttr"') < controller.indexOf("preview._open({})"), "PDF preview policy must be disabled before ReaderPreview opens");
++  assert(controller.indexOf('Object.defineProperty(preview, "updatePDFAttr"') < controller.indexOf("preview._open("), "PDF preview policy must be disabled before ReaderPreview opens");
+   assert(controller.includes('viewer.currentScaleValue = "page-width"'), "PDF fitting action must use PDF.js native page-width scaling");
+   assert(controller.includes("Object.defineProperty(preview, \"updatePDFAttr\""), "PDF preview policy override must remain effective on Zotero's ReaderPreview instance");
+   assert(controller.includes("pdfWindow.addEventListener(\"resize\", fitPDFToWidth"), "PDF preview must preserve page-width on nested reader resize");

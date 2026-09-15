@@ -194,9 +194,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .split-handle { min-height: 0; background: var(--line); cursor: col-resize; position: relative; }
 .split-handle::after { content: ""; position: absolute; inset: 0 -3px; }
 .split-handle:hover, .split-handle:focus { background: var(--line-strong); outline: none; }
-.document-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; background: var(--surface-2); }
+.document-scroll { min-height: 0; position: relative; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; background: var(--surface-2); }
 .document-scroll:focus { outline: 1px solid var(--line-strong); outline-offset: -1px; }
 .source-pdf { display: block; width: 100%; height: 100%; min-height: 100%; border: 0; background: var(--surface-2); }
+.source-pdf.is-initializing { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
 .native-pdf-selection-toolbar { position: fixed; z-index: 10000; display: flex; align-items: center; padding: 4px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); box-shadow: 0 5px 18px rgba(0, 0, 0, .18); }
 .native-pdf-selection-toolbar button { min-height: 27px; padding: 3px 10px; border: 0; border-radius: 4px; background: var(--accent); color: var(--accent-ink); font: 600 12px var(--sans); cursor: pointer; }
 .native-pdf-selection-toolbar button:hover { filter: brightness(.94); }
