@@ -85,6 +85,7 @@
             <button id="key-points-button" class="link-button" type="button" title="根据自定义要求提炼全文要点">要点提炼</button>
             <button id="paper-mindmap-button" class="link-button" type="button" title="建立整篇论文的知识结构图">思维导图</button>
             <button id="paper-logic-flow-button" class="link-button" type="button" title="重建论文的研究逻辑与证据链">思路流程</button>
+            <button id="prompt-library-button" class="link-button" type="button" title="保存和管理常用提示词">常用提示词</button>
           </div>
           <button id="copy-source-markdown-button" class="link-button" type="button" title="复制清洗图片占位后的原文Markdown">复制原文Markdown</button>
           <button id="swap-panes-button" class="link-button" type="button" title="交换左右栏">交换左右</button>
@@ -465,6 +466,31 @@
           <div id="system-messages-list" class="system-messages-list"></div>
         </section>
       </div>
+    </div>
+  </dialog>
+
+  <dialog id="prompt-library-dialog" class="modal prompt-library-modal" aria-label="常用提示词">
+    <div class="modal-card prompt-library-card">
+      <header class="modal-header">
+        <div><h2>常用提示词</h2></div>
+        <button id="prompt-library-close" class="icon-button" type="button" aria-label="关闭常用提示词" title="关闭">×</button>
+      </header>
+      <div class="prompt-library-grid">
+        <div class="prompt-library-list-panel">
+          <div id="prompt-library-list" class="prompt-library-list" role="group" aria-label="提示词条目"></div>
+          <button id="prompt-library-new" class="button" type="button">新建条目</button>
+          <button id="prompt-library-delete" class="button button-danger-quiet" type="button">删除条目</button>
+        </div>
+        <div class="prompt-library-editor">
+          <label>条目名称<input id="prompt-library-title" type="text" placeholder="给这条提示词起个名字" maxlength="80" /></label>
+          <label class="prompt-library-content-label">提示词内容<textarea id="prompt-library-content" placeholder="输入要保存的提示词"></textarea></label>
+          <div class="prompt-library-editor-actions">
+            <button id="prompt-library-copy" class="button button-primary" type="button">复制提示词</button>
+            <span id="prompt-library-save-state" class="prompt-library-save-state" role="status"></span>
+          </div>
+        </div>
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button id="prompt-library-done" class="button" type="button">关闭</button></footer>
     </div>
   </dialog>
 

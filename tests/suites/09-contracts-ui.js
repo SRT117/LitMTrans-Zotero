@@ -272,7 +272,7 @@ function testPDFPreviewLifecycle() {
 
   assert(controller.includes('case "fit-pdf-preview":'), "controller must expose a post-layout PDF fitting action");
   assert(controller.includes('Object.defineProperty(preview, "updatePDFAttr"'), "embedded PDF preview must disable thumbnail-only page-height rewrites");
-  assert(controller.indexOf('Object.defineProperty(preview, "updatePDFAttr"') < controller.indexOf("preview._open({})"), "PDF preview policy must be disabled before ReaderPreview opens");
+  assert(controller.indexOf('Object.defineProperty(preview, "updatePDFAttr"') < controller.indexOf("preview._open("), "PDF preview policy must be disabled before ReaderPreview opens");
   assert(controller.includes('viewer.currentScaleValue = "page-width"'), "PDF fitting action must use PDF.js native page-width scaling");
   assert(controller.includes("pdfWindow.addEventListener(\"resize\", fitPDFToWidth"), "PDF preview must preserve page-width on nested reader resize");
   assert(controller.includes("pdfPreviewInitializationTask"), "PDF preview initialization must be runtime-scoped");

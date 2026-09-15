@@ -2517,6 +2517,7 @@
           viewer.scrollMode = 0;
           viewer.spreadMode = 0;
           viewer.currentScaleValue = "page-width";
+          try { viewer.update?.(); } catch (_) {}
           return { available: true, scale: viewer.currentScale, scaleValue: viewer.currentScaleValue };
         }
 
@@ -2583,10 +2584,28 @@
             catch (error) { finish(reject)(error); }
           });
           const preview = await Zotero.Reader.openPreview(attachmentID, frame);
-          // ReaderPreview 面向缩略图，会在 _open() 及阅读器 resize 时强制使用 page-height。
-          // 这里是完整阅读窗格，必须在 _open() 注册监听器前禁用这个实例级策略。
+          // ReaderPreview 面向缩略图，默认 _getState() 会返回 { scale: "page-height" }，
+          // 并在 _open() 及阅读器 resize 时强制使用 page-height。
+          // 这里是完整阅读窗格，必须在 _open() 前覆写 _getState 与 updatePDFAttr，
+          // 并向 _open() 传入初始 state: { scale: "page-width" }。
+          preview._getState = async () => ({
+            pageIndex: 0,
+            scale: "page-width",
+            scrollMode: 0,
+            spreadMode: 0
+          });
           const nativeUpdatePDFAttr = preview.updatePDFAttr;
-          const disableThumbnailPDFAttr = () => {};
+          const updatePDFToWidth = () => {
+            try {
+              const viewer = preview._internalReader?._primaryView?._iframeWindow?.PDFViewerApplication?.pdfViewer;
+              if (viewer) {
+                viewer.scrollMode = 0;
+                viewer.spreadMode = 0;
+                viewer.currentScaleValue = "page-width";
+              }
+            } catch (_) {}
+          };
+          const disableThumbnailPDFAttr = updatePDFToWidth;
           try {
             Object.defineProperty(preview, "updatePDFAttr", {
               configurable: true,
@@ -2698,7 +2717,15 @@
           ensureTaskActive();
           task.openStarted = true;
           task.openSettled = false;
-          const openPromise = Promise.resolve().then(() => preview._open({}));
+          const initialReaderState = {
+            pageIndex: 0,
+            scale: "page-width",
+            scrollMode: 0,
+            spreadMode: 0
+          };
+          const openPromise = Promise.resolve().then(() => preview._open({
+            state: initialReaderState
+          }));
           openPromise.then(
             () => {
               task.openSettled = true;
@@ -2766,15 +2793,21 @@
           pdfViewer.spreadMode = 0;
           pdfViewer.currentScaleValue = "page-width";
           const fitPDFToWidth = () => {
-            pdfViewer.scrollMode = 0;
-            pdfViewer.spreadMode = 0;
-            pdfViewer.currentScaleValue = "page-width";
+            try {
+              pdfViewer.scrollMode = 0;
+              pdfViewer.spreadMode = 0;
+              pdfViewer.currentScaleValue = "page-width";
+            } catch (_) {}
           };
           pdfWindow.addEventListener("resize", fitPDFToWidth, { passive: true });
           ensureTaskActive();
           runtime.pdfPreview = preview;
           runtime.pdfPreviewAttachmentID = attachmentID;
           const eventBus = pdfWindow.PDFViewerApplication?.eventBus;
+          if (eventBus?.on) {
+            eventBus.on("pagesloaded", fitPDFToWidth);
+            eventBus.on("pagesinit", fitPDFToWidth);
+          }
           const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
           const anchorRatio = .35;
           let locationFrame = 0;
@@ -2861,6 +2894,8 @@
           }
           if (eventBus?.on || viewerContainer) {
             runtime.pdfPreviewCleanup = () => {
+              try { eventBus?.off?.("pagesloaded", fitPDFToWidth); } catch (_) {}
+              try { eventBus?.off?.("pagesinit", fitPDFToWidth); } catch (_) {}
               try { eventBus?.off?.("pagechanging", emitLocation); } catch (_) {}
               try { viewerContainer?.removeEventListener("scroll", readerScroll); } catch (_) {}
               try { pdfWindow.document.removeEventListener("selectionchange", emitSelection); } catch (_) {}
@@ -3176,6 +3211,8 @@
           return this.saveMinerUToken(payload.token);
         case "save-settings":
           return this.saveSettings(payload);
+        case "save-prompt-library":
+          return this.savePromptLibrary(payload.library);
         case "list-models":
           return this.withOperation(runtime, "models", (signal) => this.listModels(payload, signal));
         case "probe-siliconflow-thinking":
@@ -3285,6 +3322,7 @@
         chatAPIKey: this.secrets.getLLMKey(chat.provider),
         mineruToken: this.secrets.getMinerUToken(),
         layoutReaderFonts,
+        promptLibrary: this.promptLibrary(),
         hasChatAPIKey: chat.hasAPIKey,
         providers: Object.values(LitMTrans.Constants.PROVIDERS).map(spec => ({
           id: spec.id,
@@ -3296,6 +3334,31 @@
           supportsChat: spec.supportsChat !== false && !U.isWebMachineProvider(spec.id)
         }))
       };
+    }
+
+    savePromptLibrary(library) {
+      const rows = (Array.isArray(library) ? library : []).map(item => ({
+        id: String(item?.id || "").replace(/[^A-Za-z0-9_-]+/g, "") || U.randomID("prompt"),
+        title: String(item?.title || "").trim().slice(0, 80),
+        content: String(item?.content || "")
+      })).filter(item => item.id && (item.title || item.content));
+      U.setPref("promptLibrary", JSON.stringify(rows));
+      return this.promptLibrary();
+    }
+
+    promptLibrary() {
+      let rows = [];
+      try {
+        const raw = U.getPref("promptLibrary", "[]");
+        rows = Array.isArray(raw) ? raw : JSON.parse(String(raw || "[]"));
+      }
+      catch (_) {}
+      if (!Array.isArray(rows)) rows = [];
+      return rows.map(item => ({
+        id: String(item?.id || ""),
+        title: String(item?.title || "").trim().slice(0, 80),
+        content: String(item?.content || "")
+      })).filter(item => item.id && (item.title || item.content));
     }
 
     getProviderAPIKey(providerID) {

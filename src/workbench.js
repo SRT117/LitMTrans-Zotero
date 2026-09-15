@@ -74,6 +74,7 @@
     editingProviderCardID: "",
     providerCardPurpose: "chat",
     providerCardKeyLoading: false,
+    editingPromptID: "",
     syncSource: null,
     syncFrame: null,
     logEntries: [],
@@ -108,6 +109,7 @@
   let lastActionError = "";
   let copySourceMarkdownBusy = false;
   let manualLayoutTranslations = {};
+  let promptLibrarySaveTimer = 0;
 
   const $ = id => document.getElementById(id);
   const els = {};
@@ -119,7 +121,7 @@
       "log-toggle", "log-drawer", "log-content", "log-clear", "log-close", "stream-mode-button", "layout-mode-button",
       "both-panes-button", "source-only-button", "translation-only-button",
       "sync-scroll-check",
-      "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button",
+      "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button", "prompt-library-button",
       "copy-source-markdown-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
@@ -147,6 +149,8 @@
       "save-provider-card", "apply-provider-card",
       "image-preview-dialog", "image-preview-image", "image-preview-scale", "image-preview-zoom-out", "image-preview-zoom-in",
       "image-preview-fit", "image-preview-reuse", "image-preview-copy", "image-preview-save", "image-preview-close",
+      "prompt-library-dialog", "prompt-library-close", "prompt-library-done", "prompt-library-list", "prompt-library-new",
+      "prompt-library-delete", "prompt-library-title", "prompt-library-content", "prompt-library-copy", "prompt-library-save-state",
       "formula-preview-dialog", "formula-preview-viewport", "formula-preview-stage", "formula-preview-body",
       "formula-preview-scale", "formula-preview-zoom-out", "formula-preview-zoom-in", "formula-preview-fit",
       "formula-preview-ask", "formula-preview-copy", "formula-preview-close", "toast-region"
@@ -5645,6 +5649,111 @@
     return applied.card;
   }
 
+  function promptLibraryRows() {
+    if (!state.settings) state.settings = {};
+    if (!Array.isArray(state.settings.promptLibrary)) state.settings.promptLibrary = [];
+    return state.settings.promptLibrary;
+  }
+
+  function selectedPrompt() {
+    return promptLibraryRows().find(item => item.id === state.editingPromptID) || null;
+  }
+
+  function setPromptLibrarySaveState(kind, text) {
+    const node = els["prompt-library-save-state"];
+    node.textContent = text;
+    if (kind) node.dataset.state = kind;
+    else delete node.dataset.state;
+  }
+
+  function renderPromptLibraryEditor() {
+    const item = selectedPrompt();
+    els["prompt-library-title"].value = item ? item.title : "";
+    els["prompt-library-content"].value = item ? item.content : "";
+    els["prompt-library-title"].disabled = !item;
+    els["prompt-library-content"].disabled = !item;
+    els["prompt-library-copy"].disabled = !item;
+    if (!item) setPromptLibrarySaveState("", "");
+  }
+
+  function renderPromptLibrary(selectID = state.editingPromptID) {
+    const rows = promptLibraryRows();
+    const target = rows.some(item => item.id === selectID) ? selectID : (rows[0]?.id || "");
+    state.editingPromptID = target;
+    const list = els["prompt-library-list"];
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "prompt-library-empty";
+      empty.textContent = "还没有保存的提示词，点击下方“新建条目”开始。";
+      list.replaceChildren(empty);
+    }
+    else {
+      list.replaceChildren(...rows.map(item => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "prompt-library-item";
+        button.dataset.id = item.id;
+        button.textContent = item.title.trim() || "未命名条目";
+        button.title = item.title.trim() || "未命名条目";
+        button.classList.toggle("active", item.id === target);
+        button.addEventListener("click", () => {
+          if (item.id === state.editingPromptID) return;
+          void flushPromptLibrarySave();
+          state.editingPromptID = item.id;
+          renderPromptLibraryEditor();
+          for (const node of list.children) {
+            node.classList.toggle("active", node.dataset?.id === item.id);
+          }
+        });
+        return button;
+      }));
+    }
+    renderPromptLibraryEditor();
+  }
+
+  function newPromptEntry() {
+    void flushPromptLibrarySave();
+    const rows = promptLibraryRows();
+    const item = {
+      id: `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      title: "",
+      content: ""
+    };
+    rows.push(item);
+    renderPromptLibrary(item.id);
+    els["prompt-library-title"].focus();
+  }
+
+  function schedulePromptLibrarySave() {
+    setPromptLibrarySaveState("saving", "正在保存…");
+    clearTimeout(promptLibrarySaveTimer);
+    promptLibrarySaveTimer = setTimeout(() => { void persistPromptLibrary(); }, 500);
+  }
+
+  async function persistPromptLibrary() {
+    clearTimeout(promptLibrarySaveTimer);
+    promptLibrarySaveTimer = 0;
+    const cleaned = promptLibraryRows()
+      .map(item => ({ id: item.id, title: String(item.title || "").trim(), content: String(item.content || "") }))
+      .filter(item => item.title || item.content);
+    const selectionSurvives = cleaned.some(item => item.id === state.editingPromptID);
+    try {
+      const saved = await hostCall("save-prompt-library", { library: cleaned });
+      state.settings = { ...(state.settings || {}), promptLibrary: saved };
+      if (!selectionSurvives) renderPromptLibrary("");
+      setPromptLibrarySaveState("", "已自动保存");
+    }
+    catch (error) {
+      setPromptLibrarySaveState("error", "保存失败");
+      toast(error.message, "error");
+    }
+  }
+
+  function flushPromptLibrarySave() {
+    if (!promptLibrarySaveTimer) return Promise.resolve();
+    return persistPromptLibrary();
+  }
+
   function settingsPayload() {
     const translationProvider = els["setting-provider"].value;
     const chatProvider = els["setting-chat-provider"].value;
@@ -6303,6 +6412,7 @@
     handle.addEventListener("pointerup", event => {
       dragging = false;
       try { handle.releasePointerCapture(event.pointerId); } catch (_) {}
+      scheduleSourcePDFFit(true);
     });
     handle.addEventListener("keydown", event => {
       const vertical = isStacked();
@@ -6312,6 +6422,7 @@
       const decrease = vertical ? event.key === "ArrowUp" : event.key === "ArrowLeft";
       const next = Math.max(22, Math.min(78, current + (decrease ? -3 : 3)));
       document.documentElement.style.setProperty("--source-share", `${next}%`);
+      scheduleSourcePDFFit(true);
       event.preventDefault();
     });
   }
@@ -6840,6 +6951,54 @@
         toast(`已删除记忆卡片：${card.name}`);
       }
       catch (error) { toast(error.message, "error"); }
+    });
+    els["prompt-library-button"].addEventListener("click", () => {
+      void flushPromptLibrarySave();
+      renderPromptLibrary();
+      els["prompt-library-dialog"].showModal();
+      if (!selectedPrompt() && promptLibraryRows().length) els["prompt-library-title"].focus();
+    });
+    els["prompt-library-close"].addEventListener("click", () => els["prompt-library-dialog"].close());
+    els["prompt-library-done"].addEventListener("click", () => els["prompt-library-dialog"].close());
+    els["prompt-library-dialog"].addEventListener("close", () => { void flushPromptLibrarySave(); });
+    els["prompt-library-new"].addEventListener("click", newPromptEntry);
+    els["prompt-library-delete"].addEventListener("click", () => {
+      clearTimeout(promptLibrarySaveTimer);
+      promptLibrarySaveTimer = 0;
+      const rows = promptLibraryRows();
+      const item = selectedPrompt();
+      if (!item) return toast("左侧没有可删除的条目", "warning");
+      const name = item.title.trim() || "未命名条目";
+      if (!window.confirm(`确定删除“${name}”吗？`)) return;
+      const index = rows.indexOf(item);
+      rows.splice(index, 1);
+      const next = rows[index] || rows[index - 1] || null;
+      renderPromptLibrary(next ? next.id : "");
+      void persistPromptLibrary();
+    });
+    els["prompt-library-title"].addEventListener("input", () => {
+      const item = selectedPrompt();
+      if (!item) return;
+      item.title = els["prompt-library-title"].value;
+      const node = els["prompt-library-list"].querySelector(`.prompt-library-item[data-id="${CSS.escape(item.id)}"]`);
+      if (node) {
+        node.textContent = item.title.trim() || "未命名条目";
+        node.title = item.title.trim() || "未命名条目";
+      }
+      schedulePromptLibrarySave();
+    });
+    els["prompt-library-content"].addEventListener("input", () => {
+      const item = selectedPrompt();
+      if (!item) return;
+      item.content = els["prompt-library-content"].value;
+      schedulePromptLibrarySave();
+    });
+    els["prompt-library-copy"].addEventListener("click", async () => {
+      const item = selectedPrompt();
+      if (!item) return toast("请先在左侧选择条目", "warning");
+      const text = String(item.content || "").trim();
+      if (!text) return toast("这条提示词还没有内容", "warning");
+      await copyText(text, "提示词已复制");
     });
     els["stream-mode-button"].addEventListener("click", () => {
       captureModeScrollPosition();
