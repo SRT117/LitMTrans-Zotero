@@ -79,6 +79,7 @@
     return doc.createElement("canvas");
   }
 
+  // 特权域自加载渲染：文档实例与画布同域（备选路径，见 renderAndCachePages）
   async function renderSinglePageToCanvas(pdfDoc, pageNum, doc) {
     const page = await pdfDoc.getPage(pageNum);
     const viewport = page.getViewport({ scale: DPI_SCALE });
@@ -127,57 +128,217 @@
       return PathUtils.join(docDir, "deepseek-web", "pages-v2");
     }
 
-    async resolvePDFDocument(runtime, documentID) {
-      const existingDoc = runtime?.pdfPreview?._internalReader?._primaryView?._iframeWindow?.PDFViewerApplication?.pdfDocument;
-      if (existingDoc && existingDoc.numPages > 0) return existingDoc;
-
-      const attachmentID = runtime?.attachmentID || (documentID ? Number(String(documentID).split("-")[1]) : null);
-
-      let pdfjsLib = runtime?.pdfPreview?._internalReader?._primaryView?._iframeWindow?.pdfjsLib;
-      for (const reader of (Zotero.Reader?._readers || [])) {
-        const doc = reader?._internalReader?._primaryView?._iframeWindow?.PDFViewerApplication?.pdfDocument;
-        if (doc && doc.numPages > 0 && attachmentID && (reader.itemID === attachmentID || reader._itemID === attachmentID)) {
-          return doc;
-        }
-        if (!pdfjsLib) {
-          pdfjsLib = reader?._internalReader?._primaryView?._iframeWindow?.pdfjsLib;
-        }
+    // 主渲染路径：预览 iframe 是 content 域页面，pdf.js 文档、页面代理与画布
+    // 天然同域，getViewport/render 等原型方法完整可用。特权域若直接跨 Realm
+    // 调用页面代理会报 "page.getViewport is not a function"；若在特权域自加载
+    // pdf.js 又会因 Map.prototype 等内置原型被冻结而导入失败。因此渲染动作
+    // 全部在 iframe 一侧的原始对象上执行，最终只把 dataURL 字符串传回特权域。
+    getPreviewIframeContext(runtime, diagnostics = []) {
+      const iframeWindow = runtime?.pdfPreview?._internalReader?._primaryView?._iframeWindow;
+      if (!iframeWindow) {
+        diagnostics.push("未找到预览 iframe 窗口（pdfPreview._internalReader._primaryView._iframeWindow 不可用）");
+        return null;
       }
-
-      if (!pdfjsLib) {
-        try {
-          const mod = ChromeUtils.importESModule("resource://pdf.js/build/pdf.mjs");
-          pdfjsLib = mod?.pdfjsLib || mod;
-        } catch (_) {
-          try {
-            const mod = ChromeUtils.import("resource://zotero/pdf.js");
-            pdfjsLib = mod?.pdfjsLib || mod;
-          } catch (_) {}
-        }
+      let cw = null;
+      try {
+        // Xray 不存在或已 waive 的情况下兜底直接使用该窗口
+        cw = iframeWindow.wrappedJSObject || iframeWindow;
+      } catch (_) {}
+      if (!cw?.document?.createElement) {
+        diagnostics.push("无法访问预览 iframe 的 content 域 document");
+        return null;
       }
+      const pdfDocument = cw.PDFViewerApplication?.pdfDocument;
+      if (!pdfDocument || !(pdfDocument.numPages > 0) || typeof pdfDocument.getPage !== "function") {
+        diagnostics.push("iframe 内 PDFViewerApplication.pdfDocument 不可用（文献可能尚未在预览中打开）");
+        return null;
+      }
+      return { cw, cdoc: cw.document, pdfDocument };
+    }
 
-      if (pdfjsLib && attachmentID) {
-        try {
-          const item = await Zotero.Items.getAsync(attachmentID);
-          if (item?.isAttachment()) {
-            const filePath = await item.getFilePathAsync();
-            if (filePath && await IOUtils.exists(filePath)) {
-              const data = await IOUtils.read(filePath);
-              const loadingTask = pdfjsLib.getDocument({ data });
-              return await loadingTask.promise;
-            }
+    // 在预览 iframe 的 content 域内渲染一组页面并横向拼接，返回 JPEG dataURL。
+    // 跨 Realm 直接调用页面代理的方法在 Gecko 包装下会丢失（page.getViewport
+    // 报 "not a function"），因此把整段渲染逻辑放进 iframe 自身域内 eval 执行，
+    // 让 pdf.js 的文档、页面代理与画布天然同域；注入参数仅为数字，结果以
+    // JSON 字符串回传（字符串跨 Realm 无损）。
+    async renderGroupInPreview(ctx, pageNums) {
+      const { cw } = ctx;
+      const code = `
+        (async () => {
+          const pdfDocument = window.PDFViewerApplication && window.PDFViewerApplication.pdfDocument;
+          if (!pdfDocument) return JSON.stringify({ ok: false, error: "PDFViewerApplication.pdfDocument 不可用" });
+          const pages = ${JSON.stringify(pageNums)};
+          const scale = ${DPI_SCALE};
+          const quality = ${JPEG_QUALITY};
+          const canvases = [];
+          for (const pageNum of pages) {
+            const page = await pdfDocument.getPage(pageNum);
+            const viewport = page.getViewport({ scale: scale });
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(viewport.width);
+            canvas.height = Math.round(viewport.height);
+            const g = canvas.getContext("2d");
+            if (!g) return JSON.stringify({ ok: false, error: "iframe 画布 2D 上下文不可用" });
+            g.fillStyle = "#ffffff";
+            g.fillRect(0, 0, canvas.width, canvas.height);
+            await page.render({ canvasContext: g, viewport: viewport }).promise;
+            canvases.push(canvas);
           }
-        } catch (_) {}
+          let out = canvases[0];
+          if (canvases.length > 1) {
+            const totalWidth = canvases.reduce((sum, c) => sum + c.width, 0);
+            const maxHeight = Math.max.apply(null, canvases.map(c => c.height));
+            out = document.createElement("canvas");
+            out.width = totalWidth;
+            out.height = maxHeight;
+            const g = out.getContext("2d");
+            if (!g) return JSON.stringify({ ok: false, error: "iframe 拼接画布 2D 上下文不可用" });
+            g.fillStyle = "#ffffff";
+            g.fillRect(0, 0, totalWidth, maxHeight);
+            let xOffset = 0;
+            for (const c of canvases) { g.drawImage(c, xOffset, 0); xOffset += c.width; }
+          }
+          return JSON.stringify({ ok: true, dataUrl: out.toDataURL("image/jpeg", quality) });
+        })()
+      `;
+      let rawResult;
+      try {
+        rawResult = await cw.eval(code);
+      } catch (err) {
+        throw new Error(`iframe 内渲染执行失败: ${err?.message || err}`);
+      }
+      if (typeof rawResult !== "string") {
+        throw new Error("iframe 内渲染未返回可解析的结果");
+      }
+      const result = JSON.parse(rawResult);
+      if (!result.ok || !result.dataUrl) {
+        throw new Error(result.error || "iframe 内渲染返回空结果");
+      }
+      return result.dataUrl;
+    }
+
+    // 自己加载打包在 Zotero 里的 pdf.js，让文档实例与渲染画布同域，
+    // 页面代理的 getPage/getViewport 等原型方法可正常调用。直接复用阅读器
+    // iframe 里的文档实例会跨域，在 Gecko 包装下报
+    // "page.getViewport is not a function" 之类的错误。
+    // Zotero 定制打包的 pdf.mjs（8/9/10）在模块顶层直接引用 DOMMatrix，
+    // 而插件 chrome 特权域没有 DOM 全局，importESModule 会在顶层抛
+    // "DOMMatrix is not defined"。加载前从主窗口借用这些 WebIDL 接口挂到全局。
+    ensurePDFJSGlobals() {
+      try {
+        const win = Zotero.getMainWindow?.() || Services.appShell?.hiddenDOMWindow;
+        if (!win) return false;
+        for (const name of ["DOMMatrix", "ImageData", "Path2D"]) {
+          if (!globalThis[name] && typeof win[name] !== "undefined") {
+            globalThis[name] = win[name];
+          }
+        }
+        return !!(globalThis.DOMMatrix && globalThis.ImageData && globalThis.Path2D);
+      } catch (_) {
+        return false;
+      }
+    }
+
+    loadOwnPDFJS(failures = []) {
+      // 实测 Zotero 7.0.32 / 8.0.4 / 9.0.6 / 10.0 的打包位置：
+      // app omni.ja 静态别名 resource zotero -> resource/ 下均有
+      // resource/reader/pdf/build/pdf.mjs（含同目录 pdf.worker.mjs），
+      // 优先用它；Zotero 7 的 core 还带 UMD 版 resource://pdf.js/build/pdf.js，作为兜底。
+      const candidates = [
+        "resource://zotero/reader/pdf/build/pdf.mjs",
+        "resource://reader/pdf/build/pdf.mjs",
+        "resource://pdf.js/build/pdf.js"
+      ];
+      if (!this.ensurePDFJSGlobals()) {
+        failures.push("无法从主窗口借用 DOMMatrix 等 DOM 全局，pdf.js 导入将失败");
+      }
+      for (const spec of candidates) {
+        try {
+          const mod = spec.endsWith(".mjs")
+            ? ChromeUtils.importESModule(spec)
+            : ChromeUtils.import(spec);
+          const lib = mod?.pdfjsLib || mod;
+          if (typeof lib?.getDocument !== "function") {
+            failures.push(`${spec} 无 getDocument 导出`);
+            continue;
+          }
+          try {
+            const workerName = spec.endsWith(".mjs") ? "pdf.worker.mjs" : "pdf.worker.js";
+            lib.GlobalWorkerOptions.workerSrc = spec.replace(/[^/]+$/, workerName);
+          } catch (err) {
+            failures.push(`${spec} 设置 workerSrc 失败: ${err?.message || err}`);
+          }
+          return lib;
+        } catch (err) {
+          failures.push(`${spec}: ${err?.message || err}`);
+        }
       }
       return null;
+    }
+
+    // 特权域自加载文档实例（iframe 主路径不可用时才走）
+    async loadSelfDocument(runtime, diagnostics = []) {
+      const attachmentID = runtime?.attachmentID;
+      if (!attachmentID) {
+        diagnostics.push("runtime 未提供 attachmentID，无法自加载 PDF");
+        return null;
+      }
+      const lib = this.loadOwnPDFJS(diagnostics);
+      if (!lib) return null;
+      try {
+        const item = await Zotero.Items.getAsync(attachmentID);
+        if (!item?.isAttachment()) {
+          diagnostics.push("附件条目无效");
+          return null;
+        }
+        const filePath = await item.getFilePathAsync();
+        if (!filePath || !await IOUtils.exists(filePath)) {
+          diagnostics.push(`附件文件不存在: ${filePath || "null"}`);
+          return null;
+        }
+        const bytes = await IOUtils.read(filePath);
+        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const doc = await lib.getDocument({ data: buffer }).promise;
+        if (doc && doc.numPages > 0) return doc;
+        diagnostics.push("自加载文档 numPages 无效");
+        return null;
+      } catch (err) {
+        diagnostics.push(`自加载渲染链异常: ${err?.message || err}`);
+        return null;
+      }
     }
 
     async renderAndCachePages(runtime, documentID, options = {}) {
       const pagesDir = this.getPagesDir(documentID);
       await this.storage.ensureDir(pagesDir);
 
-      const pdfDoc = await this.resolvePDFDocument(runtime, documentID);
-      if (!pdfDoc) {
+      const diagnostics = [];
+      const emitDiagnostics = () => {
+        for (const msg of diagnostics) {
+          options.emit?.({ type: "warning", message: `[探针6-页图] ${msg}` });
+        }
+        diagnostics.length = 0;
+      };
+
+      // 主路径：预览 iframe content 域渲染
+      const iframeCtx = this.getPreviewIframeContext(runtime, diagnostics);
+      if (iframeCtx) {
+        options.emit?.({ type: "log", message: `[探针6-页图] 预览 iframe 渲染路径可用: numPages=${iframeCtx.pdfDocument.numPages}` });
+      }
+      emitDiagnostics();
+
+      // 备选路径：特权域自加载 Zotero 打包的 pdf.js
+      let selfDoc = null;
+      if (!iframeCtx) {
+        selfDoc = await this.loadSelfDocument(runtime, diagnostics);
+        if (selfDoc) {
+          options.emit?.({ type: "log", message: `[探针6-页图] 特权域自加载渲染路径可用: numPages=${selfDoc.numPages}` });
+        }
+        emitDiagnostics();
+      }
+
+      const numPages = iframeCtx ? iframeCtx.pdfDocument.numPages : (selfDoc ? selfDoc.numPages : 0);
+      if (!numPages) {
         return {
           images: [],
           downgraded: false,
@@ -185,7 +346,6 @@
         };
       }
 
-      const numPages = pdfDoc.numPages;
       const maxImages = options.maxImages !== undefined ? options.maxImages : 49;
       const strategy = getPartitionStrategy(numPages, maxImages);
       if (strategy.downgraded) {
@@ -210,12 +370,6 @@
         return { images: targetPaths, downgraded: false, cached: true };
       }
 
-      const win = runtime.window
-        || runtime.browser?.ownerGlobal
-        || Zotero.getMainWindow?.()
-        || Services.wm.getMostRecentWindow("navigator:browser");
-      const doc = win?.document || runtime.browser?.contentDocument || document;
-
       for (let i = 0; i < strategy.groups.length; i++) {
         const group = strategy.groups[i];
         const filePath = targetPaths[i];
@@ -223,23 +377,42 @@
 
         options.emit?.({ type: "log", message: `[探针5-Provider] 正在准备文献标清页面 (${i + 1}/${strategy.groups.length})...` });
 
-        const renderedCanvases = [];
-        for (const pageNum of group.pages) {
-          const canvas = await renderSinglePageToCanvas(pdfDoc, pageNum, doc);
-          renderedCanvases.push(canvas);
+        let dataUrl = null;
+        try {
+          if (iframeCtx) {
+            dataUrl = await this.renderGroupInPreview(iframeCtx, group.pages);
+          } else if (selfDoc) {
+            const win = runtime.window
+              || runtime.browser?.ownerGlobal
+              || Zotero.getMainWindow?.()
+              || Services.wm.getMostRecentWindow("navigator:browser");
+            const doc = win?.document || runtime.browser?.contentDocument || document;
+            const renderedCanvases = [];
+            for (const pageNum of group.pages) {
+              renderedCanvases.push(await renderSinglePageToCanvas(selfDoc, pageNum, doc));
+            }
+            const finalCanvas = await stitchCanvasesHorizontal(renderedCanvases, doc);
+            dataUrl = finalCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
+          }
+        } catch (err) {
+          options.emit?.({ type: "warning", message: `[探针6-页图] 第 ${i + 1} 组页面渲染失败（${group.filename}）: ${err?.message || err}` });
+          continue;
         }
+        if (!dataUrl) continue;
 
-        const finalCanvas = await stitchCanvasesHorizontal(renderedCanvases, doc);
-        const dataUrl = finalCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
         const base64Data = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
         const bytes = base64ToUint8Array(base64Data);
         await IOUtils.write(filePath, bytes);
       }
 
+      const readyPaths = [];
+      for (const p of targetPaths) {
+        if (await IOUtils.exists(p)) readyPaths.push(p);
+      }
       return {
-        images: targetPaths,
+        images: readyPaths,
         downgraded: false,
-        cached: false
+        via: iframeCtx ? "iframe" : "self"
       };
     }
   }

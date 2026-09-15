@@ -269,46 +269,116 @@
       if (!browser) throw new Error("网页容器尚未就绪，请重试。");
       this.ensureDeepSeekDriver(runtime);
       if (reload || !browser.getAttribute("data-deepseek-loaded")) {
+        // 提前建立 frameloader，避免 loadURI 与远程度/进程建立竞态，
+        // 导致页面停留在 about:blank 的空白面板（Zotero 7 上更易触发）。
+        void this.appendDeepSeekProbe(`[探针7-网页] loadDeepSeekWeb: reload=${reload}, browser存在=${Boolean(browser)}, isRemoteBrowser=${browser.isRemoteBrowser}, remoteType=${browser.remoteType || "-"}`);
+        try { void browser.frameLoader; } catch (_) {}
         browser.loadURI(Services.io.newURI("https://chat.deepseek.com/"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
         browser.setAttribute("data-deepseek-loaded", "true");
+        this.traceDeepSeekLoadState(runtime);
       }
       return { opened: true };
+    }
+
+    appendDeepSeekProbe(message) {
+      // 探针7落盘：白屏场景下工作台面板无 emit 可见，直接写 profile 日志文件取证
+      try {
+        const logDir = PathUtils.join(this.storage.root, "logs");
+        IOUtils.makeDirectory(logDir, { createAncestors: true, ignoreExisting: true }).then(() => {
+          const line = `${new Date().toISOString()} ${String(message)}\n`;
+          return IOUtils.writeUTF8(PathUtils.join(logDir, "deepseek-web-probe.log"), line, { append: true });
+        }).catch(() => {});
+      } catch (_) {}
+    }
+
+    traceDeepSeekLoadState(runtime) {
+      // 探针7：留痕内嵌网页加载进度（进程建立 → 导航 → 文档就绪），供跨版本白屏定位
+      const browser = runtime?.deepSeekBrowser;
+      if (!browser) return;
+      const snap = label => {
+        let readyState = "", url = "";
+        try { readyState = browser.contentDocument?.readyState || ""; } catch (_) {}
+        try { url = String(browser.currentURI?.spec || ""); } catch (_) {}
+        const line = `[探针7-网页] ${label}: remote=${browser.isRemoteBrowser}, remoteType=${browser.remoteType || "-"}, url=${url || "-"}, readyState=${readyState || "-"}`;
+        try {
+          Zotero.debug?.(`[LitMTrans-Probe] ${line}`);
+        } catch (_) {}
+        this.appendDeepSeekProbe(line);
+      };
+      snap("loadURI后0s");
+      setTimeout(() => snap("loadURI后2s"), 2000);
+      setTimeout(() => {
+        snap("loadURI后5s");
+        let url = "";
+        try { url = String(browser.currentURI?.spec || ""); } catch (_) {}
+        if (!/^https:\/\/chat\.deepseek\.com\//.test(url)) {
+          // 首次导航丢失（frameloader 竟态）时自愈重试一次
+          this.appendDeepSeekProbe("[探针7-网页] 首次导航未达 DeepSeek，已自动重试加载");
+          try {
+            browser.loadURI(Services.io.newURI("https://chat.deepseek.com/"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+          } catch (_) {}
+        }
+      }, 5000);
     }
 
     setDeepSeekWebBounds(runtime, bounds = {}) {
       const browser = runtime.deepSeekBrowser;
       if (!browser) return { ok: false };
+      const placementParent = runtime.deepSeekStack || runtime.container;
       let mask = runtime.deepSeekMask;
-      if (!mask && runtime.container && runtime.window) {
+      if (!mask && runtime.window && placementParent) {
         mask = runtime.window.document.createXULElement("box");
-        mask.style.cssText = "position:absolute;display:none;z-index:25;background:rgba(0,0,0,0.42);pointer-events:auto;";
-        runtime.container.appendChild(mask);
+        mask.setAttribute("hidden", "true");
+        mask.style.cssText = "background:rgba(0,0,0,0.42);pointer-events:auto;";
+        placementParent.appendChild(mask);
         runtime.deepSeekMask = mask;
       }
       const visible = Boolean(bounds.visible);
       if (!visible) {
+        browser.setAttribute("hidden", "true");
         browser.style.display = "none";
-        if (mask) mask.style.display = "none";
+        if (mask) {
+          mask.setAttribute("hidden", "true");
+          mask.style.display = "none";
+        }
         return { ok: true, visible: false };
       }
       const left = Math.max(0, Math.round(Number(bounds.left) || 0));
       const top = Math.max(0, Math.round(Number(bounds.top) || 0));
       const width = Math.max(0, Math.round(Number(bounds.width) || 0));
       const height = Math.max(0, Math.round(Number(bounds.height) || 0));
+      // v10 上 CSS absolute 定位正常；Z7 等版本存在 absolute 被忽略的运行时差异。
+      // 写入标准样式后实测 rect，偏差超过 2px 时用 transform 补偿实测偏移，全版本自适应
+      const applyBounds = (node, targetLeft, targetTop, targetWidth, targetHeight) => {
+        node.removeAttribute("hidden");
+        node.style.position = "absolute";
+        node.style.left = `${targetLeft}px`;
+        node.style.top = `${targetTop}px`;
+        node.style.width = `${targetWidth}px`;
+        node.style.height = `${targetHeight}px`;
+        try {
+          // 先清空上次补偿，实测布局引擎的实际落点后再计算偏差。
+          // rect 是主窗口视口坐标，target 是 workbench 页面视口坐标，
+          // 必须借 stack/container 的实测 rect 把两者换算到同一参照系
+          node.style.transform = "";
+          const ref = (runtime.deepSeekStack || runtime.container)?.getBoundingClientRect();
+          const r = node.getBoundingClientRect();
+          if (!ref) return;
+          const dx = (ref.left + targetLeft) - r.left;
+          const dy = (ref.top + targetTop) - r.top;
+          if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+            node.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px)`;
+          }
+        } catch (_) {}
+      };
+      applyBounds(browser, left, top, width, height);
       browser.style.display = "flex";
-      browser.style.left = `${left}px`;
-      browser.style.top = `${top}px`;
-      browser.style.width = `${width}px`;
-      browser.style.height = `${height}px`;
 
       const dimmed = Boolean(bounds.dimmed);
       if (mask) {
         if (dimmed) {
+          applyBounds(mask, left, top, width, height);
           mask.style.display = "block";
-          mask.style.left = `${left}px`;
-          mask.style.top = `${top}px`;
-          mask.style.width = `${width}px`;
-          mask.style.height = `${height}px`;
           if (!mask.getAttribute("data-bound-click")) {
             mask.setAttribute("data-bound-click", "true");
             mask.addEventListener("click", () => {
@@ -316,9 +386,30 @@
             });
           }
         } else {
+          mask.setAttribute("hidden", "true");
           mask.style.display = "none";
         }
       }
+      try {
+        const rect = browser.getBoundingClientRect();
+        const line = `[探针7-网页] bounds: visible=${visible}, left=${left}, top=${top}, width=${width}, height=${height}, rect=${Math.round(rect.width)}x${Math.round(rect.height)}@${Math.round(rect.left)},${Math.round(rect.top)}, transform=${browser.style.transform || "-"}, remote=${browser.isRemoteBrowser}, remoteType=${browser.remoteType || "-"}, display=${browser.style.display || "-"}`;
+        Zotero.debug?.(`[LitMTrans-Probe] ${line}`);
+        this.appendDeepSeekProbe(line);
+        const cs = runtime.window?.getComputedStyle?.(browser);
+        if (cs) {
+          const csLine = `[探针7-网页] computed: position=${cs.position}, left=${cs.left}, top=${cs.top}, width=${cs.width}, height=${cs.height}`;
+          Zotero.debug?.(`[LitMTrans-Probe] ${csLine}`);
+          this.appendDeepSeekProbe(csLine);
+        }
+        if (runtime.deepSeekStack || runtime.container) {
+          const fmtRect = r => `${Math.round(r.width)}x${Math.round(r.height)}@${Math.round(r.left)},${Math.round(r.top)}`;
+          const parts = [];
+          if (runtime.deepSeekStack) parts.push(`stack=${fmtRect(runtime.deepSeekStack.getBoundingClientRect())}`);
+          if (runtime.container) parts.push(`container=${fmtRect(runtime.container.getBoundingClientRect())}`);
+          const prLine = `[探针7-网页] parents: ${parts.join(", ")}`;
+          this.appendDeepSeekProbe(prLine);
+        }
+      } catch (_) {}
       return { ok: true, visible: true, dimmed, left, top, width, height };
     }
 
@@ -2177,7 +2268,16 @@
       container.style.display = "flex";
       container.style.flex = "1 1 auto";
       container.style.alignSelf = "stretch";
-      container.style.position = "relative";
+      // Z7 的 XUL 布局引擎忽略 CSS absolute 定位（left/top/height 失效导致白屏），
+      // 改用 XUL <stack> 容器 + left/top/width/height 属性定位（FF 全版本成熟机制）
+      const stack = win.document.createXULElement("stack");
+      stack.setAttribute("flex", "1");
+      stack.style.width = "100%";
+      stack.style.height = "100%";
+      stack.style.minWidth = "0";
+      stack.style.position = "relative";
+      container.appendChild(stack);
+
       const browser = win.document.createXULElement("browser");
       browser.setAttribute("flex", "1");
       browser.setAttribute("type", "content");
@@ -2186,19 +2286,21 @@
       browser.style.width = "100%";
       browser.style.height = "100%";
       browser.style.minHeight = "100%";
-      container.appendChild(browser);
+      stack.appendChild(browser);
 
       const deepSeekBrowser = win.document.createXULElement("browser");
       deepSeekBrowser.setAttribute("type", "content");
       deepSeekBrowser.setAttribute("remote", "true");
       deepSeekBrowser.setAttribute("maychangeremoteness", "true");
       deepSeekBrowser.setAttribute("disableglobalhistory", "true");
-      deepSeekBrowser.style.cssText = "position:absolute;display:none;z-index:20;background:#ffffff;border:none;box-sizing:border-box;";
-      container.appendChild(deepSeekBrowser);
+      deepSeekBrowser.setAttribute("hidden", "true");
+      deepSeekBrowser.style.cssText = "background:#ffffff;border:none;box-sizing:border-box;";
+      stack.appendChild(deepSeekBrowser);
 
       const deepSeekMask = win.document.createXULElement("box");
-      deepSeekMask.style.cssText = "position:absolute;display:none;z-index:25;background:rgba(0,0,0,0.42);pointer-events:auto;";
-      container.appendChild(deepSeekMask);
+      deepSeekMask.setAttribute("hidden", "true");
+      deepSeekMask.style.cssText = "background:rgba(0,0,0,0.42);pointer-events:auto;";
+      stack.appendChild(deepSeekMask);
 
       const documentID = `${attachment.libraryID}-${attachment.key}`;
       const itemTitle = String(parentItem?.getField("title") || attachment.getField("title") || "");
@@ -2209,6 +2311,7 @@
         itemTitle,
         window: win,
         container,
+        deepSeekStack: stack,
         browser,
         deepSeekBrowser,
         deepSeekMask,

@@ -155,6 +155,24 @@
       throw new Error("未找到可用的文献工作台或DeepSeek网页实例");
     }
 
+    emitDeepSeekBrowserState(runtime, emit, label = "") {
+      // 探针7：把 DeepSeek 内嵌网页的加载状态汇报到流式日志面板，跨版本白屏定位
+      const browser = runtime?.deepSeekBrowser;
+      if (!browser || typeof emit !== "function") return;
+      let readyState = "", url = "";
+      try { readyState = browser.contentDocument?.readyState || ""; } catch (_) {}
+      try { url = String(browser.currentURI?.spec || ""); } catch (_) {}
+      let rect = "";
+      try {
+        const r = browser.getBoundingClientRect();
+        rect = `${Math.round(r.width)}x${Math.round(r.height)}@${Math.round(r.left)},${Math.round(r.top)}`;
+      } catch (_) {}
+      const probe = `[探针7-网页] ${label}: remote=${browser.isRemoteBrowser}, remoteType=${browser.remoteType || "-"}, url=${url || "-"}, readyState=${readyState || "-"}, display=${browser.style.display || "-"}, rect=${rect || "-"}`;
+      try { emit({ type: "log", message: probe }); } catch (_) {}
+      try { Zotero.debug?.(`[LitMTrans-Probe] ${probe}`); } catch (_) {}
+      try { this.controller?.appendDeepSeekProbe?.(probe); } catch (_) {}
+    }
+
     async complete(messages, options = {}) {
       const signal = options.signal || null;
       U.throwIfAborted(signal);
@@ -166,6 +184,9 @@
       const runtime = this.resolveRuntime(options);
       this.controller.loadDeepSeekWeb(runtime);
       this.controller.ensureDeepSeekWebVisible?.(runtime);
+      this.emitDeepSeekBrowserState(runtime, options.emit, "网页面板打开");
+      setTimeout(() => this.emitDeepSeekBrowserState(runtime, options.emit, "打开3秒后"), 3000);
+      setTimeout(() => this.emitDeepSeekBrowserState(runtime, options.emit, "打开8秒后"), 8000);
       const driver = this.getDriver(runtime);
 
       const probeDriverMsg = `[探针5-Provider] driver已获取: hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
@@ -410,6 +431,9 @@
             });
             if (pageResult.downgraded && pageResult.message) {
               options.onReasoning?.(`[系统提醒] ${pageResult.message}\n\n`);
+            }
+            if (pageResult.error) {
+              options.emit?.({ type: "warning", message: `[探针5-Provider] ${pageResult.error}，跳过页面图像` });
             }
             imagePaths = pageResult.images || [];
             if (imagePaths.length) {
