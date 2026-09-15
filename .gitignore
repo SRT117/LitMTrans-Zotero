@@ -45,3 +45,4 @@ desktop.ini
 # Python caches created by auxiliary tooling
 __pycache__/
 *.pyc
+docs/repo-map.md
