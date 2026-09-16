@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = 10;
+  const SCRIPT_VERSION = 11;
   try {
     dump("[LitMTrans-ContentScript] Loaded into: " + (content?.location?.href || "none") + "\n");
   } catch (_) {}
@@ -781,6 +781,24 @@
           }
         }
 
+        function sessionItemForURL(expectedURL) {
+          const targetURL = String(expectedURL || "").split(/[?#]/)[0].replace(/\/$/, "");
+          if (!targetURL) return null;
+          const selectors = ["[class*='session-item']", "nav a[href*='/chat/']", "aside a[href*='/chat/']", "a[href*='/chat/']"];
+          const seen = new Set();
+          for (const selector of selectors) {
+            for (const candidate of doc?.querySelectorAll(selector) || []) {
+              const item = candidate.closest?.("[class*='session-item']") || candidate;
+              if (seen.has(item)) continue;
+              seen.add(item);
+              const link = item.matches?.("a[href]") ? item : item.querySelector?.("a[href]");
+              const itemURL = String(link?.href || item.getAttribute?.("href") || "").split(/[?#]/)[0].replace(/\/$/, "");
+              if (itemURL === targetURL) return item;
+            }
+          }
+          return null;
+        }
+
         if (subAction === "list") {
           let found = [];
           const selectors = payload.sessionSelectors || ["[class*='session-item']", "nav a", "aside a"];
@@ -829,47 +847,71 @@
           }
           sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: selected } });
         } else if (subAction === "rename") {
-          const activeItem = doc?.querySelector("[class*='session-item'][class*='active'], [class*='item--active'], [aria-selected='true']") || doc?.querySelector("[class*='session-item']");
-          if (activeItem) {
-            try {
-              const MouseEventCtor = win?.MouseEvent || MouseEvent;
-              activeItem.dispatchEvent(new MouseEventCtor("mouseenter", { bubbles: true }));
-              activeItem.dispatchEvent(new MouseEventCtor("mouseover", { bubbles: true }));
-            } catch (_) {}
+          ensureSidebarOpen();
+          await delay(200);
+          const activeItem = sessionItemForURL(payload.expectedURL);
+          if (!activeItem) {
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到目标会话" } });
+            return;
           }
+          try {
+            const MouseEventCtor = win?.MouseEvent || MouseEvent;
+            activeItem.dispatchEvent(new MouseEventCtor("mouseenter", { bubbles: true }));
+            activeItem.dispatchEvent(new MouseEventCtor("mouseover", { bubbles: true }));
+          } catch (_) {}
           await delay(150);
           const menuBtn = activeItem?.querySelector("[class*='more'], [class*='menu'], [aria-label*='更多'], [aria-label*='More'], button:has(svg), svg");
-          if (menuBtn) menuBtn.click();
+          if (!menuBtn || !triggerClick(menuBtn, win)) {
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到会话菜单" } });
+            return;
+          }
           await delay(300);
-          const renameOption = findElement(doc, ["div[role='menuitem']:has-text('重命名')", "button:has-text('重命名')"]);
+          const renameOption = findElement(doc, ["div[role='menuitem']:has-text('重命名')", "button:has-text('重命名')", "div[role='menuitem']:has-text('Rename')", "button:has-text('Rename')"]);
           if (renameOption) {
-            renameOption.click();
+            triggerClick(renameOption, win);
             await delay(300);
             const renameInput = activeItem?.querySelector("input") || doc?.querySelector("input[value]");
+            let renamed = false;
             if (renameInput) {
               fillControlledInput(renameInput, payload.newTitle, win?.wrappedJSObject || win);
               triggerEnter(renameInput, win?.wrappedJSObject || win);
+              for (let attempt = 0; attempt < 20; attempt++) {
+                const targetItem = sessionItemForURL(payload.expectedURL);
+                const title = (targetItem?.textContent || "").replace(/\s+/g, " ").trim();
+                if (title.includes(String(payload.newTitle || "").trim())) {
+                  renamed = true;
+                  break;
+                }
+                await delay(150);
+              }
             }
-            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: true } });
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: renamed, error: renamed ? "" : "会话标题未保存" } });
           } else {
-            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false } });
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到重命名操作" } });
           }
         } else if (subAction === "delete") {
-          const activeItem = doc?.querySelector("[class*='session-item'][class*='active'], [class*='item--active'], [aria-selected='true']") || doc?.querySelector("[class*='session-item']");
-          if (activeItem) {
-            try {
-              const MouseEventCtor = win?.MouseEvent || MouseEvent;
-              activeItem.dispatchEvent(new MouseEventCtor("mouseenter", { bubbles: true }));
-              activeItem.dispatchEvent(new MouseEventCtor("mouseover", { bubbles: true }));
-            } catch (_) {}
+          ensureSidebarOpen();
+          await delay(200);
+          const activeItem = sessionItemForURL(payload.expectedURL);
+          if (!activeItem) {
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到目标会话" } });
+            return;
           }
+          try {
+            const MouseEventCtor = win?.MouseEvent || MouseEvent;
+            activeItem.dispatchEvent(new MouseEventCtor("mouseenter", { bubbles: true }));
+            activeItem.dispatchEvent(new MouseEventCtor("mouseover", { bubbles: true }));
+          } catch (_) {}
           await delay(150);
           const menuBtn = activeItem?.querySelector("[class*='more'], [class*='menu'], [aria-label*='更多'], [aria-label*='More'], button:has(svg), svg");
-          if (menuBtn) menuBtn.click();
+          if (!menuBtn || !triggerClick(menuBtn, win)) {
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到会话菜单" } });
+            return;
+          }
           await delay(250);
-          const deleteOption = findElement(doc, ["div[role='menuitem']:has-text('删除')", "button:has-text('删除')"]);
+          const deleteOption = findElement(doc, ["div[role='menuitem']:has-text('删除')", "button:has-text('删除')", "div[role='menuitem']:has-text('Delete')", "button:has-text('Delete')"]);
           if (deleteOption) {
-            deleteOption.click();
+            triggerClick(deleteOption, win);
             let confirmed = false;
             const confirmWaitStart = Date.now();
             while (Date.now() - confirmWaitStart < 2000) {
@@ -882,14 +924,26 @@
                 ".ds-modal button.ds-button--primary"
               ]);
               if (confirmBtn) {
-                confirmBtn.click();
+                triggerClick(confirmBtn, win);
                 confirmed = true;
                 break;
               }
             }
-            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: confirmed } });
+            let deleted = false;
+            if (confirmed) {
+              for (let attempt = 0; attempt < 20; attempt++) {
+                const targetItem = sessionItemForURL(payload.expectedURL);
+                const currentURL = String(win?.location?.href || "").split(/[?#]/)[0].replace(/\/$/, "");
+                if (!targetItem && currentURL !== String(payload.expectedURL || "").split(/[?#]/)[0].replace(/\/$/, "")) {
+                  deleted = true;
+                  break;
+                }
+                await delay(150);
+              }
+            }
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: deleted, error: deleted ? "" : "会话删除未确认" } });
           } else {
-            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false } });
+            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到删除操作" } });
           }
         }
       }

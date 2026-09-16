@@ -535,13 +535,23 @@ async function sessionAPI(doc, action, payload = {}) {
 
 function sessionRows(doc) {
   const rows = new Map();
-  const candidates = doc.querySelectorAll("a[href], [data-href], [data-url], [data-session-id], [data-conversation-id], [class*='session-item'], [class*='conversation-item'], [class*='chat-item']");
+  const currentURL = sessionURL(doc.location.href, doc);
+  const currentID = currentSessionID(doc);
+  const candidates = doc.querySelectorAll("a[href], [data-href], [data-url], [data-session-id], [data-conversation-id], [data-virtual-list-item-key], [data-key], [class*='session-item'], [class*='conversation-item'], [class*='chat-item']");
   for (const anchor of candidates) {
     const rawURL = anchor.getAttribute("href") || anchor.getAttribute("data-href")
       || anchor.getAttribute("data-url");
+    const virtualKey = [
+      anchor.getAttribute("data-virtual-list-item-key"),
+      anchor.getAttribute("data-session-id"),
+      anchor.getAttribute("data-conversation-id"),
+      anchor.getAttribute("data-key"),
+      anchor.id
+    ].filter(Boolean).join(" ");
     const url = sessionURL(rawURL, doc)
+      || (currentID && virtualKey.includes(currentID) ? currentURL : "")
       || (anchor.matches("[aria-current='page'], [aria-selected='true'], .active, [class*='active']")
-        ? sessionURL(doc.location.href, doc) : "");
+        ? currentURL : "");
     if (!url) continue;
     const title = (anchor.getAttribute("title") || anchor.querySelector("[title]")?.getAttribute("title") || anchor.textContent || "").trim().replace(/\s+/g, " ");
     rows.set(url, { element: anchor, url, title });
@@ -574,15 +584,47 @@ async function openSessionMenu(doc, win, expectedURL) {
   if (!targetURL || sessionURL(doc.location.href, doc) !== targetURL) throw new Error("当前网页已切换会话，未执行会话操作");
   let row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL)?.element, 1500);
   if (!row || !visible(row)) {
-    const expand = findElement(doc, ["[aria-label*='展开']", "[aria-label*='打开侧边栏']", "[class*='sidebar-toggle']", "[class*='collapse-btn']"]);
+    let expand = findElement(doc, ["[aria-label*='展开']", "[aria-label*='打开侧边栏']", "[aria-label*='侧边栏']", "[class*='sidebar-toggle']", "[class*='collapse-btn']"]);
+    if (!expand) {
+      // 350px 窄屏会完全卸载侧栏，只保留页首最左侧无文本的历史抽屉图标。
+      expand = Array.from(doc.querySelectorAll("button, [role='button'], .ds-button"))
+        .filter(visible)
+        .map(node => ({ node, rect: node.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.left <= 96 && rect.top <= 112 && rect.width > 0 && rect.height > 0)
+        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0]?.node || null;
+    }
     expand?.click();
     row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element);
   }
   if (!row) {
     // 新版 DeepSeek 使用虚拟列表且不暴露 href；当前 URL 对应的活动项仍可通过菜单按钮操作。
-    row = doc.querySelector("[aria-current='page'], [aria-selected='true'], [class*='session-item'][class*='active'], [class*='conversation-item'][class*='active'], [class*='chat-item'][class*='active']");
+    const sessionID = currentSessionID(doc, targetURL);
+    row = Array.from(doc.querySelectorAll("[data-virtual-list-item-key], [data-session-id], [data-conversation-id], [data-key], [aria-current='page'], [aria-selected='true'], [class*='session-item'][class*='active'], [class*='conversation-item'][class*='active'], [class*='chat-item'][class*='active']"))
+      .find(node => {
+        const key = [node.getAttribute("data-virtual-list-item-key"), node.getAttribute("data-session-id"), node.getAttribute("data-conversation-id"), node.getAttribute("data-key"), node.id].filter(Boolean).join(" ");
+        return sessionID && key.includes(sessionID);
+      })
+      || doc.querySelector("[aria-current='page'], [aria-selected='true'], [class*='session-item'][class*='active'], [class*='conversation-item'][class*='active'], [class*='chat-item'][class*='active']");
   }
-  if (!row) throw new Error("未找到当前会话的侧栏条目");
+  if (!row) {
+    const sidebarNodes = Array.from(doc.querySelectorAll("aside, nav, [role='navigation'], [data-virtual-list-item-key], [aria-current='page'], [aria-selected='true']"))
+      .slice(0, 20)
+      .map(node => {
+        const text = (node.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
+        const key = node.getAttribute("data-virtual-list-item-key") || node.getAttribute("data-key") || "";
+        return `${node.tagName.toLowerCase()} class=${String(node.className || "").slice(0, 80)} key=${key} text=${text}`;
+      });
+    const controls = Array.from(doc.querySelectorAll("button, [role='button'], [aria-label], [title]"))
+      .filter(visible)
+      .slice(0, 30)
+      .map(node => {
+        const label = node.getAttribute("aria-label") || node.getAttribute("title") || (node.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40);
+        const rect = node.getBoundingClientRect();
+        const path = node.querySelector("svg path")?.getAttribute("d") || "";
+        return `${node.tagName.toLowerCase()} class=${String(node.className || "").slice(0, 60)} at=${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)} icon=${path.slice(0, 40)} label=${label}`;
+      });
+    throw new Error(`未找到当前会话的侧栏条目（侧栏摘要：${sidebarNodes.join(" | ") || "无可见候选"}；可见控件：${controls.join(" | ") || "无"}）`);
+  }
   row.scrollIntoView({ block: "nearest" });
   row.dispatchEvent(new win.MouseEvent("mouseenter", { bubbles: true }));
   row.dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
@@ -885,12 +927,7 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         return { ok: Boolean(selected), url: row.url };
       }
       if (subAction === "rename" || subAction === "delete") {
-        try {
-          return await sessionAPI(doc, subAction, payload);
-        } catch (apiError) {
-          // 接口是首选；网页版本变化或离线时再退回 DOM 菜单操作。
-          if (subAction === "rename" && !payload.expectedURL) throw apiError;
-        }
+        // 会话管理始终经由网页原生菜单执行，保留官方前端的认证与风控流程。
       }
       if (subAction === "rename" && sessionRows(doc).some(row =>
           row.url === sessionURL(payload.expectedURL, doc) && row.title === payload.newTitle)) return { ok: true };
@@ -954,7 +991,7 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
           option.click();
           const confirm = await waitFor(() => {
             const dialog = doc.querySelector(DIALOG_SELECTOR);
-            return dialog && labeledControl(dialog, ["删除", "确认", "确定", "Delete", "Confirm"]);
+            return dialog && labeledControl(dialog, ["删除", "删除该对话", "确认", "确定", "Delete", "Confirm"]);
           });
           if (!confirm) throw new Error("未找到删除确认按钮");
           confirm.click();

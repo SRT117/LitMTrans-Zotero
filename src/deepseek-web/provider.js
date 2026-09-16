@@ -99,20 +99,34 @@
       }
     }
 
-    async finalizeTranslationSession(documentID, reason = "", expectedSession = null) {
-      const session = this.activeTranslationSessions.get(documentID);
-      if (!session) return;
+  async finalizeTranslationSession(documentID, reason = "", expectedSession = null) {
+    const session = this.activeTranslationSessions.get(documentID);
+    if (!session) return;
       if (expectedSession && session !== expectedSession) return;
       this.activeTranslationSessions.delete(documentID);
       if (session.timer) {
-        clearTimeout(session.timer);
-        session.timer = null;
+      clearTimeout(session.timer);
+      session.timer = null;
+    }
+    const emit = (type, message) => {
+      try { session.emit?.({ type, message }); } catch (_) {}
+    };
+    if (this.controller?.getSettings?.().deleteWebTranslationSessions === false) {
+      emit("log", "[DeepSeek网页] 已按设置保留本次翻译会话");
+    } else if (!session.sessionURL || !session.driver) {
+      emit("warning", "[DeepSeek网页] 临时翻译会话未取得地址，无法自动清理");
+    } else {
+      emit("log", `[DeepSeek网页] 正在清理临时翻译会话（${reason || "unknown"}）`);
+      try {
+        await session.driver.deleteCurrentSession(session.sessionURL);
+        emit("log", "[DeepSeek网页] 临时翻译会话已清理");
+      } catch (error) {
+        const message = `[DeepSeek网页] 临时翻译会话清理失败（${reason || "unknown"}）：${error?.message || error}`;
+        emit("warning", message);
+        try { Zotero.debug?.(message); } catch (_) {}
+        try { this.controller?.appendDeepSeekProbe?.(message); } catch (_) {}
       }
-      if (this.controller?.getSettings?.().deleteWebTranslationSessions !== false && session.sessionURL && session.driver) {
-        try {
-          await session.driver.deleteCurrentSession(session.sessionURL);
-        } catch (_) {}
-      }
+    }
     }
 
     getDriver(runtime) {
@@ -252,12 +266,13 @@
         try { Zotero.debug?.(`[LitMTrans-Probe] ${p1}`); } catch (_) {}
 
         await driver.createNewChat(signal, options.emit);
-        activeSession = {
-          driver,
-          documentID,
-          sessionURL: "",
-          timer: null
-        };
+      activeSession = {
+        driver,
+        documentID,
+        sessionURL: "",
+        timer: null,
+        emit: options.emit
+      };
         this.activeTranslationSessions.set(documentID, activeSession);
       } else {
         const pReuse = `[探针5-Provider] completeTranslationTask: 复用当前文献翻译会话继续追问补译: docID=${documentID}`;

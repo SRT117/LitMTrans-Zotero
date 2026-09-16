@@ -349,18 +349,18 @@
       return true;
     }
 
-    async renameCurrentSession(newTitle, expectedURL) {
-      const res = await this.execute("session-action", { subAction: "rename", newTitle, expectedURL }, 12000);
-      if (!res?.ok) throw new Error("DeepSeek会话重命名未完成");
-      return true;
-    }
+async renameCurrentSession(newTitle, expectedURL) {
+const res = await this.execute("session-action", { subAction: "rename", newTitle, expectedURL }, 12000);
+if (!res?.ok) throw new Error(res?.error || "DeepSeek会话重命名未完成");
+return true;
+}
 
-    async deleteCurrentSession(expectedURL) {
-      const res = await this.execute("session-action", { subAction: "delete", expectedURL }, 12000);
-      if (!res?.ok) throw new Error("DeepSeek临时会话删除未完成");
-      await this.navigate("https://chat.deepseek.com/");
-      return true;
-    }
+async deleteCurrentSession(expectedURL) {
+const res = await this.execute("session-action", { subAction: "delete", expectedURL }, 12000);
+if (!res?.ok) throw new Error(res?.error || "DeepSeek临时会话删除未完成");
+await this.navigate("https://chat.deepseek.com/");
+return true;
+}
 
     async submitMessage(text, options = {}) {
       const signal = options.signal || null;
