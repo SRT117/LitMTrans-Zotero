@@ -854,19 +854,17 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
     }
 
     if (action === "wait-attachments-ready") {
-      const timeout = Math.max(3000, Number(payload.timeout) || 15000);
+      const timeout = Math.max(500, Number(payload.timeout) || 5000);
       const start = Date.now();
-      let ready = false;
-      await delay(400);
       while (Date.now() - start < timeout) {
-        const loadingEl = doc?.querySelector("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading");
-        if (!loadingEl) {
-          ready = true;
-          break;
-        }
-        await delay(250);
+        const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
+        const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
+        // DeepSeek 在附件仍在后台处理时禁用发送。按钮恢复可用即表示
+        // 当前附件已可随下一条消息提交，无需等待页面其他区域的加载动画。
+        if (sendBtn) return { ready: true };
+        await delay(100);
       }
-      return { ready };
+      return { ready: false };
     }
 
     if (action === "get-assistant-text") return replySnapshot(doc);

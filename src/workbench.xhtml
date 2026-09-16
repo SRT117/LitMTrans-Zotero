@@ -297,12 +297,16 @@
         </section>
 
         <section class="settings-section translation-model-section settings-card-model">
-          <h3>翻译模型设置</h3>
+          <h3 id="setting-model-heading">翻译模型设置</h3>
           <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span><strong>使用DeepSeek官方网页模式（免API密钥）</strong><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
-          <div id="setting-web-mode-notice" class="web-mode-notice" hidden="hidden">
-            <strong>已开启 DeepSeek 官方网页免 Key 模式</strong>
-            <p>文献翻译与阅读对话均通过 DeepSeek 官方网页端执行。在侧栏登录账号后即可直接使用，无需配置任何API服务商和密钥。如需设置目标语言等翻译偏好，可展开下方的【进阶配置】。</p>
-          </div>
+          <details id="setting-web-mode-advanced" class="web-mode-advanced" hidden="hidden">
+            <summary>网页模式进阶配置</summary>
+            <div class="web-mode-advanced-body">
+              <div class="web-mode-input-modes"><label class="web-mode-choice"><input id="setting-web-input-mode-auto" name="web-input-mode" type="radio" value="auto" /><span>自动注入图片与提示词</span></label><label class="web-mode-choice"><input id="setting-web-input-mode-clipboard" name="web-input-mode" type="radio" value="clipboard" /><span>仅复制提示词到剪贴板</span></label></div>
+              <label class="inline-check"><input id="setting-delete-web-translation-sessions" type="checkbox" /> 翻译后删除临时翻译对话条目</label>
+              <div id="setting-web-page-images-group" class="web-page-images-setting"><label>论文图片清晰度<select id="setting-web-page-image-quality"><option value="none">不发送</option><option value="low">低清晰度</option><option value="medium">中等清晰度</option><option value="high">高清晰度</option></select></label></div>
+            </div>
+          </details>
           <div id="setting-model-form-container">
             <label class="inline-check shared-model-toggle"><input id="setting-chat-uses-translation-model" type="checkbox" checked="checked" /> 翻译模型与对话模型使用同一个模型</label>
             <div class="field-with-action">
@@ -335,10 +339,6 @@
 
         <section id="setting-chat-model-section" class="settings-section chat-model-section settings-card-chat">
           <h3>对话模型设置</h3>
-          <div id="setting-chat-web-mode-notice" class="web-mode-notice" hidden="hidden">
-            <strong>对话已启用 DeepSeek 官方网页端</strong>
-            <p>阅读对话将直接在右侧栏网页端中进行，免API密钥。</p>
-          </div>
           <div id="setting-chat-form-container">
             <div class="field-with-action">
               <label><span id="setting-chat-provider-label">服务商</span><select id="setting-chat-provider"></select></label>

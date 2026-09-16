@@ -99,6 +99,14 @@
 .litmtrans-mineru-token-label-line a { color: var(--litmtrans-link); font-size: .9em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
 .litmtrans-mineru-token-label-line a:hover { color: var(--litmtrans-link-hover); text-decoration: underline; }
 .litmtrans-pref-grid label, .litmtrans-pref-form-stack label { min-width: 0; display: grid; gap: 3px; color: var(--fill-secondary, #555); font-size: .82em; }
+.litmtrans-web-mode-advanced { margin-top: 7px; border: 1px solid var(--material-border, #d7d7d7); background: color-mix(in srgb, var(--material-background, #fff) 94%, var(--litmtrans-model-soft)); }
+.litmtrans-web-mode-advanced > summary { padding: 7px 8px; color: var(--fill-secondary, #555); font-size: .82em; font-weight: 700; cursor: pointer; }
+.litmtrans-web-mode-advanced-body { display: grid; gap: 7px; padding: 0 8px 8px; }
+.litmtrans-web-mode-advanced-body label { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: center; }
+.litmtrans-web-mode-advanced-body label:has(select) { grid-template-columns: 1fr; }
+.litmtrans-web-mode-input-modes { display: grid; gap: 5px; }
+.litmtrans-web-mode-input-modes label { grid-template-columns: 16px minmax(0, 1fr); }
+.litmtrans-web-mode-input-modes input[type="radio"] { box-sizing: border-box; width: 16px; min-width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; }
 #litmtrans-preferences-root [hidden] { display: none !important; }
 .litmtrans-pref-grid input, .litmtrans-pref-grid select, .litmtrans-pref-grid textarea, .litmtrans-pref-grid button, .litmtrans-pref-form-stack input, .litmtrans-pref-form-stack select, .litmtrans-pref-form-stack textarea, .litmtrans-pref-form-stack button { box-sizing: border-box; min-height: 28px; width: 100%; font: inherit; font-size: .94em; }
 .litmtrans-pref-grid select, .litmtrans-pref-form-stack select {

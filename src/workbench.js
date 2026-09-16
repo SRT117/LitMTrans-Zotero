@@ -132,7 +132,7 @@
       "chat-form", "chat-input",
       "chat-document-preview", "chat-document-button", "remove-pending-documents-button", "chat-image-preview", "chat-image-input", "context-status", "chat-send-button",
       "chat-model-settings-dialog", "embedded-chat-provider", "embedded-provider-cards-button", "embedded-chat-base-url", "embedded-chat-model", "embedded-refresh-chat-models", "embedded-chat-api-key", "embedded-chat-thinking-mode", "embedded-chat-reasoning-effort", "embedded-chat-show-reasoning", "embedded-chat-render-markdown", "embedded-chat-api-key-state", "embedded-chat-image-group", "embedded-chat-image-note", "embedded-chat-image-size", "embedded-chat-image-quality", "embedded-chat-image-format", "save-embedded-chat-settings",
-      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "setting-chat-engine-web", "setting-web-mode-notice", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-web-mode-notice", "setting-chat-form-container",
+      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "setting-chat-engine-web", "setting-model-heading", "setting-web-mode-advanced", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-form-container", "setting-web-input-mode-auto", "setting-web-input-mode-clipboard", "setting-delete-web-translation-sessions", "setting-web-page-images-group", "setting-web-page-image-quality",
       "setting-api-key", "setting-thinking-mode", "setting-reasoning-effort", "setting-deepseek-fast-layout-group", "setting-deepseek-fast-layout",
       "setting-chat-provider", "setting-chat-provider-label", "setting-chat-base-url", "setting-chat-model", "refresh-chat-models-button",
       "setting-chat-api-key", "setting-chat-thinking-mode", "setting-chat-reasoning-effort", "provider-cards-button",
@@ -5294,6 +5294,11 @@
     if (els["setting-chat-engine-web"]) {
       els["setting-chat-engine-web"].checked = settings.chatEngine === "deepseek_web";
     }
+    els["setting-web-page-image-quality"].value = settings.webPageImageQuality || "medium";
+    els["setting-web-input-mode-auto"].checked = (settings.webInputMode || "auto") === "auto";
+    els["setting-web-input-mode-clipboard"].checked = settings.webInputMode === "clipboard";
+    els["setting-delete-web-translation-sessions"].checked = settings.deleteWebTranslationSessions !== false;
+    els["setting-web-mode-advanced"].open = false;
     els["setting-chat-uses-translation-model"].checked = settings.chatUsesTranslationModel !== false;
     els["setting-chat-provider"].value = settings.chatProvider ?? "oneapi";
     els["setting-chat-provider"].dataset.activeProvider = els["setting-chat-provider"].value;
@@ -5368,23 +5373,29 @@
 
   function updateChatModelSectionVisibility() {
     const isWebEngine = Boolean(els["setting-chat-engine-web"]?.checked);
-    const webNotice = els["setting-web-mode-notice"];
-    if (webNotice) webNotice.hidden = !isWebEngine;
     const modelForm = els["setting-model-form-container"];
     if (modelForm) modelForm.hidden = isWebEngine;
-    const chatWebNotice = els["setting-chat-web-mode-notice"];
-    if (chatWebNotice) chatWebNotice.hidden = !isWebEngine;
+    updateWebModeAdvancedControls(isWebEngine);
     const sharedToggle = els["setting-chat-uses-translation-model"];
     if (sharedToggle) {
       sharedToggle.disabled = isWebEngine || isWebMachineTranslationProvider(els["setting-provider"]?.value);
     }
     const shared = !isWebEngine && Boolean(sharedToggle?.checked);
     const chatSection = els["setting-chat-model-section"];
-    if (chatSection) chatSection.hidden = !isWebEngine && shared;
+    if (chatSection) chatSection.hidden = isWebEngine || shared;
+    const modelHeading = els["setting-model-heading"];
+    if (modelHeading) modelHeading.textContent = isWebEngine ? "模型设置" : "翻译模型设置";
     els["settings-dialog"].querySelector(".settings-grid")?.classList.toggle("shared-chat-model", shared);
     const chatForm = els["setting-chat-form-container"];
     if (chatForm) chatForm.hidden = Boolean(isWebEngine || shared);
     if (els["settings-dialog"].open) requestAnimationFrame(() => fitSettingsDialog(els["settings-dialog"]));
+  }
+
+  function updateWebModeAdvancedControls(isWebEngine = Boolean(els["setting-chat-engine-web"]?.checked)) {
+    const advanced = els["setting-web-mode-advanced"];
+    if (advanced) advanced.hidden = !isWebEngine;
+    const pageImagesGroup = els["setting-web-page-images-group"];
+    if (pageImagesGroup) pageImagesGroup.hidden = !isWebEngine || !els["setting-web-input-mode-auto"]?.checked;
   }
 
   function fitSettingsDialog(dialog) {
@@ -5791,6 +5802,9 @@
       translationProviderProfiles,
       chatUsesTranslationModel: sharedChatModel,
       chatEngine: isWebEngine ? "deepseek_web" : "api",
+      webPageImageQuality: els["setting-web-page-image-quality"].value,
+      webInputMode: els["setting-web-input-mode-auto"].checked ? "auto" : "clipboard",
+      deleteWebTranslationSessions: els["setting-delete-web-translation-sessions"].checked,
       mineruModel: "vlm",
       // MinerU's stable parsing profile is intentionally not user-configurable.
       mineruOCR: false,
@@ -5886,6 +5900,7 @@
     els["settings-dialog"].style.height = "auto";
     if (!els["settings-dialog"].open) els["settings-dialog"].showModal();
     requestAnimationFrame(() => {
+      syncDeepSeekWebBounds();
       fitSettingsDialog(els["settings-dialog"]);
       const field = focusID ? els[focusID] : null;
       field?.focus();
@@ -7150,10 +7165,17 @@
       renderTaskMessages();
     });
     els["settings-advanced"].addEventListener("toggle", () => {
+      requestAnimationFrame(() => {
+        fitSettingsDialog(els["settings-dialog"]);
+        syncDeepSeekWebBounds();
+      });
+    });
+    els["setting-web-mode-advanced"].addEventListener("toggle", () => {
       requestAnimationFrame(() => fitSettingsDialog(els["settings-dialog"]));
     });
     els["settings-dialog"].addEventListener("close", () => {
       els["settings-dialog"].style.height = "auto";
+      requestAnimationFrame(() => syncDeepSeekWebBounds());
     });
 
     if (els["ai-mode-api-button"]) {
@@ -7625,6 +7647,8 @@
         updateChatModelSectionVisibility();
       });
     }
+    els["setting-web-input-mode-auto"].addEventListener("change", () => updateWebModeAdvancedControls());
+    els["setting-web-input-mode-clipboard"].addEventListener("change", () => updateWebModeAdvancedControls());
     els["provider-card-api-key"].addEventListener("input", () => {
       const hasValue = Boolean(els["provider-card-api-key"].value.trim());
       const existing = providerCardByID(state.editingProviderCardID);

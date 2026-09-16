@@ -772,6 +772,11 @@
         chatImageSize: String(U.getPref("chatImageSize", "auto") || "auto"),
         chatImageQuality: String(U.getPref("chatImageQuality", "auto") || "auto"),
         chatImageFormat: String(U.getPref("chatImageFormat", "png") || "png"),
+        webPageImageQuality: ["none", "low", "medium", "high"].includes(String(U.getPref("webPageImageQuality", "medium")))
+          ? String(U.getPref("webPageImageQuality", "medium"))
+          : "medium",
+        webInputMode: U.getPref("webInputMode", "auto") === "clipboard" ? "clipboard" : "auto",
+        deleteWebTranslationSessions: Boolean(U.getPref("deleteWebTranslationSessions", true)),
         targetLanguage: U.normalizeLanguageName(U.getPref("targetLanguage", "简体中文"), "简体中文"),
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,
         machineSourceLanguage: U.normalizeLanguageName(U.getPref("machineSourceLanguage", "英文"), "英文"),
@@ -842,6 +847,11 @@
         chatImageFormat: ["png", "jpeg", "webp"].includes(String(values.chatImageFormat ?? current.chatImageFormat))
           ? String(values.chatImageFormat ?? current.chatImageFormat)
           : "png",
+        webPageImageQuality: ["none", "low", "medium", "high"].includes(String(values.webPageImageQuality ?? current.webPageImageQuality))
+          ? String(values.webPageImageQuality ?? current.webPageImageQuality)
+          : "medium",
+        webInputMode: values.webInputMode === "clipboard" ? "clipboard" : "auto",
+        deleteWebTranslationSessions: Boolean(values.deleteWebTranslationSessions ?? current.deleteWebTranslationSessions),
         targetLanguage: U.normalizeLanguageName(values.targetLanguage ?? current.targetLanguage, "简体中文"),
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,
         machineSourceLanguage: U.normalizeLanguageName(values.machineSourceLanguage ?? current.machineSourceLanguage, "英文"),

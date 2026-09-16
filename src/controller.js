@@ -372,9 +372,22 @@
         } catch (_) {}
       };
       applyBounds(browser, left, top, width, height);
+      // 远程 browser 位于原生层，HTML dialog 无法可靠地盖住它。模态界面
+      // 打开时让它留在原位但变暗且不可交互，既维持侧栏结构也不会抢焦点。
+      if (Boolean(bounds.dimmed)) {
+        browser.style.opacity = "0.38";
+        browser.style.pointerEvents = "none";
+        if (mask) {
+          mask.setAttribute("hidden", "true");
+          mask.style.display = "none";
+        }
+        return { ok: true, visible: true, dimmed: true, left, top, width, height };
+      }
+      browser.style.opacity = "";
+      browser.style.pointerEvents = "";
       browser.style.display = "flex";
 
-      const dimmed = Boolean(bounds.dimmed);
+      const dimmed = false;
       if (mask) {
         if (dimmed) {
           applyBounds(mask, left, top, width, height);

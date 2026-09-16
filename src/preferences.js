@@ -215,6 +215,11 @@ var LitMTransControllerPreferences = {
       this.setSelectValue(this.$("chat-reasoning-effort"), settings.chatReasoningEffort || "default");
       this.$("chat-api-key").value = settings.chatAPIKey || "";
       this.$("chat-engine-web").checked = settings.chatEngine === "deepseek_web";
+      this.$("web-page-image-quality").value = settings.webPageImageQuality || "medium";
+      this.$("web-input-mode-auto").checked = (settings.webInputMode || "auto") === "auto";
+      this.$("web-input-mode-clipboard").checked = settings.webInputMode === "clipboard";
+      this.$("delete-web-translation-sessions").checked = settings.deleteWebTranslationSessions !== false;
+      document.getElementById("litmtrans-pref-web-mode-advanced").open = false;
       this.$("target-language").value = settings.targetLanguage || "简体中文";
       this.$("machine-source-language").value = settings.machineSourceLanguage || "英文";
       this.$("translation-mode").value = settings.translationMode || "full_context";
@@ -237,22 +242,28 @@ var LitMTransControllerPreferences = {
 
   updateChatModelSectionVisibility() {
     const isWebEngine = Boolean(this.$("chat-engine-web")?.checked);
-    const webNotice = document.getElementById("litmtrans-pref-web-mode-notice");
-    if (webNotice) webNotice.hidden = !isWebEngine;
     const modelForm = document.getElementById("litmtrans-pref-model-form-container");
     if (modelForm) modelForm.hidden = isWebEngine;
-    const chatWebNotice = document.getElementById("litmtrans-pref-chat-web-mode-notice");
-    if (chatWebNotice) chatWebNotice.hidden = !isWebEngine;
+    this.updateWebModeAdvancedControls(isWebEngine);
     const sharedToggle = this.$("chat-uses-translation-model");
     if (sharedToggle) {
       sharedToggle.disabled = isWebEngine || this.isWebMachineTranslationProvider(this.$("provider").value);
     }
     const shared = !isWebEngine && Boolean(sharedToggle?.checked);
     const chatGroup = document.getElementById("litmtrans-pref-chat-model-group");
-    if (chatGroup) chatGroup.hidden = !isWebEngine && shared;
+    if (chatGroup) chatGroup.hidden = isWebEngine || shared;
+    const modelHeading = document.getElementById("litmtrans-pref-model-heading");
+    if (modelHeading) modelHeading.textContent = isWebEngine ? "模型设置" : "翻译模型设置";
     document.querySelector(".litmtrans-pref-board")?.classList.toggle("litmtrans-shared-chat-model", shared);
     const formContainer = this.$("chat-form-container");
     if (formContainer) formContainer.hidden = Boolean(isWebEngine || shared);
+  },
+
+  updateWebModeAdvancedControls(isWebEngine = Boolean(this.$("chat-engine-web")?.checked)) {
+    const advanced = document.getElementById("litmtrans-pref-web-mode-advanced");
+    if (advanced) advanced.hidden = !isWebEngine;
+    const pageImagesGroup = document.getElementById("litmtrans-pref-web-page-images-group");
+    if (pageImagesGroup) pageImagesGroup.hidden = !isWebEngine || !this.$("web-input-mode-auto")?.checked;
   },
 
   updateCustomTranslationInstruction(forceOpen = false) {
@@ -278,6 +289,9 @@ var LitMTransControllerPreferences = {
       translationProviderProfiles: { ...(this.settings?.translationProviderProfiles || {}), [translationProvider]: { baseURL: this.$("base-url").value.trim(), model: this.$("model").value.trim(), thinkingMode: this.$("thinking-mode").value, reasoningEffort: this.$("reasoning-effort").value } },
       chatUsesTranslationModel: sharedChatModel,
       chatEngine: this.$("chat-engine-web").checked ? "deepseek_web" : "api",
+      webPageImageQuality: this.$("web-page-image-quality").value,
+      webInputMode: this.$("web-input-mode-auto").checked ? "auto" : "clipboard",
+      deleteWebTranslationSessions: this.$("delete-web-translation-sessions").checked,
       chatProvider, chatBaseURL: this.$("chat-base-url").value.trim(), chatModel: this.$("chat-model").value.trim(),
       chatThinkingMode: this.$("chat-thinking-mode").value, chatReasoningEffort: this.$("chat-reasoning-effort").value,
       chatProviderProfiles: { ...(this.settings?.chatProviderProfiles || {}), [chatProvider]: { baseURL: this.$("chat-base-url").value.trim(), model: this.$("chat-model").value.trim(), thinkingMode: this.$("chat-thinking-mode").value, reasoningEffort: this.$("chat-reasoning-effort").value } },
@@ -385,6 +399,8 @@ var LitMTransControllerPreferences = {
     this.$("chat-engine-web").addEventListener("change", () => {
       this.updateChatModelSectionVisibility();
     });
+    this.$("web-input-mode-auto").addEventListener("change", () => this.updateWebModeAdvancedControls());
+    this.$("web-input-mode-clipboard").addEventListener("change", () => this.updateWebModeAdvancedControls());
     this.$("provider").addEventListener("change", () => this.providerChanged(""));
     this.$("base-url").addEventListener("input", () => this.updateDeepSeekFastLayoutControl());
     this.$("deepseek-fast-layout").addEventListener("change", () => this.updateDeepSeekFastLayoutControl());

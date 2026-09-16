@@ -5,8 +5,16 @@
   LitMTrans.DeepSeekWeb = LitMTrans.DeepSeekWeb || {};
   const U = LitMTrans.Utils;
 
-  const DPI_SCALE = 100 / 72; // 100 dpi (~1.388) 标清阅读清晰度，图表可辨，体积缩减90%
-  const JPEG_QUALITY = 0.75;
+  const PAGE_IMAGE_PROFILES = Object.freeze({
+    low: { cacheDir: "pages-v4-low", scale: 100 / 72, quality: 0.75 },
+    // 默认档沿用当前页面图规格，也兼容此前已生成的 pages-v3 缓存。
+    medium: { cacheDir: "pages-v3", scale: 150 / 72, quality: 0.85 },
+    high: { cacheDir: "pages-v4-high", scale: 220 / 72, quality: 0.92 }
+  });
+
+  function pageImageProfile(value) {
+    return PAGE_IMAGE_PROFILES[String(value || "medium").toLowerCase()] || PAGE_IMAGE_PROFILES.medium;
+  }
 
   function base64ToUint8Array(base64) {
     const clean = base64.replace(/\s+/g, "");
@@ -80,9 +88,9 @@
   }
 
   // 特权域自加载渲染：文档实例与画布同域（备选路径，见 renderAndCachePages）
-  async function renderSinglePageToCanvas(pdfDoc, pageNum, doc) {
+  async function renderSinglePageToCanvas(pdfDoc, pageNum, doc, scale) {
     const page = await pdfDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: DPI_SCALE });
+    const viewport = page.getViewport({ scale });
     const canvas = createCanvas(doc);
     canvas.width = Math.round(viewport.width);
     canvas.height = Math.round(viewport.height);
@@ -123,9 +131,32 @@
       this.storage = controller.storage;
     }
 
-    getPagesDir(documentID) {
+    getPagesDir(documentID, profile) {
       const docDir = PathUtils.join(this.storage.documentsRoot, String(documentID));
-      return PathUtils.join(docDir, "deepseek-web", "pages-v2");
+      return PathUtils.join(docDir, "deepseek-web", profile.cacheDir);
+    }
+
+    getPageImagesRoot(documentID) {
+      const docDir = PathUtils.join(this.storage.documentsRoot, String(documentID));
+      return PathUtils.join(docDir, "deepseek-web");
+    }
+
+    async removeObsoletePages(documentID, activeCacheDir, options = {}) {
+      const candidates = ["pages-v2", ...Object.values(PAGE_IMAGE_PROFILES).map(profile => profile.cacheDir)];
+      for (const cacheDir of candidates) {
+        if (cacheDir === activeCacheDir) continue;
+        try {
+          await IOUtils.remove(PathUtils.join(this.getPageImagesRoot(documentID), cacheDir), { recursive: true, ignoreAbsent: true });
+        } catch (error) {
+          options.emit?.({ type: "warning", message: `[探针5-Provider] 页面图缓存清理失败: ${error?.message || error}` });
+          return;
+        }
+      }
+      options.emit?.({ type: "log", message: "[探针5-Provider] 已清理其他清晰度的页面图缓存" });
+    }
+
+    async clearPageCaches(documentID, options = {}) {
+      await this.removeObsoletePages(documentID, "", options);
     }
 
     // 主渲染路径：预览 iframe 是 content 域页面，pdf.js 文档、页面代理与画布
@@ -161,15 +192,15 @@
     // 报 "not a function"），因此把整段渲染逻辑放进 iframe 自身域内 eval 执行，
     // 让 pdf.js 的文档、页面代理与画布天然同域；注入参数仅为数字，结果以
     // JSON 字符串回传（字符串跨 Realm 无损）。
-    async renderGroupInPreview(ctx, pageNums) {
+    async renderGroupInPreview(ctx, pageNums, profile) {
       const { cw } = ctx;
       const code = `
         (async () => {
           const pdfDocument = window.PDFViewerApplication && window.PDFViewerApplication.pdfDocument;
           if (!pdfDocument) return JSON.stringify({ ok: false, error: "PDFViewerApplication.pdfDocument 不可用" });
           const pages = ${JSON.stringify(pageNums)};
-          const scale = ${DPI_SCALE};
-          const quality = ${JPEG_QUALITY};
+          const scale = ${profile.scale};
+          const quality = ${profile.quality};
           const canvases = [];
           for (const pageNum of pages) {
             const page = await pdfDocument.getPage(pageNum);
@@ -309,7 +340,8 @@
     }
 
     async renderAndCachePages(runtime, documentID, options = {}) {
-      const pagesDir = this.getPagesDir(documentID);
+      const profile = pageImageProfile(options.quality);
+      const pagesDir = this.getPagesDir(documentID, profile);
       await this.storage.ensureDir(pagesDir);
 
       const diagnostics = [];
@@ -367,6 +399,7 @@
       }
 
       if (allCached && targetPaths.length) {
+        await this.removeObsoletePages(documentID, profile.cacheDir, options);
         return { images: targetPaths, downgraded: false, cached: true };
       }
 
@@ -375,12 +408,12 @@
         const filePath = targetPaths[i];
         if (await IOUtils.exists(filePath)) continue;
 
-        options.emit?.({ type: "log", message: `[探针5-Provider] 正在准备文献标清页面 (${i + 1}/${strategy.groups.length})...` });
+        options.emit?.({ type: "log", message: `[探针5-Provider] 正在准备文献高清页面 (${i + 1}/${strategy.groups.length})...` });
 
         let dataUrl = null;
         try {
           if (iframeCtx) {
-            dataUrl = await this.renderGroupInPreview(iframeCtx, group.pages);
+            dataUrl = await this.renderGroupInPreview(iframeCtx, group.pages, profile);
           } else if (selfDoc) {
             const win = runtime.window
               || runtime.browser?.ownerGlobal
@@ -389,10 +422,10 @@
             const doc = win?.document || runtime.browser?.contentDocument || document;
             const renderedCanvases = [];
             for (const pageNum of group.pages) {
-              renderedCanvases.push(await renderSinglePageToCanvas(selfDoc, pageNum, doc));
+              renderedCanvases.push(await renderSinglePageToCanvas(selfDoc, pageNum, doc, profile.scale));
             }
             const finalCanvas = await stitchCanvasesHorizontal(renderedCanvases, doc);
-            dataUrl = finalCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
+            dataUrl = finalCanvas.toDataURL("image/jpeg", profile.quality);
           }
         } catch (err) {
           options.emit?.({ type: "warning", message: `[探针6-页图] 第 ${i + 1} 组页面渲染失败（${group.filename}）: ${err?.message || err}` });
@@ -408,6 +441,9 @@
       const readyPaths = [];
       for (const p of targetPaths) {
         if (await IOUtils.exists(p)) readyPaths.push(p);
+      }
+      if (readyPaths.length === targetPaths.length && targetPaths.length) {
+        await this.removeObsoletePages(documentID, profile.cacheDir, options);
       }
       return {
         images: readyPaths,

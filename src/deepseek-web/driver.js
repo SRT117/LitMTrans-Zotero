@@ -309,14 +309,16 @@
 
       if (res?.error) throw new Error(res.error);
 
-      const waitTimeout = Math.min(25000, Math.max(3000, filesPayload.length * 800));
-      await this.execute("wait-attachments-ready", {
+      // 上传完成后以输入区发送按钮恢复可用为准；不能用全页 loading 状态，
+      // 否则页面其他异步组件会让已经完成的附件额外空等数秒。
+      const waitTimeout = Math.min(12000, Math.max(1500, filesPayload.length * 250));
+      const ready = await this.execute("wait-attachments-ready", {
         timeout: waitTimeout,
         chatInputSelectors: SELECTORS.chatInput,
         sendButtonSelectors: SELECTORS.sendButton
-      }, waitTimeout + 2000).catch(() => null);
+      }, waitTimeout + 1000).catch(() => null);
 
-      await U.sleep(300, signal);
+      if (!ready?.ready) await U.sleep(150, signal);
       return true;
     }
 

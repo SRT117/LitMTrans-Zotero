@@ -798,6 +798,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .settings-advanced > summary span { font-size: 12px; font-weight: 700; }
 .settings-advanced > summary small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .settings-advanced-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; padding-top: 10px; }
+.web-page-images-setting { align-content: start; }
 @media (prefers-reduced-motion: reduce) {
   .settings-advanced > summary::before { transition: none; }
 }
@@ -806,6 +807,14 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .web-mode-toggle { align-items: flex-start; }
 .web-mode-toggle span { display: grid; gap: 2px; line-height: 1.35; }
 .web-mode-toggle small { color: var(--muted); font-size: 10px; }
+.web-mode-advanced { border: 1px solid var(--line); background: var(--surface-2); }
+.web-mode-advanced > summary { padding: 7px 8px; color: var(--ink-2); font-size: 11px; font-weight: 700; cursor: pointer; }
+.web-mode-advanced-body { display: grid; gap: 7px; padding: 0 8px 8px; }
+.web-mode-advanced-body .inline-check { font-size: 11px; }
+.web-mode-advanced-body select { width: 100%; }
+.web-mode-input-modes { display: grid; gap: 5px; }
+.web-mode-choice { display: grid !important; grid-template-columns: 16px minmax(0, 1fr); justify-content: start; align-items: center; gap: 6px; color: var(--ink-2); font-size: 11px; }
+.web-mode-choice input[type="radio"] { box-sizing: border-box; width: 16px; min-width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; }
 .web-mode-notice {
   padding: 8px 10px;
   border-radius: 5px;

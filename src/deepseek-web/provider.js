@@ -108,7 +108,7 @@
         clearTimeout(session.timer);
         session.timer = null;
       }
-      if (session.sessionURL && session.driver) {
+      if (this.controller?.getSettings?.().deleteWebTranslationSessions !== false && session.sessionURL && session.driver) {
         try {
           await session.driver.deleteCurrentSession(session.sessionURL);
         } catch (_) {}
@@ -182,6 +182,15 @@
       try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
 
       const runtime = this.resolveRuntime(options);
+      const webSettings = this.controller?.getSettings?.() || {};
+      if (webSettings.webInputMode === "clipboard") {
+        this.controller.loadDeepSeekWeb(runtime);
+        this.controller.ensureDeepSeekWebVisible?.(runtime);
+        const prompt = formatFullPrompt(messages);
+        const copied = this.controller.writeClipboardText?.(prompt);
+        if (!copied?.copied) throw new Error("提示词复制到剪贴板失败");
+        throw new Error("提示词已复制到剪贴板，请在右侧 DeepSeek 网页中手动粘贴并发送。");
+      }
       this.controller.loadDeepSeekWeb(runtime);
       this.controller.ensureDeepSeekWebVisible?.(runtime);
       this.emitDeepSeekBrowserState(runtime, options.emit, "网页面板打开");
@@ -421,27 +430,34 @@
             });
           }
 
-          // 页面普通清晰度图集（单页约 100~150KB，用于多模态图表排版理解）
+          const pageImageQuality = this.controller?.getSettings?.().webPageImageQuality || "medium";
           let imagePaths = [];
-          try {
-            const maxImages = uploadFiles.length ? 48 : 49;
-            const pageResult = await this.pageRenderer.renderAndCachePages(runtime, documentID, {
-              maxImages,
-              emit: options.emit
-            });
-            if (pageResult.downgraded && pageResult.message) {
-              options.onReasoning?.(`[系统提醒] ${pageResult.message}\n\n`);
+          if (pageImageQuality === "none") {
+            await this.pageRenderer.clearPageCaches(documentID, { emit: options.emit });
+            options.emit?.({ type: "log", message: "[探针5-Provider] 已按设置跳过论文页面图上传" });
+          } else {
+            try {
+              const maxImages = uploadFiles.length ? 48 : 49;
+              const pageResult = await this.pageRenderer.renderAndCachePages(runtime, documentID, {
+                maxImages,
+                quality: pageImageQuality,
+                emit: options.emit
+              });
+              if (pageResult.downgraded && pageResult.message) {
+                options.onReasoning?.(`[系统提醒] ${pageResult.message}\n\n`);
+              }
+              if (pageResult.error) {
+                options.emit?.({ type: "warning", message: `[探针5-Provider] ${pageResult.error}，跳过页面图像` });
+              }
+              imagePaths = pageResult.images || [];
+              if (imagePaths.length) {
+                const labels = { low: "低清晰度", medium: "中等清晰度", high: "高清晰度" };
+                options.emit?.({ type: "log", message: `[探针5-Provider] 页面${labels[pageImageQuality] || "中等清晰度"}图像就绪 (共 ${imagePaths.length} 页)` });
+              }
+            } catch (err) {
+              options.emit?.({ type: "warning", message: `[探针5-Provider] 页面图像准备遇到问题: ${err.message || err}，降级为纯文本模式` });
+              options.onReasoning?.(`[页面图像准备提醒] ${err.message || err}，将以纯文本模式提交。\n\n`);
             }
-            if (pageResult.error) {
-              options.emit?.({ type: "warning", message: `[探针5-Provider] ${pageResult.error}，跳过页面图像` });
-            }
-            imagePaths = pageResult.images || [];
-            if (imagePaths.length) {
-              options.emit?.({ type: "log", message: `[探针5-Provider] 页面标清图像就绪 (共 ${imagePaths.length} 页)` });
-            }
-          } catch (err) {
-            options.emit?.({ type: "warning", message: `[探针5-Provider] 页面图像准备遇到问题: ${err.message || err}，降级为纯文本模式` });
-            options.onReasoning?.(`[页面图像准备提醒] ${err.message || err}，将以纯文本模式提交。\n\n`);
           }
 
           // 合并上传列表
