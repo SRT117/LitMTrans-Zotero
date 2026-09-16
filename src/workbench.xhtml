@@ -45,7 +45,7 @@
         <button id="export-pdf-button" class="icon-button" type="button" title="导出当前显示的译文为PDF" aria-label="导出当前显示的译文为PDF">导出</button>
         <button id="clean-reader-button" class="icon-button" type="button" title="隐藏对话侧栏" aria-label="隐藏对话侧栏">专注阅读</button>
         <button id="system-messages-button" class="icon-button" type="button" title="查看任务和系统消息" aria-label="查看消息">消息</button>
-        <button id="settings-button" class="icon-button" type="button" title="设置" aria-label="设置">⚙</button>
+        <button id="settings-button" class="icon-button" type="button" title="设置" aria-label="设置"><svg class="settings-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.37-.31-.6-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98L14.5 2.42C14.47 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.5.42L9.12 5.07c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.08-.48 0-.6.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65c-.19.15-.25.42-.12.64l2 3.46c.12.22.37.31.6.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1c.23.08.48 0 .6-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z" fill="currentColor" fill-rule="evenodd"></path></svg></button>
       </div>
     </header>
 
@@ -298,13 +298,13 @@
 
         <section class="settings-section translation-model-section settings-card-model">
           <h3 id="setting-model-heading">翻译模型设置</h3>
-          <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span><strong>使用DeepSeek官方网页模式（免API密钥）</strong><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
+          <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span><strong>使用DeepSeek官方网页模式</strong><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
           <details id="setting-web-mode-advanced" class="web-mode-advanced" hidden="hidden">
             <summary>网页模式进阶配置</summary>
             <div class="web-mode-advanced-body">
               <div class="web-mode-input-modes"><label class="web-mode-choice"><input id="setting-web-input-mode-auto" name="web-input-mode" type="radio" value="auto" /><span>自动注入图片与提示词</span></label><label class="web-mode-choice"><input id="setting-web-input-mode-clipboard" name="web-input-mode" type="radio" value="clipboard" /><span>仅复制提示词到剪贴板</span></label></div>
               <label class="inline-check"><input id="setting-delete-web-translation-sessions" type="checkbox" /> 翻译后删除临时翻译对话条目</label>
-              <div id="setting-web-page-images-group" class="web-page-images-setting"><label>论文图片清晰度<select id="setting-web-page-image-quality"><option value="none">不发送</option><option value="low">低清晰度</option><option value="medium">中等清晰度</option><option value="high">高清晰度</option></select></label></div>
+              <div id="setting-web-page-images-group" class="web-page-images-setting"><label>发送给网页AI的PDF页面转图片的清晰度<select id="setting-web-page-image-quality"><option value="none">不发送</option><option value="low">低清晰度</option><option value="medium">中等清晰度</option><option value="high">高清晰度</option></select></label></div>
             </div>
           </details>
           <div id="setting-model-form-container">

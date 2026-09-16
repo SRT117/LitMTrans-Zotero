@@ -31,14 +31,14 @@
           </html:div>
           <html:div class="litmtrans-shared-toggle litmtrans-web-mode-toggle">
             <html:input id="litmtrans-pref-chat-engine-web" type="checkbox"/>
-            <html:label for="litmtrans-pref-chat-engine-web"><html:strong>使用DeepSeek官方网页模式（免API密钥）</html:strong><html:span>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</html:span></html:label>
+            <html:label for="litmtrans-pref-chat-engine-web"><html:strong>使用DeepSeek官方网页模式</html:strong><html:span>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</html:span></html:label>
           </html:div>
           <html:details id="litmtrans-pref-web-mode-advanced" class="litmtrans-web-mode-advanced" hidden="hidden">
             <html:summary>网页模式进阶配置</html:summary>
             <html:div class="litmtrans-web-mode-advanced-body">
               <html:div class="litmtrans-web-mode-input-modes"><html:label><html:input id="litmtrans-pref-web-input-mode-auto" name="web-input-mode" type="radio" value="auto"/><html:span>自动注入图片与提示词</html:span></html:label><html:label><html:input id="litmtrans-pref-web-input-mode-clipboard" name="web-input-mode" type="radio" value="clipboard"/><html:span>仅复制提示词到剪贴板</html:span></html:label></html:div>
               <html:label><html:input id="litmtrans-pref-delete-web-translation-sessions" type="checkbox"/> 翻译后删除临时翻译对话条目</html:label>
-              <html:div id="litmtrans-pref-web-page-images-group"><html:label>论文图片清晰度<html:select id="litmtrans-pref-web-page-image-quality"><html:option value="none">不发送</html:option><html:option value="low">低清晰度</html:option><html:option value="medium">中等清晰度</html:option><html:option value="high">高清晰度</html:option></html:select></html:label></html:div>
+              <html:div id="litmtrans-pref-web-page-images-group"><html:label>发送给网页AI的PDF页面转图片的清晰度<html:select id="litmtrans-pref-web-page-image-quality"><html:option value="none">不发送</html:option><html:option value="low">低清晰度</html:option><html:option value="medium">中等清晰度</html:option><html:option value="high">高清晰度</html:option></html:select></html:label></html:div>
             </html:div>
           </html:details>
           <html:div id="litmtrans-pref-model-form-container">

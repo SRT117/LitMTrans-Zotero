@@ -101,6 +101,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .button-danger-quiet { border-color: color-mix(in srgb, var(--danger) 50%, var(--line)); color: var(--danger); background: var(--danger-soft); }
 .button-icon { font-family: var(--mono); font-size: 12px; }
 .icon-button { min-width: 34px; height: 34px; display: inline-grid; place-items: center; padding: 0 7px; font-weight: 700; }
+.settings-icon { width: 18px; height: 18px; display: block; fill: currentColor; }
 .icon-button.small { min-width: 28px; height: 28px; padding: 0 5px; }
 .toolbar-divider { width: 1px; height: 24px; margin: 0 2px; background: var(--line); }
 
