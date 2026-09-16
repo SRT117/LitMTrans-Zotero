@@ -32,11 +32,26 @@ function fillControlledInput(target, text, win) {
     if (typeof target.focus === "function") target.focus();
   } catch (_) {}
 
-  // 1. 重置 React 内部 tracker 缓存
+  const previousValue = String(target.value || target.textContent || "");
+
+  if (target.isContentEditable) {
+    try {
+      target.textContent = text;
+      target.dispatchEvent(new targetWin.InputEvent("input", {
+        bubbles: true,
+        cancelable: true,
+        data: String(text),
+        inputType: "insertText"
+      }));
+      return true;
+    } catch (_) {}
+  }
+
+  // React 需要得知写入前的值，才能接收原生 setter 触发的 input 事件。
   try {
     const rawTarget = target.wrappedJSObject || target;
     if (rawTarget._valueTracker) {
-      rawTarget._valueTracker.setValue("");
+      rawTarget._valueTracker.setValue(previousValue);
     }
   } catch (_) {}
 
@@ -643,6 +658,7 @@ async function openSessionMenu(doc, win, expectedURL) {
   }
   if (!menu) throw new Error("未找到当前会话的菜单按钮");
   menu.click();
+  return row;
 }
 
 export class LitMTransDeepSeekChild extends JSWindowActorChild {
@@ -681,6 +697,18 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         url: href,
         hasInput: Boolean(input)
       };
+    }
+
+    if (action === "append-draft") {
+      const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
+      if (!input) throw new Error("未找到DeepSeek输入框，请先登录网页。");
+      const text = String(payload.text || "");
+      const current = String(input.value ?? input.textContent ?? "");
+      if (text && !fillControlledInput(input, `${current}${current ? "\n\n" : ""}${text}\n\n`, win)) {
+        throw new Error("无法写入DeepSeek输入框。");
+      }
+      input.focus();
+      return { ok: true };
     }
 
     if (action === "new-chat") {
@@ -892,6 +920,7 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         } catch (_) {}
       }
 
+      if (!attached) throw new Error("无法将附件添加到DeepSeek网页，请稍后重试。");
       return { ok: true, count: payload.files.length };
     }
 
@@ -931,16 +960,22 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
       }
       if (subAction === "rename" && sessionRows(doc).some(row =>
           row.url === sessionURL(payload.expectedURL, doc) && row.title === payload.newTitle)) return { ok: true };
-        await openSessionMenu(doc, win, payload.expectedURL);
+        const menuRow = await openSessionMenu(doc, win, payload.expectedURL);
         if (subAction === "rename") {
           const option = await waitFor(() => labeledControl(doc, ["重命名", "Rename"]));
           if (!option) throw new Error("未找到重命名菜单项");
           option.click();
           const input = await waitFor(() => {
             const dialog = doc.querySelector(DIALOG_SELECTOR);
-            const row = sessionRows(doc).find(row => row.url === sessionURL(payload.expectedURL, doc))?.element;
-            const scope = dialog || row?.parentElement;
-            return scope && Array.from(scope.querySelectorAll("input:not([type='file']), textarea"))
+            const currentRow = sessionRows(doc).find(row => row.url === sessionURL(payload.expectedURL, doc))?.element;
+            const scopes = [dialog, currentRow, menuRow, menuRow?.parentElement, menuRow?.parentElement?.parentElement]
+              .filter(Boolean);
+            for (const scope of scopes) {
+              const found = Array.from(scope.querySelectorAll("input:not([type='file']), textarea, [role='textbox'], [contenteditable='true']"))
+                .find(node => visible(node) && node.id !== "chat-input");
+              if (found) return found;
+            }
+            return Array.from(doc.querySelectorAll("input:not([type='file']), textarea, [role='textbox'], [contenteditable='true']"))
               .find(node => visible(node) && node.id !== "chat-input");
           });
           if (!input) throw new Error("未找到会话名称输入框");

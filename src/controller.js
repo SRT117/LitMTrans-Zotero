@@ -2145,8 +2145,7 @@
               pdfRawRects,
               pdfReaderView: "both",
               title: localize("Zotero阅读器选文", "Zotero Reader selection")
-            },
-            prompt: localize("请解释这段内容，并说明它在全文中的作用。", "Explain this passage and its role in the document.")
+            }
           });
         });
         append(button);
@@ -3207,11 +3206,13 @@
         case "chat-send":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const engine = payload.engine || (payload.aiMode === "web" ? "deepseek_web" : undefined);
+            const engine = payload.engine === "deepseek_web" || payload.aiMode === "web"
+              ? "deepseek_web"
+              : "api";
             const probeMsg = `[探针2-控制器] chat-send: doc=${context.documentID}, taskType=${payload.taskType}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });
             try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
-            return this.chat.send(context.documentID, payload.sessionID, payload.text, {
+            return this.chat.send(context.documentID, this.chat.documentSessionID(engine), payload.text, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
               referenceQuotes: Array.isArray(payload.referenceQuotes) ? payload.referenceQuotes : [],
@@ -3231,11 +3232,17 @@
         case "chat-resend":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            return this.chat.resend(context.documentID, payload.sessionID, payload.messageID, {
+            const engine = payload.engine === "deepseek_web" || payload.aiMode === "web"
+              ? "deepseek_web"
+              : "api";
+            return this.chat.resend(context.documentID, this.chat.documentSessionID(engine), payload.messageID, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
               referenceQuotes: Array.isArray(payload.referenceQuotes) ? payload.referenceQuotes : [],
-              responseLanguage: payload.responseLanguage
+              responseLanguage: payload.responseLanguage,
+              engine,
+              aiMode: engine === "deepseek_web" ? "web" : "api",
+              runtime
             }, emit, signal);
           });
 
@@ -3245,11 +3252,17 @@
           const message = session.messages.find(row => row.id === payload.messageID);
           if (message?.role === "user") {
             return this.withOperation(runtime, "chat", async (signal, emit) => {
-              return this.chat.editMessage(context.documentID, payload.sessionID, payload.messageID, payload.text, {
+              const engine = payload.engine === "deepseek_web" || payload.aiMode === "web"
+                ? "deepseek_web"
+                : "api";
+              return this.chat.editMessage(context.documentID, this.chat.documentSessionID(engine), payload.messageID, payload.text, {
                 contextMode: payload.contextMode,
                 selectedText: payload.selectedText,
                 referenceQuotes: Array.isArray(payload.referenceQuotes) ? payload.referenceQuotes : [],
-                responseLanguage: payload.responseLanguage
+                responseLanguage: payload.responseLanguage,
+                engine,
+                aiMode: engine === "deepseek_web" ? "web" : "api",
+                runtime
               }, emit, signal);
             });
           }
@@ -3364,6 +3377,22 @@
 
         case "load-deepseek-web":
           return this.loadDeepSeekWeb(runtime, Boolean(payload.reload));
+
+        case "deepseek-web-reference": {
+          await this.loadDeepSeekWeb(runtime, false);
+          const driver = this.ensureDeepSeekDriver(runtime);
+          if (!driver) throw new Error("DeepSeek网页尚未就绪，请稍后重试。");
+          if (payload.image) {
+            const decoded = this.decodeImageDataURL(payload.image.dataURL, runtime.window);
+            const extension = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp", "image/jp2": "jp2", "image/svg+xml": "svg" }[decoded.mimeType];
+            const name = `${U.safeStem(String(payload.image.name || "reference-image").replace(/\.(?:png|jpe?g|webp|gif|bmp|jp2|svg)$/i, ""), 100)}.${extension}`;
+            await driver.attachFiles([{ name, type: decoded.mimeType, base64: U.encodeBytesBase64(decoded.bytes) }]);
+          }
+          const quote = payload.quote;
+          const text = String(quote?.formulaTex || quote?.text || "").trim();
+          const page = quote?.pageLabel || quote?.page;
+          return driver.appendDraft(text ? `[${quote?.type === "formula" ? "公式引用" : "文献引用"}${page ? ` · 第 ${page} 页` : ""}]\n${text}` : "");
+        }
 
         case "set-deepseek-web-bounds":
           return this.setDeepSeekWebBounds(runtime, payload);

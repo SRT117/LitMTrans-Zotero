@@ -1,7 +1,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = 11;
+  const SCRIPT_VERSION = 18;
   try {
     dump("[LitMTrans-ContentScript] Loaded into: " + (content?.location?.href || "none") + "\n");
   } catch (_) {}
@@ -78,11 +78,26 @@
       if (typeof target.focus === "function") target.focus();
     } catch (_) {}
 
-    // 1. 重置 React 内部 tracker 缓存，确保后续 value 赋值被 React 识别为有更新
+    const previousValue = String(target.value || target.textContent || "");
+
+    if (target.isContentEditable) {
+      try {
+        target.textContent = text;
+        target.dispatchEvent(new targetWin.InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          data: String(text),
+          inputType: "insertText"
+        }));
+        return true;
+      } catch (_) {}
+    }
+
+    // 重置 React 内部 tracker 为写入前的值，确保 value 更新能被组件识别。
     try {
       const rawTarget = target.wrappedJSObject || target;
       if (rawTarget._valueTracker) {
-        rawTarget._valueTracker.setValue("");
+        rawTarget._valueTracker.setValue(previousValue);
       }
     } catch (_) {}
 
@@ -799,6 +814,76 @@
           return null;
         }
 
+        function visible(element) {
+          if (!element) return false;
+          const style = win?.getComputedStyle?.(element);
+          return style?.display !== "none" && style?.visibility !== "hidden";
+        }
+
+        function sessionMenuButton(item) {
+          const itemRect = item?.getBoundingClientRect?.();
+          if (!itemRect) return null;
+          const itemCenterY = (itemRect.top + itemRect.bottom) / 2;
+          const controls = [...(doc?.querySelectorAll?.("button, [role='button']") || [])]
+            .filter(visible)
+            .map(control => ({ control, rect: control.getBoundingClientRect?.() }))
+            .filter(({ rect }) => rect && rect.width > 0 && rect.height > 0)
+            // 仅允许目标条目同一行、且靠近其右端的控件；顶部“多选”不满足此条件。
+            .filter(({ rect }) => Math.abs((rect.top + rect.bottom) / 2 - itemCenterY) <= Math.max(12, itemRect.height * 0.55))
+            .filter(({ rect }) => rect.left >= itemRect.right - 72 && rect.left <= itemRect.right + 24)
+            .map(({ control, rect }) => {
+              const metadata = [
+                control.getAttribute?.("aria-label"), control.getAttribute?.("title"),
+                control.getAttribute?.("data-testid"), control.getAttribute?.("aria-haspopup"), control.textContent
+              ].join(" ");
+              const semanticMenu = /(?:更多|more|menu|ellipsis|\.\.\.)/i.test(metadata) || /menu/i.test(control.getAttribute?.("aria-haspopup") || "");
+              const iconOnly = !String(control.textContent || "").trim() && Boolean(control.querySelector?.("svg"));
+              return { control, rect, score: (semanticMenu ? 1000 : 0) + (iconOnly ? 100 : 0) + rect.left };
+            })
+            .sort((left, right) => right.score - left.score);
+          return controls[0]?.control || null;
+        }
+
+        function menuOption(labels) {
+          const wanted = labels.map(label => String(label).toLowerCase());
+          return [...(doc?.querySelectorAll?.("[role='menuitem'], button, [role='button'], li, div") || [])]
+            .filter(visible)
+            .find(element => wanted.includes(String(element.textContent || "").trim().toLowerCase())) || null;
+        }
+
+        function renameInputForItem(item) {
+          const candidates = [...(doc?.querySelectorAll?.("input, textarea, [role='textbox'], [contenteditable='true']") || [])]
+            .filter(visible);
+          const active = doc?.activeElement;
+          if (active && candidates.includes(active)) return active;
+          const itemRect = item?.getBoundingClientRect?.();
+          if (itemRect) {
+            const centerY = (itemRect.top + itemRect.bottom) / 2;
+            const onSameRow = candidates.find(candidate => {
+              const rect = candidate.getBoundingClientRect?.();
+              return rect && Math.abs((rect.top + rect.bottom) / 2 - centerY) <= Math.max(18, itemRect.height);
+            });
+            if (onSameRow) return onSameRow;
+          }
+          return candidates[0] || null;
+        }
+
+        function editableDiagnostics() {
+          return [...(doc?.querySelectorAll?.("input, textarea, [role='textbox'], [contenteditable='true']") || [])]
+            .filter(visible)
+            .slice(0, 12)
+            .map(element => {
+              const rect = element.getBoundingClientRect?.();
+              return [
+                element.tagName?.toLowerCase(),
+                `type=${element.getAttribute?.("type") || ""}`,
+                `role=${element.getAttribute?.("role") || ""}`,
+                `contenteditable=${element.getAttribute?.("contenteditable") || ""}`,
+                `rect=${Math.round(rect?.left || 0)},${Math.round(rect?.top || 0)},${Math.round(rect?.width || 0)}x${Math.round(rect?.height || 0)}`
+              ].join(" ");
+            }).join(" | ") || "无可见可编辑节点";
+        }
+
         if (subAction === "list") {
           let found = [];
           const selectors = payload.sessionSelectors || ["[class*='session-item']", "nav a", "aside a"];
@@ -848,8 +933,16 @@
           sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: selected } });
         } else if (subAction === "rename") {
           ensureSidebarOpen();
-          await delay(200);
-          const activeItem = sessionItemForURL(payload.expectedURL);
+          let activeItem = null;
+          // 新建会话在 DeepSeek 自动生成标题前只提供“多选/删除”。
+          // 此阶段不打开菜单，等标题和完整操作菜单就绪后再执行重命名。
+          for (let attempt = 0; attempt < 80; attempt++) {
+            activeItem = sessionItemForURL(payload.expectedURL);
+            if (!activeItem) break;
+            const currentTitle = String(activeItem.textContent || "").replace(/\s+/g, " ").trim();
+            if (currentTitle && !/^(?:新对话|new chat)$/i.test(currentTitle)) break;
+            await delay(250);
+          }
           if (!activeItem) {
             sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到目标会话" } });
             return;
@@ -860,32 +953,50 @@
             activeItem.dispatchEvent(new MouseEventCtor("mouseover", { bubbles: true }));
           } catch (_) {}
           await delay(150);
-          const menuBtn = activeItem?.querySelector("[class*='more'], [class*='menu'], [aria-label*='更多'], [aria-label*='More'], button:has(svg), svg");
+          const menuBtn = sessionMenuButton(activeItem);
           if (!menuBtn || !triggerClick(menuBtn, win)) {
             sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到会话菜单" } });
             return;
           }
           await delay(300);
-          const renameOption = findElement(doc, ["div[role='menuitem']:has-text('重命名')", "button:has-text('重命名')", "div[role='menuitem']:has-text('Rename')", "button:has-text('Rename')"]);
+          const renameOption = menuOption(["重命名", "Rename"]);
           if (renameOption) {
             triggerClick(renameOption, win);
-            await delay(300);
-            const renameInput = activeItem?.querySelector("input") || doc?.querySelector("input[value]");
+            let renameInput = null;
+            for (let attempt = 0; attempt < 20; attempt++) {
+              const targetItem = sessionItemForURL(payload.expectedURL);
+              renameInput = targetItem?.querySelector?.("input, textarea, [role='textbox'], [contenteditable='true']")
+                || renameInputForItem(targetItem || activeItem);
+              if (renameInput && visible(renameInput)) break;
+              renameInput = null;
+              await delay(100);
+            }
             let renamed = false;
             if (renameInput) {
               fillControlledInput(renameInput, payload.newTitle, win?.wrappedJSObject || win);
               triggerEnter(renameInput, win?.wrappedJSObject || win);
-              for (let attempt = 0; attempt < 20; attempt++) {
+              await delay(100);
+              try { renameInput.blur?.(); } catch (_) {}
+              try {
+                renameInput.dispatchEvent(new (win?.FocusEvent || win?.Event || Event)("focusout", { bubbles: true }));
+              } catch (_) {}
+              for (let attempt = 0; attempt < 8; attempt++) {
                 const targetItem = sessionItemForURL(payload.expectedURL);
                 const title = (targetItem?.textContent || "").replace(/\s+/g, " ").trim();
                 if (title.includes(String(payload.newTitle || "").trim())) {
                   renamed = true;
                   break;
                 }
-                await delay(150);
+                await delay(100);
               }
             }
-            sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: renamed, error: renamed ? "" : "会话标题未保存" } });
+            sendAsyncMessage("litmtrans:deepseek:response", {
+              id,
+              result: {
+                ok: renamed,
+                error: renamed ? "" : (renameInput ? "会话标题未保存" : `未找到会话名称输入框；编辑节点：${editableDiagnostics()}`)
+              }
+            });
           } else {
             sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: false, error: "未找到重命名操作" } });
           }

@@ -30,10 +30,15 @@
       if (msg.role === "user") {
         if (typeof msg.content === "string") return msg.content.trim();
         if (Array.isArray(msg.content)) {
-          return msg.content
+          const text = msg.content
             .filter(part => part?.type === "text" || typeof part === "string")
             .map(part => typeof part === "string" ? part : part.text || "")
             .join("\n").trim();
+          // ChatService 为 API 组装的首轮内容含有整篇文献；网页端已将
+          // 正文作为附件上传，只保留末尾的用户问题及本轮引用上下文。
+          const marker = "===== 用户问题 =====";
+          const markerIndex = text.lastIndexOf(marker);
+          return (markerIndex >= 0 ? text.slice(markerIndex + marker.length) : text).trim();
         }
       }
     }
@@ -57,6 +62,25 @@
       }
     }
     return parts.join("\n\n");
+  }
+
+  function latestUserImageFiles(messages = []) {
+    const latest = [...(Array.isArray(messages) ? messages : [])].reverse()
+      .find(message => message?.role === "user");
+    const parts = Array.isArray(latest?.content) ? latest.content : [];
+    const files = [];
+    for (const part of parts) {
+      // 文献正文中的图没有本地附件 ID，已由网页端按页图策略上传。
+      // 这里只接收用户在本轮从阅读器额外加入的图片。
+      if (!String(part?.localAttachmentID || "")) continue;
+      const dataURL = String(part?.image_url?.url || "");
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i.exec(dataURL);
+      if (!match) continue;
+      const mimeType = match[1].toLowerCase();
+      const extension = mimeType === "image/jpeg" ? "jpg" : (mimeType.split("/")[1] || "png").replace(/[^a-z0-9]+/g, "");
+      files.push({ name: `litmtrans-question-image-${files.length + 1}.${extension || "png"}`, type: mimeType, base64: match[2] });
+    }
+    return files;
   }
 
   class DeepSeekWebProvider {
@@ -368,9 +392,10 @@
       if (this.activeTranslationSessions.has(documentID)) {
         await this.finalizeTranslationSession(documentID, "switch-to-document-task");
       }
-      const itemTitle = options.itemTitle || runtime.itemTitle || "Paper";
-      const sessionTitle = `litmtrans-${sanitizePrefix(itemTitle)}-${documentID}`;
+      const attachmentTitle = options.itemTitle || runtime.itemTitle || "文献正文";
+      const sessionKey = documentID;
       const sessionPath = this.storage.path(documentID, "deepseek-web", "session.json");
+      const questionImages = latestUserImageFiles(messages);
 
       const abortListener = () => {
         void driver.stop();
@@ -382,34 +407,21 @@
         options.emit?.({ type: "log", message: "[探针5-Provider] completeDocumentTask: 开始等待DeepSeek网页就绪" });
         await driver.ensureReady(30000, signal, options.emit);
 
-        if (!this.establishedSessions.has(sessionTitle)) {
+        if (!this.establishedSessions.has(sessionKey)) {
           const saved = await this.storage.readJSON(sessionPath, null);
-          if (saved?.documentID === documentID && saved.url) this.establishedSessions.set(sessionTitle, saved.url);
+          if (saved?.documentID === documentID && saved.url) this.establishedSessions.set(sessionKey, saved.url);
         }
-        let isFirstRound = !this.establishedSessions.has(sessionTitle);
+        let isFirstRound = !this.establishedSessions.has(sessionKey);
         if (!isFirstRound) {
-          const selected = await driver.selectSession(sessionTitle, documentID, this.establishedSessions.get(sessionTitle));
+          const selected = await driver.selectSession("", documentID, this.establishedSessions.get(sessionKey));
           if (!selected) {
-            this.establishedSessions.delete(sessionTitle);
+            this.establishedSessions.delete(sessionKey);
             isFirstRound = true;
           }
         }
-        const pDoc = `[探针5-Provider] completeDocumentTask: docID=${documentID}, session=${sessionTitle}, isFirstRound=${isFirstRound}`;
+        const pDoc = `[探针5-Provider] completeDocumentTask: docID=${documentID}, isFirstRound=${isFirstRound}`;
         options.emit?.({ type: "log", message: pDoc });
         try { Zotero.debug?.(`[LitMTrans-Probe] ${pDoc}`); } catch (_) {}
-
-        if (isFirstRound) {
-          // 检查网页端是否已有同名会话（通过专属名称或稳定 documentID 匹配）
-          const existingSessions = await driver.listSessions();
-          const found = existingSessions.find(s => s.title === sessionTitle);
-          if (found) {
-            options.emit?.({ type: "log", message: `[探针5-Provider] 找到已有会话，直接切换进入: ${sessionTitle}` });
-            if (!await driver.selectSession(sessionTitle, documentID, found.url)) throw new Error("未能打开已有文献会话");
-            this.establishedSessions.set(sessionTitle, found.url);
-            await this.storage.writeJSON(sessionPath, { documentID, title: sessionTitle, url: found.url });
-            isFirstRound = false;
-          }
-        }
 
         if (isFirstRound) {
           // 首轮：开启新会话，上传文献资料 + 指令
@@ -439,7 +451,7 @@
             const mdBytes = encoder.encode(markdown);
             const mdBase64 = uint8ArrayToBase64(mdBytes);
             uploadFiles.push({
-              name: `${sanitizePrefix(itemTitle) || "文献正文"}.md`,
+              name: `${sanitizePrefix(attachmentTitle) || "文献正文"}.md`,
               type: "text/markdown",
               base64: mdBase64
             });
@@ -452,7 +464,7 @@
             options.emit?.({ type: "log", message: "[探针5-Provider] 已按设置跳过论文页面图上传" });
           } else {
             try {
-              const maxImages = uploadFiles.length ? 48 : 49;
+              const maxImages = Math.max(0, (uploadFiles.length ? 48 : 49) - questionImages.length);
               const pageResult = await this.pageRenderer.renderAndCachePages(runtime, documentID, {
                 maxImages,
                 quality: pageImageQuality,
@@ -486,6 +498,10 @@
             await driver.attachFiles(uploadFiles, signal);
             options.emit?.({ type: "log", message: "[探针5-Provider] 附件上传完成" });
           }
+          if (questionImages.length) {
+            options.emit?.({ type: "log", message: `[DeepSeek网页] 正在附加本轮图片（${questionImages.length} 张）` });
+            await driver.attachImages(questionImages, signal);
+          }
 
           // 打包首轮文本：若正文已作为附件上传，输入框只发送用户指令
           let payload = "";
@@ -498,6 +514,7 @@
           }
 
           options.emit?.({ type: "log", message: `[探针5-Provider] 正在提交问答消息 (字数=${payload.length})...` });
+          let sessionURL = "";
           const result = await driver.submitMessage(payload, {
             signal,
             timeout: options.timeout || 300000,
@@ -506,16 +523,17 @@
             onReasoning: options.onReasoning,
             onUsage: options.onUsage,
             onSessionReady: async url => {
-              this.establishedSessions.set(sessionTitle, url);
-              await this.storage.writeJSON(sessionPath, { documentID, title: sessionTitle, url });
-              try { await driver.renameCurrentSession(sessionTitle, url); }
-              catch (error) { options.emit?.({ type: "warning", message: `文献会话命名失败：${error.message}` }); }
+              sessionURL = url;
+              this.establishedSessions.set(sessionKey, url);
+              await this.storage.writeJSON(sessionPath, { documentID, url });
             }
           });
 
-          if (result.sessionURL) this.establishedSessions.set(sessionTitle, result.sessionURL);
-          try { await driver.renameCurrentSession(sessionTitle, result.sessionURL); }
-          catch (error) { options.emit?.({ type: "warning", message: `文献会话命名未完成：${error.message}` }); }
+          sessionURL = result.sessionURL || sessionURL || this.establishedSessions.get(sessionKey) || "";
+          if (sessionURL) {
+            this.establishedSessions.set(sessionKey, sessionURL);
+            await this.storage.writeJSON(sessionPath, { documentID, url: sessionURL });
+          }
 
           options.emit?.({ type: "log", message: `[探针5-Provider] 问答首轮响应完成 (字数=${result?.content?.length || 0})` });
           return {
@@ -527,6 +545,10 @@
         } else {
           // 后续追问：仅发送当前纯文本问题，零附件重复
           const prompt = extractUserPrompt(messages);
+          if (questionImages.length) {
+            options.emit?.({ type: "log", message: `[DeepSeek网页] 正在附加本轮图片（${questionImages.length} 张）` });
+            await driver.attachImages(questionImages, signal);
+          }
           options.emit?.({ type: "log", message: `[探针5-Provider] 正在提交追问消息 (字数=${prompt.length})...` });
           const result = await driver.submitMessage(prompt, {
             signal,

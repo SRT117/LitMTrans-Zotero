@@ -157,30 +157,44 @@
     }
 
     async execute(action, payload = {}, timeoutMs = 15000) {
-      const actor = this.getActor();
-      const started = Date.now();
-      const query = actor.sendQuery("LitMTrans:DeepSeek:execute", { action, payload });
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = setTimer(() => {
-          let detail = "";
-          try {
-            const errors = Services.console.getMessageArray().filter(entry =>
-              Number(entry.timeStamp) >= started
-              && /DeepSeekActorChild|LitMTransDeepSeek/.test(`${entry.sourceName || ""} ${entry.message || ""}`));
-            detail = errors.slice(-2).map(entry => entry.message).join("；");
-          } catch (_) {}
-          reject(new Error(`DeepSeek网页通信超时 (${action})${detail ? `：${detail}` : ""}`));
-        }, timeoutMs);
-      });
-
-      try {
-        return await Promise.race([query, timeout]);
-      } finally {
-        if (timer) {
-          clearTimer(timer);
+      // 页面路由提交时会短暂替换 WindowGlobal。读取状态和会话管理可以在
+      // 新 Actor 建立后安全重试；提交消息本身不可重试，避免重复发送。
+      const mayRetryAfterNavigation = new Set([
+        "check-ready", "get-assistant-text", "is-generating", "click-continue", "session-action"
+      ]).has(action);
+      const deadline = Date.now() + timeoutMs;
+      let lastError = null;
+      for (let attempt = 0; attempt < (mayRetryAfterNavigation ? 3 : 1); attempt++) {
+        const started = Date.now();
+        let timer;
+        try {
+          const actor = this.getActor();
+          const query = actor.sendQuery("LitMTrans:DeepSeek:execute", { action, payload });
+          const remaining = Math.max(1, deadline - Date.now());
+          const timeout = new Promise((_, reject) => {
+            timer = setTimer(() => {
+              let detail = "";
+              try {
+                const errors = Services.console.getMessageArray().filter(entry =>
+                  Number(entry.timeStamp) >= started
+                  && /DeepSeekActorChild|LitMTransDeepSeek/.test(`${entry.sourceName || ""} ${entry.message || ""}`));
+                detail = errors.slice(-2).map(entry => entry.message).join("；");
+              } catch (_) {}
+              reject(new Error(`DeepSeek网页通信超时 (${action})${detail ? `：${detail}` : ""}`));
+            }, remaining);
+          });
+          return await Promise.race([query, timeout]);
+        } catch (error) {
+          lastError = error;
+          const message = String(error?.message || error);
+          const actorReplaced = /Actor ['"]LitMTransDeepSeek['"] destroyed|WindowGlobal 尚未建立/i.test(message);
+          if (!mayRetryAfterNavigation || !actorReplaced || Date.now() >= deadline || attempt >= 2) throw error;
+          await U.sleep(300);
+        } finally {
+          if (timer) clearTimer(timer);
         }
       }
+      throw lastError || new Error(`DeepSeek网页通信失败 (${action})`);
     }
 
     async ensureReady(timeoutMs = 30000, signal = null, emit = null) {
@@ -326,6 +340,13 @@
       return this.attachFiles(filePaths, signal);
     }
 
+    async appendDraft(text) {
+      await this.ensureReady(10000);
+      const result = await this.execute("append-draft", { text, chatInputSelectors: SELECTORS.chatInput });
+      if (!result?.ok) throw new Error(result?.error || "无法将引用添加到DeepSeek输入框。");
+      return result;
+    }
+
     async listSessions() {
       const res = await this.execute("session-action", {
         subAction: "list",
@@ -349,13 +370,7 @@
       return true;
     }
 
-async renameCurrentSession(newTitle, expectedURL) {
-const res = await this.execute("session-action", { subAction: "rename", newTitle, expectedURL }, 12000);
-if (!res?.ok) throw new Error(res?.error || "DeepSeek会话重命名未完成");
-return true;
-}
-
-async deleteCurrentSession(expectedURL) {
+    async deleteCurrentSession(expectedURL) {
 const res = await this.execute("session-action", { subAction: "delete", expectedURL }, 12000);
 if (!res?.ok) throw new Error(res?.error || "DeepSeek临时会话删除未完成");
 await this.navigate("https://chat.deepseek.com/");

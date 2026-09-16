@@ -435,6 +435,9 @@
       taskInstruction: role === "user" ? String(message.taskInstruction || "").trim() : "",
       diagramMode: role === "user" && ["none", "mindmap", "flowchart"].includes(String(message.diagramMode || "")) ? String(message.diagramMode) : "none",
       formatInstruction: role === "user" ? String(message.formatInstruction || "").trim() : "",
+      transport: role === "user" && (message.transport?.engine === "deepseek_web" || message.engine === "deepseek_web" || message.aiMode === "web")
+        ? { engine: "deepseek_web" }
+        : { engine: "api" },
       reasoning: role === "assistant"
         ? String(message.reasoning ?? message.reasoning_content ?? message.thinking ?? "")
         : "",
@@ -687,10 +690,12 @@
       return this.storage.path(documentID, "chat");
     }
 
-    documentSessionID() {
-      // The attachment, rather than a user-created chat, is the durable
-      // conversation identity in the embedded literature reader.
-      return "document-chat";
+    documentSessionID(engine = "api") {
+      // 网页端的本地编排缓存不能与可见的 API 对话共用同一会话；远程
+      // DeepSeek 会话仍由网页驱动以文献 ID 单独管理。
+      return engine === "deepseek_web" || engine === "web"
+        ? "web-document-chat"
+        : "document-chat";
     }
 
     indexPath(documentID) {
@@ -814,18 +819,20 @@
       };
     }
 
-    async ensureDocumentSession(documentID) {
+    async ensureDocumentSession(documentID, sessionID = "") {
       await this.storage.ensureDir(this.root(documentID));
-      const id = this.documentSessionID();
+      const id = String(sessionID || this.documentSessionID()).replace(/[^A-Za-z0-9_-]+/g, "") || this.documentSessionID();
       const existing = await this.storage.readJSON(this.sessionPath(documentID, id), null);
       if (existing && typeof existing === "object") return existing;
 
       // Preserve the most recent conversation when consolidating the session
       // index, then retire the older entries.
       const legacyIndex = await this.storage.readJSON(this.indexPath(documentID), []);
-      const legacyRows = (Array.isArray(legacyIndex) ? legacyIndex : [])
-        .filter(row => row?.id && String(row.id) !== id)
-        .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+      const legacyRows = id === this.documentSessionID()
+        ? (Array.isArray(legacyIndex) ? legacyIndex : [])
+          .filter(row => row?.id && String(row.id) !== id && String(row.id) !== this.documentSessionID("web"))
+          .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+        : [];
       const legacy = legacyRows.length
         ? await this.storage.readJSON(this.sessionPath(documentID, legacyRows[0].id), null)
         : null;
@@ -834,7 +841,7 @@
         version: 3,
         ...(legacy && typeof legacy === "object" ? legacy : {}),
         id,
-        title: "当前文献对话",
+        title: id === this.documentSessionID("web") ? "网页端文献会话" : "当前文献对话",
         titleCustom: false,
         createdAt: String(legacy?.createdAt || now),
         updatedAt: String(legacy?.updatedAt || now),
@@ -869,13 +876,13 @@
     }
 
     async loadSession(documentID, sessionID = "", present = true) {
-      const fallback = await this.ensureDocumentSession(documentID);
-      const id = this.documentSessionID();
+      const id = String(sessionID || this.documentSessionID()).replace(/[^A-Za-z0-9_-]+/g, "") || this.documentSessionID();
+      const fallback = await this.ensureDocumentSession(documentID, id);
       const raw = fallback;
       const session = {
         version: 3,
         id: String(raw.id || id),
-        title: String(raw.title || "当前文献对话"),
+        title: String(raw.title || (id === this.documentSessionID("web") ? "网页端文献会话" : "当前文献对话")),
         titleCustom: false,
         createdAt: String(raw.createdAt || new Date().toISOString()),
         updatedAt: String(raw.updatedAt || raw.createdAt || new Date().toISOString()),
@@ -1026,7 +1033,7 @@
     }
 
     async clearSession(documentID, sessionID) {
-      const session = await this.loadSession(documentID, this.documentSessionID(), false);
+      const session = await this.loadSession(documentID, sessionID || this.documentSessionID(), false);
       await this.storage.remove(this.attachmentDir(documentID, session.id), true);
       session.messages = [];
       session.sessionModel = "";
@@ -1087,7 +1094,10 @@
     async editMessage(documentID, sessionID, messageID, text, options = {}, emit = null, signal = null) {
       const content = String(text || "").trim();
       if (!content) throw new Error("消息内容不能为空");
-      let session = await this.loadSession(documentID, sessionID, false);
+      const transportSessionID = options.engine === "deepseek_web" || options.aiMode === "web"
+        ? this.documentSessionID("web")
+        : sessionID;
+      let session = await this.loadSession(documentID, transportSessionID, false);
       const index = session.messages.findIndex(message => message.id === messageID);
       if (index < 0) throw new Error("未找到要编辑的消息");
       if (session.messages[index].role === "user") {
@@ -2368,7 +2378,11 @@
       session.messages.splice(range.start + 1, range.end - range.start - 1);
       session = await this.saveSession(documentID, session, false);
       emit?.({ type: "chat-session", session: this.presentSession(documentID, session) });
-      return this.generateReply(documentID, session, range.start, options, emit, signal);
+      const storedEngine = session.messages[range.start]?.transport?.engine;
+      const transport = options.engine || options.aiMode
+        ? options
+        : { ...options, engine: storedEngine === "deepseek_web" ? "deepseek_web" : "api", aiMode: storedEngine === "deepseek_web" ? "web" : "api" };
+      return this.generateReply(documentID, session, range.start, transport, emit, signal);
     }
 
     async send(documentID, sessionID, userText, options = {}, emit = null, signal = null) {
@@ -2429,6 +2443,9 @@
         taskInstruction: task.taskInstruction,
         diagramMode: task.diagramMode,
         formatInstruction: task.formatInstruction,
+        transport: {
+          engine: options.engine === "deepseek_web" || options.aiMode === "web" ? "deepseek_web" : "api"
+        },
         createdAt: new Date().toISOString()
       });
       session = await this.saveSession(documentID, session, false);

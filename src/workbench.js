@@ -857,6 +857,7 @@
       return;
     }
     if (type === "chat-session") {
+      if (isWebChatSession(event.session)) return;
       state.currentSession = event.session || state.currentSession;
       if (state.pendingComposerSubmission) {
         state.pendingComposerSubmission = null;
@@ -869,6 +870,7 @@
       return;
     }
     if (type === "chat-delta") {
+      if (String(event.sessionID || "") === "web-document-chat") return;
       state.streamingChatMessageID = String(event.messageID || "streaming");
       state.streamingChatInsertIndex = Number.isInteger(event.insertIndex) ? event.insertIndex : -1;
       state.streamingChatText += String(event.delta || "");
@@ -883,6 +885,7 @@
       state.streamingChatInsertIndex = -1;
       state.streamingChatText = "";
       state.reasoning = "";
+      if (isWebChatSession(event.session)) return;
       state.currentSession = event.session || state.currentSession;
       void refreshChatSessions(false);
       renderChat();
@@ -895,6 +898,7 @@
       state.streamingChatInsertIndex = -1;
       state.streamingChatText = "";
       state.reasoning = "";
+      if (isWebChatSession(event.session)) return;
       state.currentSession = event.session || state.currentSession;
       renderChat();
     }
@@ -2964,7 +2968,12 @@
 
   async function addImageDescriptorToComposer(image) {
     if (!image) return;
+    const isWeb = state.aiMode === "web";
     const dataURL = await imageDescriptorDataURL(image);
+    if (isWeb) {
+      await prepareWebReference({ image: { name: image.name || "reference-image.png", dataURL } });
+      return;
+    }
     const decodedSize = dataURLByteLength(dataURL);
     state.pendingImages.push({
       id: `reused-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
@@ -2984,10 +2993,7 @@
     if (image.quote) appendReferenceQuote(image.quote);
     renderPendingImages();
     renderSelection();
-    els["chat-input"].focus();
-    if (!els["chat-input"].value.trim()) {
-      els["chat-input"].value = "请分析这张图片，说明图中信息、它与正文的关系，以及可以得出的主要结论。";
-    }
+    focusReferenceComposer();
     toast("图片已添加到对话");
   }
 
@@ -3414,8 +3420,7 @@
       displayContent = displaySource;
     }
     const askDiagramNode = node => {
-      els["chat-input"].value = `请解释“${node.label}”${node.detail ? `：${node.detail}` : ""}在当前文献中的含义和证据。`;
-      els["chat-input"].focus();
+      prepareReaderAsk({ type: "text", text: `${node.label || ""}${node.detail ? `：${node.detail}` : ""}`, title: "图形节点" });
     };
     const saveDiagramImage = async image => {
       try {
@@ -4221,12 +4226,21 @@
   }
 
   function chatContextPayload() {
+    const isWeb = state.aiMode === "web";
     return {
-      sessionID: state.currentSession?.id,
+      sessionID: isWeb ? "web-document-chat" : state.currentSession?.id,
       contextMode: "source",
       selectedText: state.selectedText,
-      referenceQuotes: state.referenceQuotes
+      referenceQuotes: state.referenceQuotes,
+      // 对话模式属于当前工作台，而不是可异步刷新的设置快照。所有入口都
+      // 显式携带它，避免重发、选文和附件提问回退到 API 默认链路。
+      engine: isWeb ? "deepseek_web" : "api",
+      aiMode: isWeb ? "web" : "api"
     };
+  }
+
+  function isWebChatSession(session) {
+    return String(session?.id || "") === "web-document-chat";
   }
 
   function hasParsedCurrentDocument() {
@@ -4426,14 +4440,7 @@
   function askLayoutFormula(target, event = null) {
     const quote = layoutFormulaQuote(target, event);
     if (!quote) return;
-    if (appendReferenceQuote(quote)) {
-      renderSelection();
-      if (!els["chat-input"].value.trim()) {
-        els["chat-input"].value = "请解释这个公式的含义、各符号的定义、它在文中的作用，以及必要的推导关系。";
-      }
-      els["chat-input"].focus();
-      toast("公式已加入本轮引用");
-    }
+    prepareReaderAsk(quote);
   }
 
   function applyFormulaPreviewTransform(scale = state.previewFormulaScale, anchor = null) {
@@ -4659,6 +4666,7 @@
   function setAIMode(mode, { syncPref = true } = {}) {
     const isWeb = mode === "web" || mode === "deepseek_web";
     state.aiMode = isWeb ? "web" : "api";
+    if (state.settings) state.settings.chatEngine = isWeb ? "deepseek_web" : "api";
     if (els["ai-mode-api-button"]) {
       els["ai-mode-api-button"].classList.toggle("active", !isWeb);
       els["ai-mode-api-button"].setAttribute("aria-selected", String(!isWeb));
@@ -4668,6 +4676,7 @@
       els["ai-mode-web-button"].setAttribute("aria-selected", String(isWeb));
     }
     if (els["ai-api-view"]) els["ai-api-view"].hidden = isWeb;
+    els["clear-chat-button"].hidden = isWeb;
     if (els["deepseek-web-container"]) els["deepseek-web-container"].hidden = !isWeb;
     if (isWeb) {
       void hostCall("load-deepseek-web").catch(error => toast(`DeepSeek网页加载失败：${error.message || error}`));
@@ -4679,6 +4688,7 @@
       void hostCall("save-chat-engine", { chatEngine: isWeb ? "deepseek_web" : "api" }).catch(() => {});
     }
     renderMessageNavigator();
+    renderSelection();
   }
 
   function syncDeepSeekWebBounds() {
@@ -4713,13 +4723,29 @@
     }
   }
 
-  function prepareReaderAsk(quote, prompt) {
-    if (!quote) return;
+  function focusReferenceComposer() {
     if (document.body.classList.contains("clean-reader-mode")) exitCleanReader({ focusChat: true });
+    requestAnimationFrame(() => {
+      syncDeepSeekWebBounds();
+      els["chat-input"].focus();
+    });
+  }
+
+  async function prepareWebReference(payload) {
+    if (document.body.classList.contains("clean-reader-mode")) exitCleanReader();
+    syncDeepSeekWebBounds();
+    await hostCall("deepseek-web-reference", payload);
+  }
+
+  function prepareReaderAsk(quote) {
+    if (!quote) return;
+    if (state.aiMode === "web") {
+      void prepareWebReference({ quote }).catch(error => toast(error.message || "添加网页引用失败", "error"));
+      return;
+    }
     appendReferenceQuote(quote);
     renderSelection();
-    if (!els["chat-input"].value.trim()) els["chat-input"].value = prompt;
-    els["chat-input"].focus();
+    focusReferenceComposer();
   }
 
   function renderNativePDFSelectionToolbar() {
@@ -4749,7 +4775,7 @@
       pdfRects: selection.pdfRects,
       pdfReaderView: state.readerView === "source" ? "source" : "both",
       title: "原始PDF选文"
-    }, "请解释这段内容，并结合全文说明它在文中的作用。");
+    });
     state.nativePDFSelection = null;
     renderNativePDFSelectionToolbar();
   }
@@ -4847,10 +4873,7 @@
         });
       }
       else if (selectionQuote) {
-        addAction("在对话中提问…", () => prepareReaderAsk(
-          selectionQuote,
-          "请解释这段内容，并结合全文说明它在文中的作用。"
-        ));
+        addAction("在对话中提问…", () => prepareReaderAsk(selectionQuote));
       }
       addAction("要点提炼", () => els["key-points-button"].click(), !state.data?.parsed?.markdown);
       addSeparator();
@@ -5132,7 +5155,7 @@
     els["selection-chip"].hidden = !hasQuotes && !legacyText;
     els["selection-text"].replaceChildren();
     if (hasQuotes) {
-      const sentQuoteCount = (state.currentSession?.messages || []).reduce(
+      const sentQuoteCount = (state.aiMode === "web" ? [] : state.currentSession?.messages || []).reduce(
         (total, message) => total + (Array.isArray(message?.referenceQuotes) ? message.referenceQuotes.length : 0),
         0
       );
@@ -6080,12 +6103,10 @@
 
   function applyOpenContext(payload) {
     if (payload.quote) {
-      if (typeof payload.quote === "object") appendReferenceQuote(payload.quote);
-      else appendReferenceQuote({ type: "text", text: String(payload.quote), pane: "source" });
       state.selectedText = "";
-      renderSelection();
+      prepareReaderAsk(typeof payload.quote === "object" ? payload.quote : { type: "text", text: String(payload.quote), pane: "source" });
     }
-    if (payload.prompt) {
+    if (payload.prompt && !payload.quote) {
       els["chat-input"].value = String(payload.prompt);
       els["chat-input"].focus();
     }
@@ -7470,32 +7491,29 @@
       state.reasoning = "";
       state.streamingChatText = "";
       try {
-        const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
+        const isWeb = state.aiMode === "web";
         addLog(`[探针2-工作台] 提交chat-send: isWeb=${isWeb}, engine=${isWeb ? "deepseek_web" : "api"}, taskType=${taskType || "none"}`, "info");
         const result = await hostCall("chat-send", {
-          sessionID: state.currentSession?.id,
+          ...chatContextPayload(),
           text,
           images,
           documents,
           documentOptions,
-          contextMode: "source",
-          selectedText: state.selectedText,
-          referenceQuotes: state.referenceQuotes,
-          taskType,
-          engine: isWeb ? "deepseek_web" : "api",
-          aiMode: state.aiMode
+          taskType
         });
         state.pendingComposerSubmission = null;
         state.pendingImages = [];
         state.pendingDocuments = [];
         renderPendingImages();
         renderPendingDocuments();
-        state.currentSession = result.session;
+        if (!isWeb) state.currentSession = result.session;
         state.selectedText = "";
         state.referenceQuotes = [];
         renderSelection();
-        await refreshChatSessions(false);
-        renderChat();
+        if (!isWeb) {
+          await refreshChatSessions(false);
+          renderChat();
+        }
       }
       catch (error) {
         if (state.pendingComposerSubmission) {
