@@ -3139,21 +3139,25 @@
         case "translate":
           return this.withOperation(runtime, "translate", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const engine = payload.engine || (payload.aiMode === "web" ? "deepseek_web" : undefined);
+            const prefTransProvider = U.getPref("translationProvider", "");
+            const isWeb = payload.engine === "deepseek_web" || payload.aiMode === "web" || prefTransProvider === "deepseek_web";
+            const engine = isWeb ? "deepseek_web" : (payload.engine || undefined);
             const probeMsg = `[探针2-控制器] translate: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });
             try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
-            return this.pipeline.translateStream(context, { ...payload, engine, runtime }, emit, signal);
+            return this.pipeline.translateStream(context, { ...payload, engine, aiMode: isWeb ? "web" : payload.aiMode, runtime }, emit, signal);
           });
 
         case "translate-layout":
           return this.withOperation(runtime, "layout", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const engine = payload.engine || (payload.aiMode === "web" ? "deepseek_web" : undefined);
+            const prefTransProvider = U.getPref("translationProvider", "");
+            const isWeb = payload.engine === "deepseek_web" || payload.aiMode === "web" || prefTransProvider === "deepseek_web";
+            const engine = isWeb ? "deepseek_web" : (payload.engine || undefined);
             const probeMsg = `[探针2-控制器] translate-layout: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });
             try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
-            return this.pipeline.translateLayout(context, { ...payload, engine, runtime }, emit, signal);
+            return this.pipeline.translateLayout(context, { ...payload, engine, aiMode: isWeb ? "web" : payload.aiMode, runtime }, emit, signal);
           });
 
         case "manual-translation-command": {
@@ -3188,7 +3192,6 @@
         case "create-layout-pdf-attachments":
           return this.createLayoutPDFAttachments(runtime, payload);
 
-
         case "translation-logs": {
           const context = await this.attachmentContext(attachmentID);
           return this.storage.readProcessLog(context.documentID, payload.limit);
@@ -3206,12 +3209,10 @@
         case "chat-send":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const engine = payload.engine === "deepseek_web" || payload.aiMode === "web"
+            const prefEngine = U.getPref("chatEngine", "api") === "deepseek_web" ? "deepseek_web" : "api";
+            const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
               ? "deepseek_web"
-              : "api";
-            const probeMsg = `[探针2-控制器] chat-send: doc=${context.documentID}, taskType=${payload.taskType}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
-            emit?.({ type: "log", message: probeMsg });
-            try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
+              : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
             return this.chat.send(context.documentID, this.chat.documentSessionID(engine), payload.text, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
@@ -3224,7 +3225,7 @@
               mindmap: Boolean(payload.mindmap),
               flowchart: Boolean(payload.flowchart),
               engine,
-              aiMode: payload.aiMode,
+              aiMode: engine === "deepseek_web" ? "web" : "api",
               runtime
             }, emit, signal);
           });
@@ -3232,9 +3233,10 @@
         case "chat-resend":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const engine = payload.engine === "deepseek_web" || payload.aiMode === "web"
+            const prefEngine = U.getPref("chatEngine", "api") === "deepseek_web" ? "deepseek_web" : "api";
+            const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
               ? "deepseek_web"
-              : "api";
+              : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
             return this.chat.resend(context.documentID, this.chat.documentSessionID(engine), payload.messageID, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
@@ -3252,9 +3254,10 @@
           const message = session.messages.find(row => row.id === payload.messageID);
           if (message?.role === "user") {
             return this.withOperation(runtime, "chat", async (signal, emit) => {
-              const engine = payload.engine === "deepseek_web" || payload.aiMode === "web"
+              const prefEngine = U.getPref("chatEngine", "api") === "deepseek_web" ? "deepseek_web" : "api";
+              const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
                 ? "deepseek_web"
-                : "api";
+                : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
               return this.chat.editMessage(context.documentID, this.chat.documentSessionID(engine), payload.messageID, payload.text, {
                 contextMode: payload.contextMode,
                 selectedText: payload.selectedText,

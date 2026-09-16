@@ -4226,7 +4226,7 @@
   }
 
   function chatContextPayload() {
-    const isWeb = state.aiMode === "web";
+    const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
     return {
       sessionID: isWeb ? "web-document-chat" : state.currentSession?.id,
       contextMode: "source",
@@ -6756,7 +6756,6 @@
         if (force) setStatus("正在重新翻译 · 当前仍显示上一版，完成后自动替换", null, "running");
         const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web" || state.settings?.translationProvider === "deepseek_web";
         const engine = isWeb ? "deepseek_web" : undefined;
-        addLog(`[探针1-工作台] 触发排版翻译: isWeb=${isWeb}, engine=${engine}, aiMode=${state.aiMode}`, "info");
         await runAction(
           "translate-layout",
           { mode: translationMode, force, engine, aiMode: state.aiMode },
@@ -6770,7 +6769,6 @@
       state.liveTranslationParts = [];
       const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web" || state.settings?.translationProvider === "deepseek_web";
       const engine = isWeb ? "deepseek_web" : undefined;
-      addLog(`[探针1-工作台] 触发流式翻译: isWeb=${isWeb}, engine=${engine}, aiMode=${state.aiMode}`, "info");
       await runAction("translate", { mode: translationMode, force, engine, aiMode: state.aiMode }, { success: force ? "重新翻译完成" : "全文翻译完成" });
     };
     els["translate-button"].addEventListener("click", () => { void startTranslation(); });
@@ -7158,7 +7156,6 @@
       toggleLayoutDebugMode(els["debug-boxes-check"].checked);
     });
     const submitPaperAITask = async taskType => {
-      addLog(`[探针1-工作台] 点击AI任务: ${taskType}, aiMode=${state.aiMode}, settings.chatEngine=${state.settings?.chatEngine}`, "info");
       if (!await ensureParsedBeforeChatSend()) return;
       if (state.running.has("chat")) {
         toast("正在生成回答，请稍候", "warning");
@@ -7491,8 +7488,7 @@
       state.reasoning = "";
       state.streamingChatText = "";
       try {
-        const isWeb = state.aiMode === "web";
-        addLog(`[探针2-工作台] 提交chat-send: isWeb=${isWeb}, engine=${isWeb ? "deepseek_web" : "api"}, taskType=${taskType || "none"}`, "info");
+        const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
         const result = await hostCall("chat-send", {
           ...chatContextPayload(),
           text,
@@ -7635,6 +7631,8 @@
       finally { button.disabled = false; }
     };
     const probeSiliconflowModel = (purpose) => {
+      if (state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web"
+        || els["setting-chat-engine-web"]?.checked) return;
       const chat = purpose === "chat";
       const provider = els[chat ? "setting-chat-provider" : "setting-provider"].value;
       const model = els[chat ? "setting-chat-model" : "setting-model"].value.trim();

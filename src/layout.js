@@ -2624,9 +2624,6 @@
         messages,
         0
       );
-      const probeGuideMsg = `[探针3-排版指南] 开始请求术语指南: engine=${settings.engine}, provider=${settings.provider}, hasRuntime=${Boolean(settings.runtime)}`;
-      emit?.({ type: "log", message: probeGuideMsg });
-      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeGuideMsg}`); } catch (_) {}
       const result = await this.llm.complete(messages, {
         purpose: "layout",
         documentID,
@@ -3159,9 +3156,6 @@
       // for the model, never a conclusive instruction to rewrite content.
       settings.enableUntranslatedCheck = settings.enableUntranslatedCheck !== false;
       const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...options, ...settings });
-      const probeLayoutMsg = `[探针3-排版服务] translate: isWeb=${isWeb}, engine=${options.engine || settings.engine}, aiMode=${options.aiMode}, hasRuntime=${Boolean(options.runtime || settings.runtime)}`;
-      emit?.({ type: "log", message: probeLayoutMsg });
-      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeLayoutMsg}`); } catch (_) {}
       let resolvedModel;
       if (isWeb) {
         resolvedModel = { provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
@@ -3169,6 +3163,7 @@
         settings.baseURL = "";
         settings.model = "deepseek-web";
         settings.engine = "deepseek_web";
+        settings.aiMode = "web";
         settings.runtime = options.runtime;
       } else {
         resolvedModel = await this.llm.ensureConfiguredModel(

@@ -403,6 +403,10 @@
         model: settings.model,
         apiKey: settings.apiKey,
         promptCacheKey: settings.promptCacheKey,
+        engine: settings.engine,
+        aiMode: settings.aiMode,
+        runtime: settings.runtime,
+        emit,
         timeout: TRANSLATION_REQUEST_TIMEOUT,
         firstEventTimeout: TRANSLATION_FIRST_EVENT_TIMEOUT,
         inactivityTimeout: TRANSLATION_INACTIVITY_TIMEOUT,
@@ -449,9 +453,6 @@
         return this.translateWebMachine(documentID, markdown, settings, emit, signal);
       }
       const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...options, ...settings });
-      const probeTransMsg = `[探针3-流式翻译] translate: isWeb=${isWeb}, engine=${options.engine || settings.engine}, aiMode=${options.aiMode}, hasRuntime=${Boolean(options.runtime || settings.runtime)}`;
-      emit?.({ type: "log", message: probeTransMsg });
-      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeTransMsg}`); } catch (_) {}
       let resolvedModel;
       if (isWeb) {
         resolvedModel = { provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
@@ -459,6 +460,7 @@
         settings.baseURL = "";
         settings.model = "deepseek-web";
         settings.engine = "deepseek_web";
+        settings.aiMode = "web";
         settings.runtime = options.runtime;
       } else {
         resolvedModel = await this.llm.ensureConfiguredModel(

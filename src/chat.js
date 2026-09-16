@@ -846,7 +846,7 @@
         createdAt: String(legacy?.createdAt || now),
         updatedAt: String(legacy?.updatedAt || now),
         apiCacheSessionID: String(legacy?.apiCacheSessionID || U.randomCacheKey()),
-        sessionModel: String(legacy?.sessionModel || ""),
+        sessionModel: id === this.documentSessionID("web") ? "deepseek-web" : String(legacy?.sessionModel || ""),
         documentFingerprint: String(legacy?.documentFingerprint || await this.currentDocumentFingerprint(documentID) || ""),
         archivedDocumentRevision: false,
         archivedAt: "",
@@ -887,7 +887,7 @@
         createdAt: String(raw.createdAt || new Date().toISOString()),
         updatedAt: String(raw.updatedAt || raw.createdAt || new Date().toISOString()),
         apiCacheSessionID: String(raw.apiCacheSessionID || U.randomCacheKey()),
-        sessionModel: String(raw.sessionModel || ""),
+        sessionModel: id === this.documentSessionID("web") ? "deepseek-web" : String(raw.sessionModel || ""),
         documentFingerprint: String(raw.documentFingerprint || ""),
         archivedDocumentRevision: Boolean(raw.archivedDocumentRevision),
         archivedAt: String(raw.archivedAt || ""),
@@ -1065,10 +1065,19 @@
       }
     }
 
-    updateSessionModel(session, emit = null) {
+    updateSessionModel(session, emit = null, options = null) {
+      const isWeb = session?.id === "web-document-chat"
+        || session?.id === this.documentSessionID("web")
+        || options?.engine === "deepseek_web"
+        || options?.aiMode === "web"
+        || options?.provider === "deepseek_web";
+      if (isWeb) {
+        session.sessionModel = "deepseek-web";
+        return session;
+      }
       const model = String(this.llm.getSettings("chat").model || "").trim();
       const previous = String(session?.sessionModel || "").trim();
-      if (previous && model && model !== previous) {
+      if (previous && previous !== "deepseek-web" && model && model !== previous) {
         emit?.({
           type: "warning",
           message: "对话模型已经更改。历史记录会保留，后续回答将使用新模型。"
@@ -2071,7 +2080,16 @@
     }
 
     async generateReply(documentID, session, userIndex, options = {}, emit = null, signal = null) {
-      const isWeb = this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+      const isWebSession = session?.id === this.documentSessionID("web")
+        || session?.id === "web-document-chat"
+        || session?.messages?.[userIndex]?.transport?.engine === "deepseek_web";
+      const isWeb = isWebSession
+        || options.engine === "deepseek_web"
+        || options.aiMode === "web"
+        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+      const replyOptions = isWeb
+        ? { ...options, engine: "deepseek_web", aiMode: "web", provider: "deepseek_web" }
+        : options;
       let resolvedModel;
       let settings;
       if (isWeb) {
@@ -2084,7 +2102,7 @@
         );
         settings = { ...this.llm.getSettings("chat"), model: resolvedModel.model };
       }
-      this.updateSessionModel(session, emit);
+      this.updateSessionModel(session, emit, replyOptions);
       const insertIndex = userIndex + 1;
       const sourceAlreadyInHistory = session.messages
         .slice(0, userIndex)
@@ -2224,8 +2242,9 @@
       const completionOptions = {
         purpose: "chat",
         documentID,
+        sessionID: session.id,
         provider: settings.provider,
-        engine: isWeb ? "deepseek_web" : undefined,
+        engine: isWeb ? "deepseek_web" : options.engine,
         aiMode: isWeb ? "web" : options.aiMode,
         promptCacheKey: session.apiCacheSessionID,
         runtime: options.runtime,
@@ -2362,11 +2381,24 @@
 
     async resend(documentID, sessionID, messageID, options = {}, emit = null, signal = null, editedText = undefined) {
       let session = await this.loadSession(documentID, sessionID, false);
-      this.updateSessionModel(session, emit);
       const range = findTurnRange(session.messages, messageID);
       if (!range || session.messages[range.start]?.role !== "user") {
         throw new Error("只能从用户消息所在的轮次重新生成回答");
       }
+      const storedEngine = session.messages[range.start]?.transport?.engine;
+      const isWeb = session.id === this.documentSessionID("web")
+        || session.id === "web-document-chat"
+        || storedEngine === "deepseek_web"
+        || session.messages[range.start]?.transport?.aiMode === "web"
+        || options.engine === "deepseek_web"
+        || options.aiMode === "web"
+        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+      const transport = isWeb
+        ? { ...options, engine: "deepseek_web", aiMode: "web", provider: "deepseek_web" }
+        : (options.engine || options.aiMode
+          ? options
+          : { ...options, engine: storedEngine === "deepseek_web" ? "deepseek_web" : "api", aiMode: storedEngine === "deepseek_web" ? "web" : "api" });
+      this.updateSessionModel(session, emit, transport);
       if (editedText !== undefined) {
         const content = String(editedText || "").trim();
         if (!content) throw new Error("消息内容不能为空");
@@ -2375,24 +2407,34 @@
           content
         };
       }
+      if (isWeb) {
+        session.messages[range.start].transport = {
+          ...(session.messages[range.start].transport || {}),
+          engine: "deepseek_web"
+        };
+      }
       session.messages.splice(range.start + 1, range.end - range.start - 1);
       session = await this.saveSession(documentID, session, false);
       emit?.({ type: "chat-session", session: this.presentSession(documentID, session) });
-      const storedEngine = session.messages[range.start]?.transport?.engine;
-      const transport = options.engine || options.aiMode
-        ? options
-        : { ...options, engine: storedEngine === "deepseek_web" ? "deepseek_web" : "api", aiMode: storedEngine === "deepseek_web" ? "web" : "api" };
       return this.generateReply(documentID, session, range.start, transport, emit, signal);
     }
 
     async send(documentID, sessionID, userText, options = {}, emit = null, signal = null) {
-      const incomingImages = Array.isArray(options.images) ? options.images : [];
-      const documents = (Array.isArray(options.documents) ? options.documents : [])
+      const isWeb = sessionID === "web-document-chat"
+        || sessionID === this.documentSessionID("web")
+        || options.engine === "deepseek_web"
+        || options.aiMode === "web"
+        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+      const sendOptions = isWeb
+        ? { ...options, engine: "deepseek_web", aiMode: "web", provider: "deepseek_web" }
+        : options;
+      const incomingImages = Array.isArray(sendOptions.images) ? sendOptions.images : [];
+      const documents = (Array.isArray(sendOptions.documents) ? sendOptions.documents : [])
         .map(normalizeDocumentAttachment).filter(Boolean);
-      const referenceQuotes = normalizeReferenceQuotes(options.referenceQuotes);
+      const referenceQuotes = normalizeReferenceQuotes(sendOptions.referenceQuotes);
       const rawQuestion = String(userText || "").trim();
       const imageCapabilityKey = String(this.llm.getSettings("chat").model || "").trim().toLowerCase();
-      const imagesAlreadyUnsupported = incomingImages.length && this.isImageUnsupported(imageCapabilityKey);
+      const imagesAlreadyUnsupported = !isWeb && incomingImages.length && this.isImageUnsupported(imageCapabilityKey);
       if (imagesAlreadyUnsupported && !rawQuestion && !documents.length && !referenceQuotes.length) {
         throw new Error("当前模型不支持图片输入。请更换支持图片的模型，或输入文字问题。");
       }
@@ -2406,7 +2448,7 @@
         || (documents.length ? "请先阅读并概括这些文档。" : (incomingImages.length ? "请结合当前文献分析这些图片。" : ""));
       if (!question && !referenceQuotes.length) throw new Error("请输入问题、添加图片、附加文档或引用文档内容");
       let session = await this.loadSession(documentID, sessionID, false);
-      this.updateSessionModel(session, emit);
+      this.updateSessionModel(session, emit, sendOptions);
       while (session.messages.length && session.messages[session.messages.length - 1]?.role === "user") {
         session.messages.pop();
       }
@@ -2424,7 +2466,7 @@
         );
       }
       const userMessageID = U.randomID("message");
-      const task = taskFor(options, this.llm.getSettings("chat"));
+      const task = taskFor(sendOptions, this.llm.getSettings("chat"));
       const attachments = await this.persistIncomingImages(
         documentID,
         session.id,
@@ -2437,20 +2479,20 @@
         content: question,
         attachments,
         documents,
-        documentOptions: normalizeDocumentOptions(options.documentOptions),
+        documentOptions: normalizeDocumentOptions(sendOptions.documentOptions),
         referenceQuotes,
         taskType: task.taskType,
         taskInstruction: task.taskInstruction,
         diagramMode: task.diagramMode,
         formatInstruction: task.formatInstruction,
         transport: {
-          engine: options.engine === "deepseek_web" || options.aiMode === "web" ? "deepseek_web" : "api"
+          engine: isWeb ? "deepseek_web" : "api"
         },
         createdAt: new Date().toISOString()
       });
       session = await this.saveSession(documentID, session, false);
       emit?.({ type: "chat-session", session: this.presentSession(documentID, session) });
-      return this.generateReply(documentID, session, session.messages.length - 1, options, emit, signal);
+      return this.generateReply(documentID, session, session.messages.length - 1, sendOptions, emit, signal);
     }
   }
 

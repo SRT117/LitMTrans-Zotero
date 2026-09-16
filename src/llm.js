@@ -947,11 +947,26 @@
     }
 
     isWebEngineActive(options = {}) {
-      if (options.engine === "deepseek_web" || options.provider === "deepseek_web" || options.aiMode === "web") return true;
-      if (options.engine === "api" || options.aiMode === "api") return false;
+      if (
+        options.engine === "deepseek_web"
+        || options.provider === "deepseek_web"
+        || options.aiMode === "web"
+        || options.sessionID === "web-document-chat"
+        || options.sessionId === "web-document-chat"
+        || options.session?.id === "web-document-chat"
+      ) {
+        return true;
+      }
+      const isExplicitAPI = options.engine === "api" || options.aiMode === "api";
       const chatEngine = U.getPref("chatEngine", "api");
+      const translationProvider = U.getPref("translationProvider", "");
+      if (options.purpose === "chat") {
+        if (isExplicitAPI) return false;
+        return chatEngine === "deepseek_web";
+      }
+      if (isExplicitAPI) return false;
+      if (translationProvider === "deepseek_web") return true;
       if (chatEngine === "deepseek_web") return true;
-      if (options.purpose !== "chat" && U.getPref("translationProvider", "") === "deepseek_web") return true;
       return false;
     }
 
@@ -1053,6 +1068,7 @@
     }
 
     async probeSiliconflowThinking(overrides = {}, signal = null) {
+      if (this.isWebEngineActive(overrides)) return { supported: null, cached: false };
       const settings = this.getSettings(overrides.purpose === "chat" ? "chat" : "translation");
       const provider = String(overrides.provider || settings.provider || "").toLowerCase();
       const baseURL = U.normalizeBaseURL(overrides.baseURL || settings.baseURL, provider);
@@ -1151,6 +1167,17 @@
     }
 
     async completeOnce(messages, options = {}) {
+      if (
+        this.isWebEngineActive(options)
+        || options.engine === "deepseek_web"
+        || options.aiMode === "web"
+        || options.provider === "deepseek_web"
+        || options.sessionID === "web-document-chat"
+        || options.sessionId === "web-document-chat"
+        || options.session?.id === "web-document-chat"
+      ) {
+        throw new Error("检测到网页模式请求试图调用API链路，已强制拦截以防产生API费用");
+      }
       const config = await this.ensureConfiguredModel(this.resolveConfig(options), options.signal);
       const geminiCompatibility = isGeminiProvider(config.provider, config.baseURL);
       const payload = {
@@ -1247,10 +1274,10 @@
         throw error;
       }
       const isWebEngine = this.isWebEngineActive(options);
-      const probeLLMMsg = `[探针4-LLM] complete: isWebEngine=${isWebEngine}, hasWebProvider=${Boolean(this.webProvider)}, purpose=${options.purpose}, engine=${options.engine}, aiMode=${options.aiMode}`;
-      options.emit?.({ type: "log", message: probeLLMMsg });
-      try { Zotero.debug?.(`[LitMTrans-Probe] ${probeLLMMsg}`); } catch (_) {}
-      if (isWebEngine && this.webProvider) {
+      if (isWebEngine) {
+        if (!this.webProvider) {
+          throw new Error("DeepSeek网页服务尚未就绪或未初始化，已阻止请求以防产生API费用");
+        }
         return this.webProvider.complete(messages, options);
       }
       const preliminary = this.resolveConfig(options);
@@ -1275,6 +1302,17 @@
     }
 
     async generateImage(prompt, options = {}) {
+      if (
+        this.isWebEngineActive(options)
+        || options.engine === "deepseek_web"
+        || options.aiMode === "web"
+        || options.provider === "deepseek_web"
+        || options.sessionID === "web-document-chat"
+        || options.sessionId === "web-document-chat"
+        || options.session?.id === "web-document-chat"
+      ) {
+        throw new Error("网页模式不支持调用图片生成API，已阻止请求以防产生API费用");
+      }
       const config = await this.ensureConfiguredModel(
         this.resolveConfig({ ...options, purpose: "chat" }),
         options.signal
