@@ -3,6 +3,7 @@ var LitMTransController;
 var LitMTransChromeHandle;
 var LitMTransDeepSeekActorError;
 var LitMTransDeepSeekActorFile;
+var LitMTransDeepSeekActorParentFile;
 // Explicit aliases: the bootstrap global is privileged but is not a regular
 // browser Window. Do not rely on version-specific implicit Cc/Ci globals.
 var Cc = Components.classes;
@@ -38,20 +39,29 @@ async function startup({ id, version, rootURI }) {
   LitMTransDeepSeekActorError = null;
   let actorRootURI = rootURI + "src/deepseek-web/";
   let actorFileName = "DeepSeekActorChild.sys.mjs";
+  let actorParentFileName = "DeepSeekActorParent.sys.mjs";
   try {
     // 开发目录与 XPI 均从原包读取同一份模块，再使用相同的沙箱可读路径加载。
     {
       const actorDirectory = PathUtils.join(Zotero.Profile.dir, "chrome", "litmtrans-deepseek");
       await IOUtils.makeDirectory(actorDirectory, { createAncestors: true });
       actorFileName = `DeepSeekActorChild-${Services.uuid.generateUUID().toString().replace(/[{}]/g, "")}.sys.mjs`;
+      actorParentFileName = `DeepSeekActorParent-${Services.uuid.generateUUID().toString().replace(/[{}]/g, "")}.sys.mjs`;
       const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
-      const channel = NetUtil.newChannel({
+      const childChannel = NetUtil.newChannel({
         uri: actorRootURI + "DeepSeekActorChild.sys.mjs",
         loadUsingSystemPrincipal: true
       });
-      const actorSource = await Zotero.File.getContentsAsync(channel, "UTF-8");
+      const childSource = await Zotero.File.getContentsAsync(childChannel, "UTF-8");
+      const parentChannel = NetUtil.newChannel({
+        uri: actorRootURI + "DeepSeekActorParent.sys.mjs",
+        loadUsingSystemPrincipal: true
+      });
+      const parentSource = await Zotero.File.getContentsAsync(parentChannel, "UTF-8");
       LitMTransDeepSeekActorFile = PathUtils.join(actorDirectory, actorFileName);
-      await IOUtils.writeUTF8(LitMTransDeepSeekActorFile, actorSource);
+      await IOUtils.writeUTF8(LitMTransDeepSeekActorFile, childSource);
+      LitMTransDeepSeekActorParentFile = PathUtils.join(actorDirectory, actorParentFileName);
+      await IOUtils.writeUTF8(LitMTransDeepSeekActorParentFile, parentSource);
       actorRootURI = PathUtils.toFileURI(actorDirectory) + "/";
     }
     const resHandler = Services.io.getProtocolHandler("resource")
@@ -66,20 +76,27 @@ async function startup({ id, version, rootURI }) {
     ChromeUtils.unregisterWindowActor("LitMTransDeepSeek");
   } catch (_) {}
 
-  // ESM 缓存不会随 unregisterWindowActor 清空，开发重载必须使用新的模块地址。
-  const childURI = `resource://litmtrans-deepseek-actors/${actorFileName}?startup=${Date.now()}`;
+  // ESM 缓存通过 UUID 唯一文件名破除，不附加非法字符 query。
+  const childURI = `resource://litmtrans-deepseek-actors/${actorFileName}`;
+  const parentURI = `resource://litmtrans-deepseek-actors/${actorParentFileName}`;
   litmtransLog(`Register DeepSeek actor: ${childURI}`);
   try {
     if (LitMTransDeepSeekActorError) throw new Error(LitMTransDeepSeekActorError);
     ChromeUtils.registerWindowActor("LitMTransDeepSeek", {
       child: {
         esModuleURI: childURI,
+        events: {
+          contextmenu: { capture: true, mozSystemGroup: true }
+        }
+      },
+      parent: {
+        esModuleURI: parentURI,
       },
       matches: [
         "https://chat.deepseek.com/*",
         "https://*.deepseek.com/*"
       ],
-      allFrames: false,
+      allFrames: true,
     });
     litmtransLog("LitMTransDeepSeek actor registered");
   } catch (actorErr) {
@@ -174,6 +191,12 @@ async function shutdown(data, reason) {
       await IOUtils.remove(LitMTransDeepSeekActorFile, { ignoreAbsent: true });
     } catch (error) { Zotero.logError(error); }
     LitMTransDeepSeekActorFile = null;
+  }
+  if (LitMTransDeepSeekActorParentFile) {
+    try {
+      await IOUtils.remove(LitMTransDeepSeekActorParentFile, { ignoreAbsent: true });
+    } catch (error) { Zotero.logError(error); }
+    LitMTransDeepSeekActorParentFile = null;
   }
   if (LitMTransChromeHandle) {
     LitMTransChromeHandle.destruct();

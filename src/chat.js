@@ -247,6 +247,17 @@
     return formatInstruction ? `${answer}${task}\n\n输出格式要求：\n${formatInstruction}` : `${answer}${task}`;
   }
 
+  function clipboardTaskPrompt(taskType, settings) {
+    const task = taskFor({ taskType }, settings);
+    return messageTextForAPI({
+      role: "user",
+      content: taskType === "key_points"
+        ? String(settings?.keyPointsPrompt || DEFAULT_KEY_POINTS_PROMPT)
+        : "请分析当前文献。",
+      ...task
+    });
+  }
+
   function normalizeAttachment(attachment, resourceResolver = null, includeDataURL = true) {
     if (!attachment || typeof attachment !== "object") return null;
     const mimeType = String(attachment.mimeType || attachment.type || "").toLowerCase();
@@ -876,7 +887,11 @@
     }
 
     async loadSession(documentID, sessionID = "", present = true) {
-      const id = String(sessionID || this.documentSessionID()).replace(/[^A-Za-z0-9_-]+/g, "") || this.documentSessionID();
+      const requested = String(sessionID || "");
+      const isWeb = requested === this.documentSessionID("web") || requested === "web-document-chat";
+      const id = isWeb
+        ? this.documentSessionID("web")
+        : requested.replace(/[^A-Za-z0-9_-]+/g, "") || this.documentSessionID();
       const fallback = await this.ensureDocumentSession(documentID, id);
       const raw = fallback;
       const session = {
@@ -2241,6 +2256,7 @@
       };
       const completionOptions = {
         purpose: "chat",
+        clipboardPrompt: messageTextForAPI(session.messages[userIndex]),
         documentID,
         sessionID: session.id,
         provider: settings.provider,
@@ -2335,7 +2351,7 @@
         session.messages.splice(insertIndex, 0, assistant);
         session = await this.saveSession(documentID, session, false);
         const responseSummary = this.responseSummary(result, settings.provider);
-        if (responseSummary) emit?.({ type: "chat-usage", message: responseSummary });
+        if (responseSummary) emit?.({ type: "chat-usage", sessionID: session.id, message: responseSummary });
 
         if (
           settings.showReasoning
@@ -2508,6 +2524,7 @@
     PAPER_MINDMAP_TASK_INSTRUCTION,
     PAPER_LOGIC_FLOW_TASK_INSTRUCTION,
     taskFor,
+    clipboardTaskPrompt,
     IMAGE_CITATION_INSTRUCTION,
     decodeImageDataURL,
     findTurnRange,

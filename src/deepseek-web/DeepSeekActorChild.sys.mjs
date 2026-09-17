@@ -662,7 +662,26 @@ async function openSessionMenu(doc, win, expectedURL) {
 }
 
 export class LitMTransDeepSeekChild extends JSWindowActorChild {
-  didDestroy() {}
+  // contextmenu 由 registerWindowActor 的 events 配置派发到 handleEvent，
+  // 不再重复手动监听，避免同一 frame 双路触发。
+  handleEvent(event) {
+    if (event.type !== "contextmenu") return;
+    try {
+      const win = this.contentWindow;
+      const selectedText = String(win?.getSelection?.()?.toString?.() || "").trim();
+      this.sendAsyncMessage("LitMTrans:DeepSeek:contextmenu", {
+        screenX: Number(event.screenX || 0),
+        screenY: Number(event.screenY || 0),
+        clientX: Number(event.clientX || 0),
+        clientY: Number(event.clientY || 0),
+        selectedText
+      });
+      event.preventDefault();
+      event.stopPropagation();
+    } catch (err) {
+      try { dump(`[LitMTrans:DeepSeekChild] contextmenu report error: ${err?.message || err}\n`); } catch (_) {}
+    }
+  }
 
   async receiveMessage(message) {
     if (message.name !== "LitMTrans:DeepSeek:execute") {
@@ -704,8 +723,16 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
       if (!input) throw new Error("未找到DeepSeek输入框，请先登录网页。");
       const text = String(payload.text || "");
       const current = String(input.value ?? input.textContent ?? "");
-      if (text && !fillControlledInput(input, `${current}${current ? "\n\n" : ""}${text}\n\n`, win)) {
-        throw new Error("无法写入DeepSeek输入框。");
+      const draft = `${current}${current ? "\n\n" : ""}${text}\n\n`;
+      if (text) {
+        if (payload.paste) {
+          simulatePaste(input, draft, win);
+          await delay(100);
+        }
+        const observed = String(input.value ?? input.textContent ?? "");
+        if (observed !== draft && !fillControlledInput(input, draft, win)) {
+          throw new Error("无法写入DeepSeek输入框。");
+        }
       }
       input.focus();
       return { ok: true };
@@ -930,8 +957,8 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
       while (Date.now() - start < timeout) {
         const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
         const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
-        // DeepSeek 在附件仍在后台处理时禁用发送。按钮恢复可用即表示
-        // 当前附件已可随下一条消息提交，无需等待页面其他区域的加载动画。
+        // DeepSeek 在附件仍在后台上传解析时禁用发送。按钮恢复可用即表示
+        // 当前附件已上传就绪，无需等待页面其他无关的加载状态。
         if (sendBtn) return { ready: true };
         await delay(100);
       }
@@ -956,7 +983,12 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         return { ok: Boolean(selected), url: row.url };
       }
       if (subAction === "rename" || subAction === "delete") {
-        // 会话管理始终经由网页原生菜单执行，保留官方前端的认证与风控流程。
+        try {
+          return await sessionAPI(doc, subAction, payload);
+        } catch (apiError) {
+          // 接口是首选；接口失败或特殊场景再退回 DOM 菜单操作
+          if (subAction === "rename" && !payload.expectedURL) throw apiError;
+        }
       }
       if (subAction === "rename" && sessionRows(doc).some(row =>
           row.url === sessionURL(payload.expectedURL, doc) && row.title === payload.newTitle)) return { ok: true };

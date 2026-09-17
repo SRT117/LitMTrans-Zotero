@@ -291,7 +291,7 @@
       }
     }
 
-    async attachFiles(files = [], signal = null) {
+    async attachFiles(files = [], signal = null, options = {}) {
       if (!files || !files.length) return true;
       await this.ensureReady(10000, signal);
 
@@ -318,13 +318,13 @@
 
       const res = await this.execute("attach-files", {
         files: filesPayload,
-        fileInputSelectors: SELECTORS.fileInput
+        fileInputSelectors: SELECTORS.fileInput,
+        chatInputSelectors: SELECTORS.chatInput
       }, 20000);
 
       if (res?.error) throw new Error(res.error);
 
-      // 上传完成后以输入区发送按钮恢复可用为准；不能用全页 loading 状态，
-      // 否则页面其他异步组件会让已经完成的附件额外空等数秒。
+      // 上传完成后以输入区发送按钮恢复可用为准
       const waitTimeout = Math.min(12000, Math.max(1500, filesPayload.length * 250));
       const ready = await this.execute("wait-attachments-ready", {
         timeout: waitTimeout,
@@ -336,14 +336,25 @@
       return true;
     }
 
-    async attachImages(filePaths = [], signal = null) {
-      return this.attachFiles(filePaths, signal);
+    async attachImages(filePaths = [], signal = null, options = {}) {
+      return this.attachFiles(filePaths, signal, options);
     }
 
     async appendDraft(text) {
       await this.ensureReady(10000);
       const result = await this.execute("append-draft", { text, chatInputSelectors: SELECTORS.chatInput });
       if (!result?.ok) throw new Error(result?.error || "无法将引用添加到DeepSeek输入框。");
+      return result;
+    }
+
+    async pasteDraft(text) {
+      await this.ensureReady(10000);
+      const result = await this.execute("append-draft", {
+        text,
+        paste: true,
+        chatInputSelectors: SELECTORS.chatInput
+      });
+      if (!result?.ok) throw new Error(result?.error || "无法将论文原文添加到DeepSeek输入框。");
       return result;
     }
 

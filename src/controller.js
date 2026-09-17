@@ -268,6 +268,19 @@
       }
       if (!browser) throw new Error("网页容器尚未就绪，请重试。");
       this.ensureDeepSeekDriver(runtime);
+      if (!runtime.deepSeekContextMenuWarmupBound && typeof browser?.addEventListener === "function") {
+        runtime.deepSeekContextMenuWarmupBound = true;
+        browser.addEventListener("load", () => {
+          setTimeout(() => {
+            try {
+              const url = String(browser.currentURI?.spec || "");
+              if (/^https:\/\/chat\.deepseek\.com\//.test(url)) {
+                this.ensureDeepSeekDriver(runtime)?.getActor?.();
+              }
+            } catch (_) {}
+          }, 0);
+        }, true);
+      }
       if (reload || !browser.getAttribute("data-deepseek-loaded")) {
         // 提前建立 frameloader，避免 loadURI 与远程度/进程建立竞态，
         // 导致页面停留在 about:blank 的空白面板（Zotero 7 上更易触发）。
@@ -437,10 +450,6 @@
       if (!LitMTrans.DeepSeekWeb?.DeepSeekWebDriver) return null;
       try {
         const driver = new LitMTrans.DeepSeekWeb.DeepSeekWebDriver(runtime.deepSeekBrowser);
-        driver.onContextMenu = (data) => {
-          this.openDeepSeekContextMenu(runtime, data);
-        };
-        driver.ensureFrameScript?.();
         runtime.deepSeekDriver = driver;
         return driver;
       } catch (_) {
@@ -448,27 +457,14 @@
       }
     }
 
-    openDeepSeekContextMenu(runtime, payload = {}) {
-      if (!runtime) return { ok: false };
+    populateDeepSeekContextMenu(runtime, popup, payload = {}) {
+      if (!popup) return;
       const hostWindow = runtime.browser?.ownerGlobal || runtime.window || Zotero.getMainWindow();
-      if (!hostWindow?.document) return { ok: false };
+      if (!hostWindow?.document) return;
 
-      let popupset = runtime.popupset;
-      if (!popupset || !popupset.isConnected) {
-        popupset = hostWindow.document.createXULElement("popupset");
-        try {
-          (runtime.container || hostWindow.document.documentElement).appendChild(popupset);
-          runtime.popupset = popupset;
-        } catch (_) {}
+      while (popup.firstChild) {
+        popup.removeChild(popup.firstChild);
       }
-
-      const popup = hostWindow.document.createXULElement("menupopup");
-      popup.className = "litmtrans-deepseek-context-menu";
-      popupset.appendChild(popup);
-
-      popup.addEventListener("popuphidden", () => {
-        try { popup.remove(); } catch (_) {}
-      }, { once: true });
 
       const selectedText = String(payload?.selectedText || "").trim();
       if (selectedText) {
@@ -483,6 +479,52 @@
         popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
       }
 
+      const addPaperSourceItem = hostWindow.document.createXULElement("menuitem");
+      addPaperSourceItem.setAttribute("label", "原文添加至AI");
+      addPaperSourceItem.addEventListener("command", () => {
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: "正在添加论文原文至DeepSeek...", level: "info" }
+        });
+        void this.appendPaperSourceToDeepSeek(runtime).then((result) => {
+          if (result?.cancelled) return;
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: "论文原文已成功添加至DeepSeek", level: "success" }
+          });
+        }).catch(error => {
+          this.log(`添加论文原文到DeepSeek失败: ${error?.message || error}`);
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: `添加论文原文失败：${error?.message || error}`, level: "error" }
+          });
+        });
+      });
+      popup.appendChild(addPaperSourceItem);
+
+      const addPaperPagesItem = hostWindow.document.createXULElement("menuitem");
+      addPaperPagesItem.setAttribute("label", "图形式添加至AI");
+      addPaperPagesItem.addEventListener("command", () => {
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: "正在生成论文页面图像并添加至DeepSeek...", level: "info" }
+        });
+        void this.appendPaperPagesToDeepSeek(runtime).then((result) => {
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: `论文页面图像已添加至DeepSeek（共 ${result?.attached || 0} 页）`, level: "success" }
+          });
+        }).catch(error => {
+          this.log(`添加论文页面图像到DeepSeek失败: ${error?.message || error}`);
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: `添加论文页面图像失败：${error?.message || error}`, level: "error" }
+          });
+        });
+      });
+      popup.appendChild(addPaperPagesItem);
+      popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
+
       const reloadItem = hostWindow.document.createXULElement("menuitem");
       reloadItem.setAttribute("label", "刷新");
       reloadItem.addEventListener("command", () => {
@@ -496,18 +538,183 @@
         void this.openExternalURL("https://chat.deepseek.com/");
       });
       popup.appendChild(openExternalItem);
+    }
 
+    openDeepSeekContextMenu(runtime, payload = {}) {
+      if (!runtime) return { ok: false };
+      // content 各 frame 与工作台回退通路会重复上报同一位置右键，坐标窗口内去重。
+      const now = Date.now();
+      const sx = Number(payload?.screenX || 0);
+      const sy = Number(payload?.screenY || 0);
+      const last = this._deepSeekMenuDedupe;
+      if (last && (now - last.time < 300) && Math.abs(sx - last.screenX) <= 8 && Math.abs(sy - last.screenY) <= 8) {
+        // 后到通路可能带有先到通路缺失的选中文字（工作台侧拿不到网页内选区），
+        // 用它重新填充菜单，保证「复制」项不因触发顺序而丢失。
+        const lateText = String(payload?.selectedText || "").trim();
+        const opened = runtime.deepSeekNativePopup;
+        if (lateText && opened?.isConnected) {
+          runtime.deepSeekMenuPayload = payload;
+          this.populateDeepSeekContextMenu(runtime, opened, payload);
+        }
+        return { ok: true, deduped: true };
+      }
+      this._deepSeekMenuDedupe = { time: now, screenX: sx, screenY: sy };
+      const hostWindow = runtime.browser?.ownerGlobal || runtime.window || Zotero.getMainWindow();
+      if (!hostWindow?.document) return { ok: false };
+
+      const doc = hostWindow.document;
+      let popup = runtime.deepSeekNativePopup;
+      if (!popup || !popup.isConnected) {
+        let popupset = runtime.popupset;
+        if (!popupset || !popupset.isConnected) {
+          popupset = doc.getElementById("mainPopupSet");
+          if (!popupset || !popupset.isConnected) {
+            popupset = doc.createXULElement("popupset");
+            try {
+              (runtime.container || doc.documentElement || doc.body).appendChild(popupset);
+              runtime.popupset = popupset;
+            } catch (_) {}
+          }
+        }
+        popup = doc.createXULElement("menupopup");
+        popup.className = "litmtrans-deepseek-context-menu";
+        popupset.appendChild(popup);
+        runtime.deepSeekNativePopup = popup;
+      }
+
+      // 记录本次右键的 payload，popupshowing 重新填充时复用同一份，
+      // 否则打开菜单会同步触发 popupshowing 并用空 payload 把「复制」项清掉。
+      runtime.deepSeekMenuPayload = payload;
+      this.populateDeepSeekContextMenu(runtime, popup, payload);
+
+      const clientX = Number(payload?.clientX || 0);
+      const clientY = Number(payload?.clientY || 0);
       const screenX = Number(payload?.screenX || 0);
       const screenY = Number(payload?.screenY || 0);
-      if (Number.isFinite(screenX) && Number.isFinite(screenY) && screenX > 0 && screenY > 0) {
-        popup.openPopupAtScreen(screenX, screenY, true);
+
+      const doOpen = () => {
+        try {
+          if (Number.isFinite(screenX) && Number.isFinite(screenY) && screenX > 0 && screenY > 0) {
+            popup.openPopupAtScreen(Math.round(screenX), Math.round(screenY), true);
+            return;
+          }
+          const browserNode = runtime.deepSeekBrowser || runtime.browser;
+          const rect = browserNode?.getBoundingClientRect?.();
+          if (rect) {
+            const relX = (clientX > 0) ? clientX : 20;
+            const relY = (clientY > 0) ? clientY : 20;
+            if (hostWindow.windowUtils?.toScreenRectInCSSUnits) {
+              const pt = hostWindow.windowUtils.toScreenRectInCSSUnits(
+                rect.left + relX,
+                rect.top + relY,
+                0, 0
+              );
+              popup.openPopupAtScreen(pt.x, pt.y, true);
+              return;
+            }
+            const calcX = (hostWindow.screenX || 0) + rect.left + relX;
+            const calcY = (hostWindow.screenY || 0) + rect.top + relY;
+            popup.openPopupAtScreen(Math.round(calcX), Math.round(calcY), true);
+            return;
+          }
+          if (browserNode) {
+            popup.openPopup(browserNode, "after_start", 10, 10, true, false);
+          }
+        } catch (_) {}
+      };
+
+      if (typeof hostWindow.setTimeout === "function") {
+        hostWindow.setTimeout(doOpen, 0);
       } else {
-        const anchor = runtime.deepSeekBrowser || runtime.browser;
-        if (anchor) {
-          popup.openPopup(anchor, "overlap", 10, 10, true, false);
-        }
+        doOpen();
       }
+
       return { ok: true };
+    }
+
+    async appendPaperSourceToDeepSeek(runtime) {
+      const context = await this.attachmentContext(runtime.attachmentID);
+      const snapshot = await this.pipeline.snapshot(context);
+      let markdown = String(snapshot?.parsed?.markdown || "").trim();
+      // 未解析时先询问用户，确认后触发解析，解析成功自动继续添加
+      if (!markdown) {
+        const win = runtime.window || runtime.browser?.ownerGlobal || Zotero.getMainWindow();
+        const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+          + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING;
+        const choice = Services.prompt.confirmEx(
+          win,
+          "原文添加至AI",
+          "该论文尚未解析，是否先解析原文？",
+          flags,
+          "解析并添加",
+          "取消",
+          null, null, {}
+        );
+        if (choice !== 0) return { cancelled: true };
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: "开始解析论文原文...", level: "info" }
+        });
+        await this.withOperation(runtime, "parse", async (signal, emit) => {
+          const parseContext = await this.attachmentContext(runtime.attachmentID);
+          await this.pipeline.parse(parseContext, {}, emit, signal);
+        });
+        markdown = String((await this.pipeline.snapshot(context))?.parsed?.markdown || "").trim();
+        if (!markdown) throw new Error("解析未能产出原文，请调整解析设置后重试。");
+      }
+      await this.loadDeepSeekWeb(runtime, false);
+      const driver = this.ensureDeepSeekDriver(runtime);
+      if (!driver) throw new Error("DeepSeek网页尚未就绪，请稍后重试。");
+      const name = `${U.safeStem(context.title || context.attachment.attachmentFilename || "paper", 100)}.md`;
+      try {
+        await driver.attachFiles([{
+          name,
+          type: "text/markdown",
+          base64: U.encodeBytesBase64(new TextEncoder().encode(markdown))
+        }]);
+        return { attached: true };
+      } catch (error) {
+        this.log(`上传论文原文附件失败，改为粘贴文本: ${error?.message || error}`);
+        return driver.pasteDraft(markdown);
+      }
+    }
+
+    // 图形式添加：与要点提炼同一管线，把PDF页面渲染为图片后上传到DeepSeek
+    async appendPaperPagesToDeepSeek(runtime) {
+      const context = await this.attachmentContext(runtime.attachmentID);
+      const webSettings = this.getSettings?.() || {};
+      const quality = String(webSettings.webPageImageQuality || "medium").toLowerCase();
+      if (quality === "none") {
+        throw new Error("当前设置为不上传页面图像，请先在设置中调整页面图像清晰度。");
+      }
+      await this.loadDeepSeekWeb(runtime, false);
+      const driver = this.ensureDeepSeekDriver(runtime);
+      if (!driver) throw new Error("DeepSeek网页尚未就绪，请稍后重试。");
+      const pageResult = await this.deepSeekWebProvider.pageRenderer.renderAndCachePages(runtime, context.documentID, {
+        maxImages: 49,
+        quality
+      });
+      if (pageResult.error) throw new Error(pageResult.error);
+      const imagePaths = pageResult.images || [];
+      if (!imagePaths.length) throw new Error("未能生成页面图像，请确认文献已在预览中打开。");
+      try {
+        await driver.attachFiles(imagePaths, null);
+      } catch (error) {
+        const message = String(error?.message || "");
+        const hint = "页面图像添加失败，可稍后重试或改用「原文添加至AI」。";
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: hint, level: "warning" }
+        });
+        throw new Error(`页面图像上传失败：${message}`);
+      }
+      if (pageResult.downgraded && pageResult.message) {
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: pageResult.message, level: "warning" }
+        });
+      }
+      return { attached: imagePaths.length };
     }
 
     registerItemDeletionObserver() {
@@ -2314,6 +2521,15 @@
       deepSeekMask.style.cssText = "background:rgba(0,0,0,0.42);pointer-events:auto;";
       stack.appendChild(deepSeekMask);
 
+      const popupset = win.document.createXULElement("popupset");
+      container.appendChild(popupset);
+
+      const popupID = `litmtrans-deepseek-context-menu-${String(tabID).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const nativePopup = win.document.createXULElement("menupopup");
+      nativePopup.id = popupID;
+      nativePopup.className = "litmtrans-deepseek-context-menu";
+      popupset.appendChild(nativePopup);
+
       const documentID = `${attachment.libraryID}-${attachment.key}`;
       const itemTitle = String(parentItem?.getField("title") || attachment.getField("title") || "");
       const runtime = {
@@ -2324,6 +2540,8 @@
         window: win,
         container,
         deepSeekStack: stack,
+        popupset,
+        deepSeekNativePopup: nativePopup,
         browser,
         deepSeekBrowser,
         deepSeekMask,
@@ -2336,10 +2554,23 @@
         pendingOpen: { quote: options.quote || null, prompt: String(options.prompt || "") }
       };
       this.tabs.set(tabID, runtime);
+      // 打开菜单会同步触发 popupshowing：必须复用本次右键的 payload 重新填充，
+      // 否则空 payload 会把按选中文字生成的「复制」项抹掉；菜单关闭后清掉。
+      nativePopup.addEventListener("popupshowing", () => {
+        this.populateDeepSeekContextMenu(runtime, nativePopup, runtime.deepSeekMenuPayload || {});
+      });
+      nativePopup.addEventListener("popuphidden", () => {
+        runtime.deepSeekMenuPayload = null;
+      });
       deepSeekBrowser.addEventListener("contextmenu", event => {
         event.preventDefault();
         event.stopPropagation();
-        this.openDeepSeekContextMenu(runtime, { screenX: event.screenX, screenY: event.screenY });
+        this.openDeepSeekContextMenu(runtime, {
+          screenX: event.screenX,
+          screenY: event.screenY,
+          clientX: event.clientX,
+          clientY: event.clientY
+        });
       });
       browser.addEventListener("load", event => {
         if (event.target === browser.contentDocument) this.installBridge(runtime);
@@ -2359,6 +2590,8 @@
       }
       try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
       try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
+      try { runtime.deepSeekNativePopup?.remove?.(); } catch (_) {}
+      try { runtime.popupset?.remove?.(); } catch (_) {}
       try { runtime.deepSeekMask?.remove?.(); } catch (_) {}
       try { runtime.deepSeekBrowser?.remove?.(); } catch (_) {}
       try { runtime.browser?.remove(); } catch (_) {}
@@ -3389,13 +3622,26 @@
             const decoded = this.decodeImageDataURL(payload.image.dataURL, runtime.window);
             const extension = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp", "image/jp2": "jp2", "image/svg+xml": "svg" }[decoded.mimeType];
             const name = `${U.safeStem(String(payload.image.name || "reference-image").replace(/\.(?:png|jpe?g|webp|gif|bmp|jp2|svg)$/i, ""), 100)}.${extension}`;
-            await driver.attachFiles([{ name, type: decoded.mimeType, base64: U.encodeBytesBase64(decoded.bytes) }]);
+            try {
+              await driver.attachFiles([{ name, type: decoded.mimeType, base64: U.encodeBytesBase64(decoded.bytes) }], null);
+            } catch (error) {
+              this.sendToPage(runtime, {
+                type: "event",
+                payload: { type: "toast", message: `图片未能添加到输入框（${error?.message || error}），已继续添加文本引用。`, level: "warning" }
+              });
+            }
           }
           const quote = payload.quote;
           const text = String(quote?.formulaTex || quote?.text || "").trim();
           const page = quote?.pageLabel || quote?.page;
           return driver.appendDraft(text ? `[${quote?.type === "formula" ? "公式引用" : "文献引用"}${page ? ` · 第 ${page} 页` : ""}]\n${text}` : "");
         }
+
+        case "deepseek-web-add-paper-source":
+          return this.appendPaperSourceToDeepSeek(runtime);
+
+        case "deepseek-web-add-paper-pages":
+          return this.appendPaperPagesToDeepSeek(runtime);
 
         case "set-deepseek-web-bounds":
           return this.setDeepSeekWebBounds(runtime, payload);
@@ -3465,6 +3711,10 @@
         chatProviderProfiles: chat.providerProfiles || {},
         keyPointsDefaultPrompt: LitMTrans.ChatInternals.DEFAULT_KEY_POINTS_PROMPT,
         effectiveKeyPointsPrompt: String(translation.keyPointsPrompt || LitMTrans.ChatInternals.DEFAULT_KEY_POINTS_PROMPT),
+        clipboardTaskPrompts: Object.fromEntries(
+          ["key_points", "paper_mindmap", "paper_logic_flow", "generic_mindmap", "generic_flowchart"]
+            .map(taskType => [taskType, LitMTrans.ChatInternals.clipboardTaskPrompt(taskType, translation)])
+        ),
         providerCards: this.providerCards(),
         apiKey: this.secrets.getLLMKey(translation.provider),
         chatAPIKey: this.secrets.getLLMKey(chat.provider),
@@ -3662,6 +3912,9 @@
       if (Object.prototype.hasOwnProperty.call(values || {}, "chatEngine")) {
         U.setPref("chatEngine", values.chatEngine === "deepseek_web" ? "deepseek_web" : "api");
       }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "webInputMode")) {
+        U.setPref("webInputMode", values.webInputMode === "clipboard" ? "clipboard" : "auto");
+      }
       if (values && values.layoutReaderFonts && typeof values.layoutReaderFonts === "object" && !Array.isArray(values.layoutReaderFonts)) {
         const fonts = {};
         for (const [documentID, value] of Object.entries(values.layoutReaderFonts)) {
@@ -3717,7 +3970,8 @@
           showReasoning: translation.showReasoning,
           providerProfiles: translation.providerProfiles,
           apiKey: this.secrets.getLLMKey(translation.provider),
-          chatUsesTranslationModel: true
+          chatUsesTranslationModel: true,
+          webInputMode: values.webInputMode ?? translation.webInputMode
         } : {
           purpose: "chat",
           provider: chatProvider,
@@ -3730,7 +3984,8 @@
           providerProfiles: chatProfileSource,
           apiKey: useCurrentChatFallback ? this.secrets.getLLMKey(chatProvider) : values.chatAPIKey,
           clearAPIKey: values.clearChatAPIKey,
-          chatUsesTranslationModel: false
+          chatUsesTranslationModel: false,
+          webInputMode: values.webInputMode ?? translation.webInputMode
         };
         this.llm.saveSettings(chatValues, "chat");
       }

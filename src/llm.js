@@ -850,7 +850,7 @@
         webPageImageQuality: ["none", "low", "medium", "high"].includes(String(values.webPageImageQuality ?? current.webPageImageQuality))
           ? String(values.webPageImageQuality ?? current.webPageImageQuality)
           : "medium",
-        webInputMode: values.webInputMode === "clipboard" ? "clipboard" : "auto",
+        webInputMode: (values.webInputMode ?? current.webInputMode) === "clipboard" ? "clipboard" : "auto",
         deleteWebTranslationSessions: Boolean(values.deleteWebTranslationSessions ?? current.deleteWebTranslationSessions),
         targetLanguage: U.normalizeLanguageName(values.targetLanguage ?? current.targetLanguage, "简体中文"),
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,

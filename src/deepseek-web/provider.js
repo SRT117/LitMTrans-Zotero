@@ -161,11 +161,6 @@
         driver = new LitMTrans.DeepSeekWeb.DeepSeekWebDriver(browser);
         this.drivers.set(browser, driver);
       }
-      if (!driver.onContextMenu && runtime && this.controller?.openDeepSeekContextMenu) {
-        driver.onContextMenu = (data) => {
-          this.controller.openDeepSeekContextMenu(runtime, data);
-        };
-      }
       if (runtime && !runtime.deepSeekDriver) runtime.deepSeekDriver = driver;
       return driver;
     }
@@ -222,12 +217,14 @@
       const runtime = this.resolveRuntime(options);
       const webSettings = this.controller?.getSettings?.() || {};
       if (webSettings.webInputMode === "clipboard") {
+        // 仅接受调用方独立提供的提示词，不能从已混入全文的消息反推。
+        const prompt = String(options.clipboardPrompt || "").trim();
+        if (!prompt) throw new Error("当前处于仅复制模式，此任务未提供独立提示词，请切换为自动注入模式后重试。");
         this.controller.loadDeepSeekWeb(runtime);
         this.controller.ensureDeepSeekWebVisible?.(runtime);
-        const prompt = formatFullPrompt(messages);
         const copied = this.controller.writeClipboardText?.(prompt);
         if (!copied?.copied) throw new Error("提示词复制到剪贴板失败");
-        throw new Error("提示词已复制到剪贴板，请在右侧 DeepSeek 网页中手动粘贴并发送。");
+        throw new Error("当前处于仅复制模式，已复制提示词到剪贴板");
       }
       this.controller.loadDeepSeekWeb(runtime);
       this.controller.ensureDeepSeekWebVisible?.(runtime);
@@ -492,23 +489,45 @@
             uploadFiles.push(imgPath);
           }
 
-          // 一次性批量上传附件
+          // 一次性批量上传附件；网页端禁止附件上传时降级为纯文本输入
+          let attachmentsRejected = false;
           if (uploadFiles.length) {
             options.emit?.({ type: "log", message: `[探针5-Provider] 正在向DeepSeek上传文献资料 (共 ${uploadFiles.length} 个附件)...` });
-            await driver.attachFiles(uploadFiles, signal);
-            options.emit?.({ type: "log", message: "[探针5-Provider] 附件上传完成" });
+            try {
+              await driver.attachFiles(uploadFiles, signal);
+              options.emit?.({ type: "log", message: "[探针5-Provider] 附件上传完成" });
+            } catch (error) {
+              attachmentsRejected = true;
+              const msg = `[探针5-Provider] 附件上传失败，降级为纯文本输入: ${error?.message || error}`;
+              options.emit?.({ type: "warning", message: msg });
+              options.onReasoning?.(`[系统提醒] 附件上传未能成功，本轮已降级为纯文本模式提交。\n\n`);
+            }
           }
           if (questionImages.length) {
             options.emit?.({ type: "log", message: `[DeepSeek网页] 正在附加本轮图片（${questionImages.length} 张）` });
-            await driver.attachImages(questionImages, signal);
+            try {
+              await driver.attachImages(questionImages, signal);
+            } catch (error) {
+              options.emit?.({ type: "warning", message: `[DeepSeek网页] 本轮图片上传被拒绝，已跳过: ${error?.message || error}` });
+            }
           }
 
-          // 打包首轮文本：若正文已作为附件上传，输入框只发送用户指令
+          // 打包首轮文本：仅当正文附件真正生效时才只发用户指令；
+          // 附件被拒时把正文拼入输入框（超长时截断，避免塞爆输入框）。
+          const mdAttached = !attachmentsRejected
+            && uploadFiles.some(f => typeof f === "object" && f.name?.endsWith(".md"));
           let payload = "";
-          if (uploadFiles.some(f => typeof f === "object" && f.name?.endsWith(".md"))) {
+          if (mdAttached) {
             payload = userPrompt || "请根据上传的文献资料，深入分析并回答。";
           } else if (markdown) {
-            payload = `${userPrompt}\n\n---\n[文献正文]\n${markdown}`;
+            const MAX_INPUT_CHARS = 12000;
+            const body = markdown.length > MAX_INPUT_CHARS
+              ? markdown.slice(0, MAX_INPUT_CHARS) + "\n\n…（全文过长，已截断，仅提交前半部分）"
+              : markdown;
+            if (markdown.length > MAX_INPUT_CHARS) {
+              options.emit?.({ type: "warning", message: `[探针5-Provider] 附件被禁止且正文过长(${markdown.length}字)，已截断至${MAX_INPUT_CHARS}字` });
+            }
+            payload = `${userPrompt}\n\n---\n[文献正文]\n${body}`;
           } else {
             payload = formatFullPrompt(messages);
           }
@@ -547,7 +566,11 @@
           const prompt = extractUserPrompt(messages);
           if (questionImages.length) {
             options.emit?.({ type: "log", message: `[DeepSeek网页] 正在附加本轮图片（${questionImages.length} 张）` });
-            await driver.attachImages(questionImages, signal);
+            try {
+              await driver.attachImages(questionImages, signal);
+            } catch (error) {
+              options.emit?.({ type: "warning", message: `[DeepSeek网页] 本轮图片上传被拒绝，已跳过: ${error?.message || error}` });
+            }
           }
           options.emit?.({ type: "log", message: `[探针5-Provider] 正在提交追问消息 (字数=${prompt.length})...` });
           const result = await driver.submitMessage(prompt, {

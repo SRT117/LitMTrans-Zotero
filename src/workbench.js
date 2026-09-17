@@ -697,6 +697,10 @@
       setAIMode(event.mode || "web", { syncPref: false });
       return;
     }
+    if (type === "toast") {
+      toast(event.message || "操作失败", event.level || "error");
+      return;
+    }
     if (type === "operation") {
       if (event.running) {
         state.running.add(event.operation);
@@ -743,12 +747,14 @@
       return;
     }
     if (type === "chat-usage") {
+      if (isWebChatSession(event)) return;
       // Per-turn usage is retained for the message-center dialog, but it is
       // intentionally not a toast or task-log entry.
       recordSystemMessage(event.message || "", "info");
       return;
     }
     if (type === "reasoning") {
+      if (isWebChatSession(event)) return;
       const isChatReasoning = String(event.scope || "") === "chat";
       // Translation/layout reasoning belongs to the running operation, not to
       // an assistant chat turn.  Keeping it in the shared chat accumulator can
@@ -857,7 +863,7 @@
       return;
     }
     if (type === "chat-session") {
-      if (isWebChatSession(event.session)) return;
+      if (isWebChatSession(event)) return;
       state.currentSession = event.session || state.currentSession;
       if (state.pendingComposerSubmission) {
         state.pendingComposerSubmission = null;
@@ -870,7 +876,7 @@
       return;
     }
     if (type === "chat-delta") {
-      if (String(event.sessionID || "") === "web-document-chat") return;
+      if (isWebChatSession(event)) return;
       state.streamingChatMessageID = String(event.messageID || "streaming");
       state.streamingChatInsertIndex = Number.isInteger(event.insertIndex) ? event.insertIndex : -1;
       state.streamingChatText += String(event.delta || "");
@@ -880,12 +886,12 @@
     if (type === "chat-complete") {
       state.running.delete("chat");
       updateOperationUI();
+      if (isWebChatSession(event)) return;
       state.expandedReasoningIDs.delete(String(event.messageID || state.streamingChatMessageID || ""));
       state.streamingChatMessageID = "";
       state.streamingChatInsertIndex = -1;
       state.streamingChatText = "";
       state.reasoning = "";
-      if (isWebChatSession(event.session)) return;
       state.currentSession = event.session || state.currentSession;
       void refreshChatSessions(false);
       renderChat();
@@ -894,11 +900,11 @@
     if (type === "chat-error") {
       state.running.delete("chat");
       updateOperationUI();
+      if (isWebChatSession(event)) return;
       state.streamingChatMessageID = "";
       state.streamingChatInsertIndex = -1;
       state.streamingChatText = "";
       state.reasoning = "";
-      if (isWebChatSession(event.session)) return;
       state.currentSession = event.session || state.currentSession;
       renderChat();
     }
@@ -4239,8 +4245,11 @@
     };
   }
 
-  function isWebChatSession(session) {
-    return String(session?.id || "") === "web-document-chat";
+  function isWebChatSession(target) {
+    if (!target) return false;
+    if (typeof target === "string") return target === "web-document-chat";
+    const id = target.id || target.sessionID || target.session?.id;
+    return String(id || "") === "web-document-chat";
   }
 
   function hasParsedCurrentDocument() {
@@ -4279,9 +4288,11 @@
         ...chatContextPayload(),
         messageID: message.id
       });
-      state.currentSession = result.session;
-      await refreshChatSessions(false);
-      renderChat();
+      if (!isWebChatSession(result?.session)) {
+        state.currentSession = result.session;
+        await refreshChatSessions(false);
+        renderChat();
+      }
     }
     catch (error) {
       if (!error.cancelled) toast(error.message, "error");
@@ -4304,9 +4315,11 @@
         messageID: message.id,
         text
       });
-      state.currentSession = result.session;
-      await refreshChatSessions(false);
-      renderChat();
+      if (!isWebChatSession(result?.session)) {
+        state.currentSession = result.session;
+        await refreshChatSessions(false);
+        renderChat();
+      }
     }
     catch (error) {
       if (!error.cancelled) toast(error.message, "error");
@@ -4321,9 +4334,11 @@
         sessionID: state.currentSession?.id,
         messageID: message.id
       });
-      state.currentSession = result.session;
-      await refreshChatSessions(false);
-      renderChat();
+      if (!isWebChatSession(result?.session)) {
+        state.currentSession = result.session;
+        await refreshChatSessions(false);
+        renderChat();
+      }
     }
     catch (error) {
       toast(error.message, "error");
@@ -4689,6 +4704,7 @@
     }
     renderMessageNavigator();
     renderSelection();
+    if (!isWeb) renderChat();
   }
 
   function syncDeepSeekWebBounds() {
@@ -4876,6 +4892,15 @@
         addAction("在对话中提问…", () => prepareReaderAsk(selectionQuote));
       }
       addAction("要点提炼", () => els["key-points-button"].click(), !state.data?.parsed?.markdown);
+      if (state.aiMode === "web") {
+        addAction(
+          "原文添加至AI",
+          () => {
+            void hostCall("deepseek-web-add-paper-source")
+              .catch(error => toast(`添加论文原文失败：${error.message || error}`));
+          }
+        );
+      }
       addSeparator();
       addAction(
         `导出${paneName === "translation" ? "译文" : "原文"}为PDF`,
@@ -7156,12 +7181,25 @@
       toggleLayoutDebugMode(els["debug-boxes-check"].checked);
     });
     const submitPaperAITask = async taskType => {
+      const labels = { key_points: "请提炼当前论文的核心要点。", paper_mindmap: "请建立当前论文的完整知识结构图。", paper_logic_flow: "请重建当前论文的研究逻辑与证据链。" };
+      const isWebEngine = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
+      const isClipboardMode = isWebEngine && (state.settings?.webInputMode || "auto") === "clipboard";
+      if (isClipboardMode) {
+        const prompt = state.settings?.clipboardTaskPrompts?.[taskType];
+        if (!prompt) {
+          toast("未能加载功能提示词，请重新打开工作台后重试", "error");
+          return;
+        }
+        if (!await copyText(prompt, "当前处于仅复制模式，已复制提示词到剪贴板")) return;
+        if (document.body.classList.contains("clean-reader-mode")) exitCleanReader();
+        setAIMode("web");
+        return;
+      }
       if (!await ensureParsedBeforeChatSend()) return;
       if (state.running.has("chat")) {
         toast("正在生成回答，请稍候", "warning");
         return;
       }
-      const labels = { key_points: "请提炼当前论文的核心要点。", paper_mindmap: "请建立当前论文的完整知识结构图。", paper_logic_flow: "请重建当前论文的研究逻辑与证据链。" };
       state.pendingTaskType = taskType;
       els["chat-input"].value = labels[taskType] || "请分析当前文献。";
       if (document.body.classList.contains("clean-reader-mode")) exitCleanReader({ focusChat: true });
@@ -7209,7 +7247,8 @@
       const screenY = Number(event.screenY || 0);
       const clientX = Number(event.clientX || 0);
       const clientY = Number(event.clientY || 0);
-      void hostCall("open-deepseek-context-menu", { screenX, screenY }).catch(() => {
+      const selectedText = String(window.getSelection?.()?.toString?.() || "").trim();
+      void hostCall("open-deepseek-context-menu", { screenX, screenY, clientX, clientY, selectedText }).catch(() => {
         let menu = document.querySelector(".deepseek-web-context-menu");
         menu?.remove();
         menu = document.createElement("div");
@@ -7224,6 +7263,14 @@
           });
           menu.appendChild(item);
         };
+        addAction("原文添加至AI", () => {
+          void hostCall("deepseek-web-add-paper-source")
+            .catch(error => toast(`添加论文原文失败：${error.message || error}`));
+        });
+        addAction("图形式添加至AI", () => {
+          void hostCall("deepseek-web-add-paper-pages")
+            .catch(error => toast(`添加论文页面图像失败：${error.message || error}`));
+        });
         addAction("刷新", () => {
           void hostCall("load-deepseek-web", { reload: true })
             .catch(error => toast(`DeepSeek网页加载失败：${error.message || error}`));
@@ -7244,6 +7291,14 @@
       });
     };
 
+    const sidebar = document.querySelector(".ai-sidebar");
+    if (sidebar) {
+      sidebar.addEventListener("contextmenu", event => {
+        if (state.aiMode === "web") {
+          triggerDeepSeekContextMenu(event);
+        }
+      });
+    }
     if (els["deepseek-web-container"]) {
       els["deepseek-web-container"].addEventListener("contextmenu", triggerDeepSeekContextMenu);
     }
@@ -7476,6 +7531,50 @@
       // image/text order defined by Markdown positions.
       const documentOptions = { imageMode: "full_with_images", compressImages: true, sequentialImages: true };
       if ((!text && !images.length && !documents.length && !state.referenceQuotes.length) || state.running.has("chat")) return;
+      const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
+      const isClipboardMode = isWeb && (state.settings?.webInputMode || "auto") === "clipboard";
+      if (isClipboardMode) {
+        // 引用内容随提示词一起复制；图片与文档无法写进文本提示词，在成功提示中说明。
+        const quoteText = state.referenceQuotes.map((quote, index) => {
+          const kind = quote.type === "formula" ? "公式" : (quote.type === "image" ? "图片" : "引用");
+          const location = quote.pageLabel ? ` · 页码 ${quote.pageLabel}` : (quote.page ? ` · 第 ${quote.page} 页` : "");
+          const body = String(quote.formulaTex || quote.text || "").trim();
+          return body ? `[${kind} ${index + 1}${location}]\n${body}` : "";
+        }).filter(Boolean).join("\n\n");
+        let promptToCopy = [text, quoteText].filter(Boolean).join("\n\n");
+        if (taskType && taskType !== "chat") {
+          const taskPrompt = state.settings?.clipboardTaskPrompts?.[taskType];
+          if (!taskPrompt) {
+            toast("未能加载功能提示词，请重新打开工作台后重试", "error");
+            return;
+          }
+          promptToCopy = [promptToCopy, taskPrompt].filter(Boolean).join("\n\n");
+        }
+        if (!promptToCopy) {
+          toast("请输入提示词或问题", "warning");
+          return;
+        }
+        const omitted = [];
+        if (images.length) omitted.push("图片");
+        if (documents.length) omitted.push("文档");
+        const copiedMessage = omitted.length
+          ? `当前处于仅复制模式，已复制提示词到剪贴板（${omitted.join("与")}需在网页中手动添加）`
+          : "当前处于仅复制模式，已复制提示词到剪贴板";
+        const draft = els["chat-input"].value;
+        const pendingTaskType = state.pendingTaskType;
+        if (!await copyText(promptToCopy, copiedMessage)) return;
+        if (els["chat-input"].value === draft) {
+          els["chat-input"].value = "";
+          if (state.pendingTaskType === pendingTaskType) state.pendingTaskType = "";
+        }
+        if (state.referenceQuotes.length) {
+          state.referenceQuotes = [];
+          renderSelection();
+        }
+        if (document.body.classList.contains("clean-reader-mode")) exitCleanReader();
+        setAIMode("web");
+        return;
+      }
       // The chat service deliberately receives the complete parsed document on
       // the first turn. Keep this check at the send boundary so selections,
       // pasted images, Ctrl+Enter and the ordinary Send button share one
