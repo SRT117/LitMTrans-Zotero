@@ -69,15 +69,16 @@
   const PAPER_LOGIC_FLOW_TASK_INSTRUCTION = "重建当前论文的研究逻辑与证据链，而不是章节目录、摘要路线图或只有‘方法—验证—结论’的空泛框架。根据论文类型组织从背景/痛点、缺口、研究问题或假设、核心设计、关键证据、结果、推理/机制、结论到边界的有向关系；边优先表达 motivates/tests/produces/supports/explains/validates/limits。通常保留 10–24 个有实际信息的节点，必要时把并行实验、对照组、消融、参数变化和相互矛盾的证据拆成独立分支后汇合。每个节点都必须回答一个具体问题：做了什么、在什么条件下、得到什么结果、支持或限制什么判断；除纯背景/问题节点外必须填写 detail，用一至三句保留关键对象、方法配置、样本或工况、数值指标、比较基线、方向与幅度、失败条件或适用阈值。禁止使用‘开展实验’‘验证与对比’‘获得结果’‘得出结论’等没有对象和结果的空洞节点；label 可以简洁，但 detail 必须直接呈现实际干货，不能把节点信息藏进点击展开区。每个包含论文事实的节点都必须补充至少一条原文逐字 evidence quote，格式为 {type:\"quote\",quote:\"…\"}；只有纯粹用于组织关系、且论文中没有对应原句的节点可以没有 evidence。不要把多个不同结果压缩成一个总结节点。只有真实条件判断才使用 decision，绝不为了装饰滥用菱形或数据库。quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写、拼接或编造，不能可靠逐字引用时不要编造。只使用文献直接支持的信息。";
   const GENERIC_MINDMAP_TASK_INSTRUCTION = "把用户明确要求整理的内容转换成一张层级清晰的语义思维导图。保留用户指定的范围，不套用论文目录。label 应直接包含完整的知识描述，无需拆分到 detail。";
   const GENERIC_FLOWCHART_TASK_INSTRUCTION = "把用户明确要求的过程、算法、计划或研究逻辑转换成真实有向流程图。节点形状只表达流程语义，边表达实际关系；不要为视觉效果制造无依据分支。";
-  const KEY_POINTS_TASK_FRAME = "这是要点提炼任务：用最少信息帮助读者判断论文做了什么、如何获得证据、核心发现及适用边界。以问题、方法、结果、边界为主要认知面（文档类型不适合时可自适应），通常 8–14 个节点；保留影响判断的指标、比较、条件和不确定性，不补充文献未支持的批评。为最重要的结果或结论补充原文逐字 evidence quote（{type:\"quote\",quote:\"…\"}），不能可靠逐字引用时留空。用户的偏好只能改变关注重点，不能改变图形协议。";
+  const KEY_POINTS_SYSTEM_PROTOCOL = "这是要点提炼任务（系统内部协议）：严格根据上述要点提炼要求与倾向生成内容。为最重要的结果或结论补充原文逐字 evidence quote（{type:\"quote\",quote:\"…\"}），quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写或编造；不能可靠逐字引用时留空。用户的要点提炼要求指导内容提炼倾向与认知重点，图形协议与输出结构严格遵循系统附加的思维导图格式要求。";
+  const KEY_POINTS_TASK_FRAME = KEY_POINTS_SYSTEM_PROTOCOL;
   const TASK_TYPES = new Set(["chat", "key_points", "paper_mindmap", "paper_logic_flow", "generic_mindmap", "generic_flowchart"]);
   function taskFor(options, settings) {
     let taskType = TASK_TYPES.has(String(options?.taskType || "")) ? String(options.taskType) : "chat";
     if (taskType === "chat" && options?.mindmap) taskType = "generic_mindmap";
     if (taskType === "chat" && options?.flowchart) taskType = "generic_flowchart";
-    const preference = String(settings?.keyPointsPrompt || "").trim();
+    const keyPointsPrompt = String(settings?.keyPointsPrompt || DEFAULT_KEY_POINTS_PROMPT).trim();
     const frames = {
-      key_points: `${KEY_POINTS_TASK_FRAME}${preference ? `\n\n用户关注偏好：\n${preference}` : ""}`,
+      key_points: `${keyPointsPrompt}\n\n${KEY_POINTS_SYSTEM_PROTOCOL}`,
       paper_mindmap: PAPER_MINDMAP_TASK_INSTRUCTION,
       paper_logic_flow: PAPER_LOGIC_FLOW_TASK_INSTRUCTION,
       generic_mindmap: GENERIC_MINDMAP_TASK_INSTRUCTION,
@@ -251,9 +252,7 @@
     const task = taskFor({ taskType }, settings);
     return messageTextForAPI({
       role: "user",
-      content: taskType === "key_points"
-        ? String(settings?.keyPointsPrompt || DEFAULT_KEY_POINTS_PROMPT)
-        : "请分析当前文献。",
+      content: taskType === "key_points" ? "要点提炼" : "请分析当前文献。",
       ...task
     });
   }
@@ -2516,6 +2515,8 @@
   LitMTrans.ChatInternals = {
     NON_MULTIMODAL_MARK_TTL_MS,
     DEFAULT_KEY_POINTS_PROMPT,
+    KEY_POINTS_TASK_FRAME,
+    KEY_POINTS_SYSTEM_PROTOCOL,
     DIAGRAM_CHINESE_INSTRUCTION,
     MINDMAP_FORMAT_INSTRUCTION,
     FLOWCHART_FORMAT_INSTRUCTION,
