@@ -3673,11 +3673,35 @@
           return driver.appendDraft(text ? `[${quote?.type === "formula" ? "公式引用" : "文献引用"}${page ? ` · 第 ${page} 页` : ""}]\n${text}` : "");
         }
 
-        case "deepseek-web-add-paper-source":
-          return this.appendPaperSourceToDeepSeek(runtime);
+        case "deepseek-web-add-paper-source": {
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: "正在添加论文原文至DeepSeek...", level: "info" }
+          });
+          return this.appendPaperSourceToDeepSeek(runtime).then((result) => {
+            if (!result?.cancelled) {
+              this.sendToPage(runtime, {
+                type: "event",
+                payload: { type: "toast", message: "论文原文已成功添加至DeepSeek", level: "success" }
+              });
+            }
+            return result;
+          });
+        }
 
-        case "deepseek-web-add-paper-pages":
-          return this.appendPaperPagesToDeepSeek(runtime);
+        case "deepseek-web-add-paper-pages": {
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: "正在将论文页面图像添加到AI...", level: "info" }
+          });
+          return this.appendPaperPagesToDeepSeek(runtime).then((result) => {
+            this.sendToPage(runtime, {
+              type: "event",
+              payload: { type: "toast", message: `论文页面图像已添加至DeepSeek（共 ${result?.attached || 0} 页）`, level: "success" }
+            });
+            return result;
+          });
+        }
 
         case "set-deepseek-web-bounds":
           return this.setDeepSeekWebBounds(runtime, payload);

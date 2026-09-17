@@ -4906,6 +4906,13 @@
               .catch(error => toast(`添加论文原文失败：${error.message || error}`));
           }
         );
+        addAction(
+          "图形式添加至AI",
+          () => {
+            void hostCall("deepseek-web-add-paper-pages")
+              .catch(error => toast(`添加论文页面图像失败：${error.message || error}`));
+          }
+        );
       }
       addSeparator();
       addAction(
@@ -4916,9 +4923,12 @@
           : !state.data?.parsed?.markdown
       );
 
-      menu.style.left = `${Math.max(4, Math.min(window.innerWidth - 180, event.clientX))}px`;
-      menu.style.top = `${Math.max(4, Math.min(window.innerHeight - 190, event.clientY))}px`;
       document.body.appendChild(menu);
+      const rect = menu.getBoundingClientRect();
+      const left = Math.max(4, Math.min(window.innerWidth - (rect.width || 180) - 8, event.clientX));
+      const top = Math.max(4, Math.min(window.innerHeight - (rect.height || 220) - 8, event.clientY));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
     }, true);
     document.addEventListener("keydown", event => {
       if (event.key === "Escape") {
