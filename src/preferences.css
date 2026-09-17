@@ -21,6 +21,17 @@
     --litmtrans-link: #58a6ff;
     --litmtrans-link-hover: #79b8ff;
   }
+  #litmtrans-pref-message {
+    background: color-mix(in srgb, #fff 10%, #1e1e1e);
+    border-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+    color: #f0f0f0;
+  }
+  #litmtrans-pref-message.error {
+    color: #ff7b72;
+    border-color: #f85149;
+    background: color-mix(in srgb, #f85149 15%, #1e1e1e);
+  }
 }
 #litmtrans-preferences-root a {
   color: var(--litmtrans-link);
@@ -31,20 +42,56 @@
   color: var(--litmtrans-link-hover);
   text-decoration: underline;
 }
-.litmtrans-pref-shell { box-sizing: border-box; width: 100%; max-width: 1060px; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 10px 16px 12px; overflow: hidden; }
+.litmtrans-pref-shell { box-sizing: border-box; width: 100%; max-width: 1060px; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 10px 16px 12px; overflow: hidden; position: relative; }
 .litmtrans-pref-header { display: flex; align-items: center; gap: 10px; margin: 0 0 9px; padding: 0 2px; }
-.litmtrans-pref-header h1 { margin: 0; font-size: 1.12em; letter-spacing: -.01em; }
-.litmtrans-pref-header #litmtrans-pref-message { flex: 1; color: var(--fill-secondary, #666); font-size: .9em; text-align: end; }
-.litmtrans-pref-header #litmtrans-pref-message.error { color: var(--color-red-70, #b42318); }
+.litmtrans-pref-header h1 { margin: 0; font-size: 1.12em; letter-spacing: -.01em; white-space: nowrap; }
 .litmtrans-pref-header button { flex: 0 0 auto; min-height: 32px; padding: 4px 16px; font: inherit; font-weight: 600; }
-.litmtrans-pref-header button.primary { background: #000; color: #fff; border-color: #000; }
-.litmtrans-pref-header .litmtrans-pref-header-links { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.litmtrans-pref-header button.primary,
+.litmtrans-pref-header #litmtrans-pref-save { margin-left: auto; background: #000; color: #fff; border-color: #000; }
+.litmtrans-pref-header .litmtrans-pref-header-links { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; white-space: nowrap; }
 .litmtrans-pref-header button.litmtrans-token-guide-link { min-height: 0; padding: 0; border: 0; background: transparent; color: var(--litmtrans-link); font-size: .88em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .litmtrans-pref-header button.litmtrans-token-guide-link:hover { color: var(--litmtrans-link-hover); text-decoration: underline; }
 .litmtrans-pref-header button.litmtrans-token-guide-link:focus-visible { outline: 2px solid var(--litmtrans-link); outline-offset: 2px; }
 .litmtrans-pref-header .litmtrans-pref-github-link { color: var(--litmtrans-link); font-size: .88em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 .litmtrans-pref-header .litmtrans-pref-github-link:hover { color: var(--litmtrans-link-hover); }
 .litmtrans-pref-header .litmtrans-pref-github-link:focus-visible { outline: 2px solid var(--litmtrans-link); outline-offset: 2px; }
+#litmtrans-pref-message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  z-index: 9999;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(520px, calc(100% - 40px));
+  padding: 13px 22px;
+  border: 1px solid var(--material-border, #d7d7d7);
+  border-radius: 8px;
+  background: var(--material-background, #fff);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16), 0 1px 4px rgba(0, 0, 0, 0.08);
+  color: var(--fill-primary, inherit);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .18s ease-out, transform .18s ease-out, visibility .18s;
+}
+#litmtrans-pref-message.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -50%) scale(1);
+}
+#litmtrans-pref-message.error {
+  color: var(--color-red-70, #b42318);
+  border-color: color-mix(in srgb, var(--color-red-70, #b42318) 45%, var(--material-border, #d7d7d7));
+  background: color-mix(in srgb, var(--color-red-70, #b42318) 8%, var(--material-background, #fff));
+}
+#litmtrans-pref-message:empty {
+  display: none;
+}
 .litmtrans-pref-board { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 0 2px 2px; }
 .litmtrans-pref-column { min-width: 0; display: grid; gap: 12px; align-content: start; }
 .litmtrans-pref-card {

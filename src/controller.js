@@ -3,6 +3,7 @@
 
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
+  LitMTrans.FEEDBACK_FORM_URL = "https://acnndsd03tis.feishu.cn/share/base/form/shrcn3I4qD4YIyhM6H1KAEQ59zb";
 
   function localize(zh, en) {
     const locale = String(Zotero.locale || "").toLowerCase();
@@ -1853,6 +1854,32 @@
       return { opened: true };
     }
 
+    buildDiagnosticReport() {
+      const zoteroVersion = Zotero.version || "未知版本";
+      const pluginVersion = this.version || "2.0.0";
+      const os = Services.appinfo?.OS || (Zotero.isWin ? "Windows" : (Zotero.isMac ? "macOS" : "Linux"));
+      const arch = Services.appinfo?.XPCOMABI || "";
+
+      return [
+        "【LitMTrans 运行环境与诊断信息】",
+        `- 插件版本: v${pluginVersion}`,
+        `- Zotero版本: ${zoteroVersion} (${os} ${arch})`,
+        `- 导出时间: ${new Date().toLocaleString()}`
+      ].join("\n");
+    }
+
+    async openFeedback() {
+      const report = this.buildDiagnosticReport();
+      try {
+        this.writeClipboardText(report);
+      }
+      catch (error) {
+        Zotero.logError(error);
+      }
+      this.openExternalURL(LitMTrans.FEEDBACK_FORM_URL);
+      return { opened: true, copied: true, report };
+    }
+
     openExternalURL(value) {
       let raw = String(value || "").trim();
       if (!raw) throw new Error("官网地址无效");
@@ -3669,6 +3696,9 @@
 
         case "open-token-guide":
           return this.openTokenGuide();
+
+        case "open-feedback":
+          return this.openFeedback();
 
         case "export-pdf":
           return this.withOperation(runtime, "export", async () => this.printWorkbenchPDF(runtime, payload));

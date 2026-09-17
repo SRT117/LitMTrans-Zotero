@@ -327,9 +327,29 @@ var LitMTransControllerPreferences = {
     }));
     list.dataset.hasItems = this.referencePaths.length ? "true" : "false";
   },
+  messageTimer: null,
 
-  message(text, error = false) { const node = this.$("message"); node.textContent = String(text || ""); node.classList.toggle("error", error); },
-
+  message(text, error = false) {
+    if (this.messageTimer) {
+      clearTimeout(this.messageTimer);
+      this.messageTimer = null;
+    }
+    const node = this.$("message");
+    if (!node) return;
+    const content = String(text || "").trim();
+    node.textContent = content;
+    node.classList.toggle("error", Boolean(error));
+    node.classList.toggle("visible", Boolean(content));
+    if (content) {
+      this.messageTimer = setTimeout(() => {
+        if (node.textContent === content) {
+          node.textContent = "";
+          node.classList.remove("visible", "error");
+        }
+        this.messageTimer = null;
+      }, error ? 6000 : 3500);
+    }
+  },
   providerChanged(prefix) {
     const chat = prefix === "chat-";
     const provider = this.$(`${prefix}provider`);
@@ -386,6 +406,13 @@ var LitMTransControllerPreferences = {
     this.$("open-token-guide").addEventListener("click", async () => {
       try { await this.controller().openTokenGuide(); }
       catch (error) { this.message(error.message || "无法打开令牌创建指南", true); }
+    });
+    this.$("open-feedback")?.addEventListener("click", async () => {
+      try {
+        await this.controller().openFeedback();
+        this.message("已复制运行环境信息到剪贴板，可在表单中直接粘贴 (Ctrl+V)", false);
+      }
+      catch (error) { this.message(error.message || "无法打开反馈页面", true); }
     });
     this.$("save").addEventListener("click", () => this.save());
     this.$("refresh-models").addEventListener("click", () => this.refreshModels("translation"));

@@ -132,7 +132,7 @@
       "chat-form", "chat-input",
       "chat-document-preview", "chat-document-button", "remove-pending-documents-button", "chat-image-preview", "chat-image-input", "context-status", "chat-send-button",
       "chat-model-settings-dialog", "embedded-chat-provider", "embedded-provider-cards-button", "embedded-chat-base-url", "embedded-chat-model", "embedded-refresh-chat-models", "embedded-chat-api-key", "embedded-chat-thinking-mode", "embedded-chat-reasoning-effort", "embedded-chat-show-reasoning", "embedded-chat-render-markdown", "embedded-chat-api-key-state", "embedded-chat-image-group", "embedded-chat-image-note", "embedded-chat-image-size", "embedded-chat-image-quality", "embedded-chat-image-format", "save-embedded-chat-settings",
-      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "setting-chat-engine-web", "setting-model-heading", "setting-web-mode-advanced", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-form-container", "setting-web-input-mode-auto", "setting-web-input-mode-clipboard", "setting-delete-web-translation-sessions", "setting-web-page-images-group", "setting-web-page-image-quality",
+      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "open-feedback-button", "setting-chat-engine-web", "setting-model-heading", "setting-web-mode-advanced", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-form-container", "setting-web-input-mode-auto", "setting-web-input-mode-clipboard", "setting-delete-web-translation-sessions", "setting-web-page-images-group", "setting-web-page-image-quality",
       "setting-api-key", "setting-thinking-mode", "setting-reasoning-effort", "setting-deepseek-fast-layout-group", "setting-deepseek-fast-layout",
       "setting-chat-provider", "setting-chat-provider-label", "setting-chat-base-url", "setting-chat-model", "refresh-chat-models-button",
       "setting-chat-api-key", "setting-chat-thinking-mode", "setting-chat-reasoning-effort", "provider-cards-button",
@@ -6737,6 +6737,11 @@
     els["open-token-guide-button"].addEventListener("click", () => {
       void hostCall("open-token-guide")
         .catch(error => toast(error.message || "无法打开令牌创建指南", "error"));
+    });
+    els["open-feedback-button"]?.addEventListener("click", () => {
+      void hostCall("open-feedback")
+        .then(() => toast("已复制运行环境信息到剪贴板，可在表单中直接粘贴 (Ctrl+V)", "success"))
+        .catch(error => toast(error.message || "无法打开反馈页面", "error"));
     });
     bindLanguagePicker(els["setting-target-language"], els["setting-target-language-picker"]);
     bindLanguagePicker(els["setting-machine-source-language"], els["setting-machine-source-language-picker"]);
