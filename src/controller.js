@@ -483,45 +483,14 @@
       const addPaperSourceItem = hostWindow.document.createXULElement("menuitem");
       addPaperSourceItem.setAttribute("label", "原文添加至AI");
       addPaperSourceItem.addEventListener("command", () => {
-        this.sendToPage(runtime, {
-          type: "event",
-          payload: { type: "toast", message: "正在添加论文原文至DeepSeek...", level: "info" }
-        });
-        void this.appendPaperSourceToDeepSeek(runtime).then((result) => {
-          if (result?.cancelled) return;
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: "论文原文已成功添加至DeepSeek", level: "success" }
-          });
-        }).catch(error => {
-          this.log(`添加论文原文到DeepSeek失败: ${error?.message || error}`);
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: `添加论文原文失败：${error?.message || error}`, level: "error" }
-          });
-        });
+        void this.addPaperSourceToAI(runtime);
       });
       popup.appendChild(addPaperSourceItem);
 
       const addPaperPagesItem = hostWindow.document.createXULElement("menuitem");
       addPaperPagesItem.setAttribute("label", "图形式添加至AI");
       addPaperPagesItem.addEventListener("command", () => {
-        this.sendToPage(runtime, {
-          type: "event",
-          payload: { type: "toast", message: "正在将论文页面图像添加到AI...", level: "info" }
-        });
-        void this.appendPaperPagesToDeepSeek(runtime).then((result) => {
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: `论文页面图像已添加至DeepSeek（共 ${result?.attached || 0} 页）`, level: "success" }
-          });
-        }).catch(error => {
-          this.log(`添加论文页面图像到DeepSeek失败: ${error?.message || error}`);
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: `添加论文页面图像失败：${error?.message || error}`, level: "error" }
-          });
-        });
+        void this.addPaperPagesToAI(runtime);
       });
       popup.appendChild(addPaperPagesItem);
       popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
@@ -716,6 +685,52 @@
         });
       }
       return { attached: imagePaths.length };
+    }
+
+    async addPaperSourceToAI(runtime) {
+      this.sendToPage(runtime, {
+        type: "event",
+        payload: { type: "toast", message: "正在添加论文原文至DeepSeek...", level: "info" }
+      });
+      try {
+        const result = await this.appendPaperSourceToDeepSeek(runtime);
+        if (!result?.cancelled) {
+          this.sendToPage(runtime, {
+            type: "event",
+            payload: { type: "toast", message: "论文原文已成功添加至DeepSeek", level: "success" }
+          });
+        }
+        return result;
+      } catch (error) {
+        this.log(`添加论文原文到DeepSeek失败: ${error?.message || error}`);
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: `添加论文原文失败：${error?.message || error}`, level: "error" }
+        });
+        throw error;
+      }
+    }
+
+    async addPaperPagesToAI(runtime) {
+      this.sendToPage(runtime, {
+        type: "event",
+        payload: { type: "toast", message: "正在将论文页面图像添加到AI...", level: "info" }
+      });
+      try {
+        const result = await this.appendPaperPagesToDeepSeek(runtime);
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: `论文页面图像已添加至DeepSeek（共 ${result?.attached || 0} 页）`, level: "success" }
+        });
+        return result;
+      } catch (error) {
+        this.log(`添加论文页面图像到DeepSeek失败: ${error?.message || error}`);
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: `添加论文页面图像失败：${error?.message || error}`, level: "error" }
+        });
+        throw error;
+      }
     }
 
     registerItemDeletionObserver() {
@@ -2386,13 +2401,68 @@
       });
 
       register("createViewContextMenu", event => {
-        const itemID = this.readerItemID(event.reader, event.params);
-        if (!itemID) return;
-        event.append({
-          label: localize("在LitMTrans中打开", "Open in LitMTrans"),
-          onCommand: () => this.openWorkbenchSafely(itemID, { window: event.reader?._window || Zotero.getMainWindow?.() })
-        });
+        try {
+          if (this.isWorkbenchReader(event?.reader)) return;
+          const itemID = this.readerItemID(event?.reader, event?.params);
+          if (!itemID) return;
+          event.append({
+            label: localize("在LitMTrans中打开", "Open in LitMTrans"),
+            onCommand: () => this.openWorkbenchSafely(itemID, { window: event?.reader?._window || Zotero.getMainWindow?.() })
+          });
+        } catch (error) {
+          this.log(`createViewContextMenu error: ${error?.message || error}`);
+        }
       });
+    }
+
+    isWorkbenchReader(reader) {
+      if (!reader) return false;
+      try {
+        if (reader._isLitMTransWorkbench || reader._runtime) return true;
+        try {
+          if (reader._internalReader?._isLitMTransWorkbench || reader._internalReader?._runtime) return true;
+        } catch (_) {}
+        if (this.tabs instanceof Map) {
+          for (const runtime of this.tabs.values()) {
+            if (!runtime) continue;
+            if (runtime.pdfPreview === reader) return true;
+            try {
+              if (runtime.pdfPreview?._internalReader === reader) return true;
+            } catch (_) {}
+            try {
+              if (reader._preview && runtime.pdfPreview === reader._preview) return true;
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      return false;
+    }
+
+    isRuntimeWebMode(runtime) {
+      if (!runtime) return false;
+      try {
+        if (runtime.aiMode === "web") return true;
+        if (runtime.aiMode === "api") return false;
+      } catch (_) {}
+      try {
+        if (runtime.deepSeekBrowser && !runtime.deepSeekBrowser.hidden && runtime.deepSeekBrowser.getAttribute("hidden") !== "true") {
+          return true;
+        }
+      } catch (_) {}
+      try {
+        const doc = runtime.browser?.contentDocument;
+        if (doc) {
+          const webContainer = doc.getElementById?.("deepseek-web-container");
+          if (webContainer && !webContainer.hidden) return true;
+          const webBtn = doc.getElementById?.("ai-mode-web-button");
+          if (webBtn?.classList?.contains?.("active")) return true;
+        }
+      } catch (_) {}
+      try {
+        return U.getPref("chatEngine", "api") === "deepseek_web";
+      } catch (_) {
+        return false;
+      }
     }
 
     readerItemID(reader, params = {}) {
@@ -2559,6 +2629,7 @@
 
       const documentID = `${attachment.libraryID}-${attachment.key}`;
       const itemTitle = String(parentItem?.getField("title") || attachment.getField("title") || "");
+      const prefChatEngine = U.getPref("chatEngine", "api");
       const runtime = {
         tabID,
         attachmentID: attachment.id,
@@ -2576,6 +2647,7 @@
         bridgeInstalling: false,
         hostReadySent: false,
         closed: false,
+        aiMode: prefChatEngine === "deepseek_web" ? "web" : "api",
         pdfPreviewInitializationTask: null,
         pdfPreviewInitializationTasks: new Set(),
         pendingOpen: { quote: options.quote || null, prompt: String(options.prompt || "") }
@@ -2959,6 +3031,12 @@
             catch (error) { finish(reject)(error); }
           });
           const preview = await Zotero.Reader.openPreview(attachmentID, frame);
+          preview._isLitMTransWorkbench = true;
+          preview._runtime = runtime;
+          if (preview._internalReader) {
+            preview._internalReader._isLitMTransWorkbench = true;
+            preview._internalReader._runtime = runtime;
+          }
           // ReaderPreview 面向缩略图，默认 _getState() 会返回 { scale: "page-height" }，
           // 并在 _open() 及阅读器 resize 时强制使用 page-height。
           // 这里是完整阅读窗格，必须在 _open() 前覆写 _getState 与 updatePDFAttr，
@@ -3020,64 +3098,137 @@
           // context-menu callback quietly fails even after text selection is
           // restored. Give this embedded reader a popup host and translate its
           // nested iframe coordinates into the Zotero window's screen space.
+          const controller = this;
           const hostWindow = runtime.browser?.ownerGlobal || Zotero.getMainWindow();
-          const popupset = hostWindow?.document?.createXULElement?.("popupset");
-          try { runtime.container?.appendChild?.(popupset); } catch (_) {}
+          const popupset = hostWindow?.document?.getElementById?.("mainPopupSet")
+            || hostWindow?.document?.querySelector?.("popupset")
+            || runtime.popupset;
           preview._window = hostWindow;
           preview._popupset = popupset;
           preview._openContextMenu = async ({ x, y, itemGroups }) => {
-            if (!hostWindow || !popupset) return;
-            const popup = hostWindow.document.createXULElement("menupopup");
-            popupset.appendChild(popup);
-            const done = Zotero.Promise.defer();
-            popup.addEventListener("popuphidden", () => {
-              try { popup.remove(); } catch (_) {}
-              done.resolve();
-            }, { once: true });
-            for (const [groupIndex, group] of (itemGroups || []).entries()) {
-              for (const item of group || []) {
-                if (item.groups) {
-                  const menu = hostWindow.document.createXULElement("menu");
-                  menu.setAttribute("label", item.label);
-                  const submenu = hostWindow.document.createXULElement("menupopup");
-                  menu.appendChild(submenu);
-                  for (const nestedGroup of item.groups) {
-                    for (const nestedItem of nestedGroup) {
-                      const nested = hostWindow.document.createXULElement("menuitem");
-                      nested.setAttribute("label", nestedItem.label);
-                      nested.setAttribute("disabled", Boolean(nestedItem.disabled));
-                      nested.addEventListener("command", () => nestedItem.onCommand());
-                      submenu.appendChild(nested);
+            try {
+              if (!hostWindow) return;
+              const targetPopupset = hostWindow.document.getElementById("mainPopupSet")
+                || hostWindow.document.querySelector("popupset")
+                || runtime.popupset
+                || popupset;
+              if (!targetPopupset) return;
+
+              const popup = hostWindow.document.createXULElement("menupopup");
+              targetPopupset.appendChild(popup);
+              const done = Zotero.Promise.defer();
+              popup.addEventListener("popuphidden", () => {
+                try { popup.remove(); } catch (_) {}
+                done.resolve();
+              }, { once: true });
+
+              const openInLitMTransLabel = localize("在LitMTrans中打开", "Open in LitMTrans");
+              const isOpenInLitMTrans = (it) => {
+                const label = String(it?.label || "").trim();
+                return label === openInLitMTransLabel || label === "在LitMTrans中打开" || label === "Open in LitMTrans";
+              };
+
+              let filteredGroups = [];
+              try {
+                filteredGroups = (itemGroups || [])
+                  .map(group => (group || []).filter(item => !isOpenInLitMTrans(item)))
+                  .filter(group => group.length > 0);
+              } catch (_) {
+                filteredGroups = itemGroups || [];
+              }
+
+              let isWeb = false;
+              try {
+                isWeb = controller.isRuntimeWebMode(runtime);
+              } catch (_) {}
+
+              if (isWeb) {
+                filteredGroups.push([
+                  {
+                    label: "原文添加至AI",
+                    onCommand: () => {
+                      void controller.addPaperSourceToAI(runtime);
+                    }
+                  },
+                  {
+                    label: "图形式添加至AI",
+                    onCommand: () => {
+                      void controller.addPaperPagesToAI(runtime);
                     }
                   }
-                  popup.appendChild(menu);
-                  continue;
-                }
-                const menuitem = hostWindow.document.createXULElement("menuitem");
-                menuitem.setAttribute("label", item.label);
-                menuitem.setAttribute("disabled", Boolean(item.disabled));
-                if (item.color) {
-                  menuitem.className = "menuitem-iconic";
-                  menuitem.setAttribute("image", preview._getColorIcon(item.color, item.checked));
-                }
-                else if (item.checked) {
-                  menuitem.setAttribute("type", "checkbox");
-                  menuitem.setAttribute("checked", true);
-                }
-                menuitem.addEventListener("command", () => item.onCommand());
-                popup.appendChild(menuitem);
+                ]);
               }
-              if (groupIndex < itemGroups.length - 1) popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
+
+              for (const [groupIndex, group] of filteredGroups.entries()) {
+                for (const item of group || []) {
+                  if (item.groups) {
+                    const menu = hostWindow.document.createXULElement("menu");
+                    menu.setAttribute("label", item.label || "");
+                    const submenu = hostWindow.document.createXULElement("menupopup");
+                    menu.appendChild(submenu);
+                    for (const nestedGroup of item.groups || []) {
+                      for (const nestedItem of nestedGroup || []) {
+                        const nested = hostWindow.document.createXULElement("menuitem");
+                        nested.setAttribute("label", nestedItem.label || "");
+                        nested.setAttribute("disabled", Boolean(nestedItem.disabled));
+                        nested.addEventListener("command", () => nestedItem.onCommand?.());
+                        submenu.appendChild(nested);
+                      }
+                    }
+                    popup.appendChild(menu);
+                    continue;
+                  }
+                  const menuitem = hostWindow.document.createXULElement("menuitem");
+                  menuitem.setAttribute("label", item.label || "");
+                  menuitem.setAttribute("disabled", Boolean(item.disabled));
+                  if (item.color) {
+                    menuitem.className = "menuitem-iconic";
+                    try {
+                      menuitem.setAttribute("image", preview._getColorIcon(item.color, item.checked));
+                    } catch (_) {}
+                  }
+                  else if (item.checked) {
+                    menuitem.setAttribute("type", "checkbox");
+                    menuitem.setAttribute("checked", "true");
+                  }
+                  menuitem.addEventListener("command", () => item.onCommand?.());
+                  popup.appendChild(menuitem);
+                }
+                if (groupIndex < filteredGroups.length - 1) {
+                  popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
+                }
+              }
+
+              let screenX = 0;
+              let screenY = 0;
+              try {
+                const outerRect = runtime.browser?.getBoundingClientRect?.() || { x: 0, y: 0 };
+                const frameRect = frame.getBoundingClientRect();
+                const screenPoint = hostWindow.windowUtils.toScreenRectInCSSUnits(
+                  Number(outerRect.x || 0) + frameRect.x + Number(x || 0),
+                  Number(outerRect.y || 0) + frameRect.y + Number(y || 0),
+                  0, 0
+                );
+                screenX = screenPoint.x;
+                screenY = screenPoint.y;
+              } catch (_) {
+                screenX = Number(x || 0);
+                screenY = Number(y || 0);
+              }
+
+              setTimeout(() => {
+                try {
+                  popup.openPopupAtScreen(screenX, screenY, true);
+                } catch (e) {
+                  controller.log(`popup.openPopupAtScreen error: ${e?.message || e}`);
+                  done.resolve();
+                }
+              });
+
+              return done.promise;
+            } catch (err) {
+              controller.log(`preview._openContextMenu error: ${err?.message || err}`);
             }
-            const outerRect = runtime.browser?.getBoundingClientRect?.();
-            const frameRect = frame.getBoundingClientRect();
-            const screenPoint = hostWindow.windowUtils.toScreenRectInCSSUnits(
-              Number(outerRect?.x || 0) + frameRect.x + Number(x || 0),
-              Number(outerRect?.y || 0) + frameRect.y + Number(y || 0),
-              0, 0
-            );
-            popup.openPopupAtScreen(screenPoint.x, screenPoint.y, true);
-            return done.promise;
           };
           task.preview = preview;
           cleanupPreview = () => {
@@ -3085,7 +3236,6 @@
             if (task.openStarted && !task.openSettled) return;
             if (task.cleanupDone) return;
             task.cleanupDone = true;
-            try { popupset?.remove(); } catch (_) {}
             try { preview.uninit?.(); } catch (_) {}
             finishTask();
           };
@@ -3104,6 +3254,12 @@
           openPromise.then(
             () => {
               task.openSettled = true;
+              try {
+                if (preview._internalReader) {
+                  preview._internalReader._isLitMTransWorkbench = true;
+                  preview._internalReader._runtime = runtime;
+                }
+              } catch (_) {}
               if (task.cleanupRequested || task.cancelled || task.timedOut || !runtimeIsActive()) cleanupPreview();
             },
             () => {
@@ -3648,6 +3804,7 @@
           return { opened: true };
 
         case "load-deepseek-web":
+          runtime.aiMode = "web";
           return this.loadDeepSeekWeb(runtime, Boolean(payload.reload));
 
         case "deepseek-web-reference": {
@@ -3673,35 +3830,11 @@
           return driver.appendDraft(text ? `[${quote?.type === "formula" ? "公式引用" : "文献引用"}${page ? ` · 第 ${page} 页` : ""}]\n${text}` : "");
         }
 
-        case "deepseek-web-add-paper-source": {
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: "正在添加论文原文至DeepSeek...", level: "info" }
-          });
-          return this.appendPaperSourceToDeepSeek(runtime).then((result) => {
-            if (!result?.cancelled) {
-              this.sendToPage(runtime, {
-                type: "event",
-                payload: { type: "toast", message: "论文原文已成功添加至DeepSeek", level: "success" }
-              });
-            }
-            return result;
-          });
-        }
+        case "deepseek-web-add-paper-source":
+          return this.addPaperSourceToAI(runtime);
 
-        case "deepseek-web-add-paper-pages": {
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: "正在将论文页面图像添加到AI...", level: "info" }
-          });
-          return this.appendPaperPagesToDeepSeek(runtime).then((result) => {
-            this.sendToPage(runtime, {
-              type: "event",
-              payload: { type: "toast", message: `论文页面图像已添加至DeepSeek（共 ${result?.attached || 0} 页）`, level: "success" }
-            });
-            return result;
-          });
-        }
+        case "deepseek-web-add-paper-pages":
+          return this.addPaperPagesToAI(runtime);
 
         case "set-deepseek-web-bounds":
           return this.setDeepSeekWebBounds(runtime, payload);
@@ -3712,6 +3845,7 @@
         case "save-chat-engine": {
           const engine = payload?.chatEngine === "deepseek_web" ? "deepseek_web" : "api";
           U.setPref("chatEngine", engine);
+          runtime.aiMode = engine === "deepseek_web" ? "web" : "api";
           return { chatEngine: engine };
         }
 
