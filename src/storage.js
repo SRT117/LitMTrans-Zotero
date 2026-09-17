@@ -465,6 +465,388 @@
       await this.writeText(path, body.join("\n"));
       return path;
     }
+
+    formatBytes(bytes) {
+      const n = Number(bytes) || 0;
+      if (n <= 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+      const val = n / Math.pow(1024, i);
+      return `${val < 10 && i > 0 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+    }
+
+    async dirStats(dirPath) {
+      let bytes = 0;
+      let files = 0;
+      const visit = async (current) => {
+        const entries = await this.list(current);
+        for (const entry of entries) {
+          const info = await this.stat(entry);
+          if (!info) continue;
+          if (info.type === "directory") {
+            await visit(entry);
+          } else {
+            bytes += Number(info.size || 0);
+            files++;
+          }
+        }
+      };
+      if (await this.exists(dirPath)) {
+        await visit(dirPath);
+      }
+      return { bytes, files, formatted: this.formatBytes(bytes) };
+    }
+
+    async getStorageSummary() {
+      const documents = [];
+      let documentsTotalBytes = 0;
+      let orphanedCount = 0;
+      let orphanedTotalBytes = 0;
+
+      if (await this.exists(this.documentsRoot)) {
+        const docDirs = await this.list(this.documentsRoot);
+        for (const docDir of docDirs) {
+          const info = await this.stat(docDir);
+          if (!info || info.type !== "directory") continue;
+          const documentID = PathUtils.filename(docDir);
+          const meta = await this.readJSON(PathUtils.join(docDir, "document.json"), null);
+
+          // 递归分类分析该文献内部各子目录与文件
+          const categories = {
+            images: {
+              bytes: 0,
+              files: 0,
+              label: "图片与排版素材",
+              key: "images",
+              desc: "从 PDF 中高保真提取的图表图像、公式切片以及排版视图渲染所需的图片资源。"
+            },
+            model: {
+              bytes: 0,
+              files: 0,
+              label: "版面解析与模型",
+              key: "model",
+              desc: "MinerU 识别的几何版面坐标、段落分栏流、阅读顺序以及编译渲染模型与全文。"
+            },
+            translation: {
+              bytes: 0,
+              files: 0,
+              label: "双语译文数据",
+              key: "translation",
+              desc: "双语分块流式译文、版面就地翻译对齐 JSON、公式占位替换映射及翻译状态。"
+            },
+            mineruResult: {
+              bytes: 0,
+              files: 0,
+              label: "原始解析包 (MinerU)",
+              key: "mineruResult",
+              desc: "MinerU 任务原始下载解压包（含原始 PDF 副本、分卷解析数据及解包产物）。"
+            },
+            chat: {
+              bytes: 0,
+              files: 0,
+              label: "文献对话与附件",
+              key: "chat",
+              desc: "针对本文献进行的 AI 深度问答历史记录、提问上下文与临时交互数据。"
+            },
+            deepseekWeb: {
+              bytes: 0,
+              files: 0,
+              label: "页面转图缓存",
+              key: "deepseekWeb",
+              desc: "用于 DeepSeek 网页端视觉多模态交互时切分的页面高清截图缓存。"
+            },
+            logs: {
+              bytes: 0,
+              files: 0,
+              label: "运行日志与审计",
+              key: "logs",
+              desc: "文献处理流水日志、错误排查记录以及向大模型发起请求的审计明细。"
+            },
+            other: {
+              bytes: 0,
+              files: 0,
+              label: "其他辅助文件",
+              key: "other",
+              desc: "文献目录下的其他辅助或临时未分类文件。"
+            }
+          };
+
+          let docTotalBytes = 0;
+          let docTotalFiles = 0;
+          let latestMtime = info.lastModified || 0;
+
+          const entries = await this.list(docDir);
+          for (const entry of entries) {
+            const entryInfo = await this.stat(entry);
+            if (!entryInfo) continue;
+            if (entryInfo.lastModified && entryInfo.lastModified > latestMtime) {
+              latestMtime = entryInfo.lastModified;
+            }
+            const name = PathUtils.filename(entry);
+
+            if (entryInfo.type === "directory") {
+              const subStats = await this.dirStats(entry);
+              docTotalBytes += subStats.bytes;
+              docTotalFiles += subStats.files;
+
+              if (name === "images" || name === "assets") {
+                categories.images.bytes += subStats.bytes;
+                categories.images.files += subStats.files;
+              } else if (name === "translation" || name === "layout-translation") {
+                categories.translation.bytes += subStats.bytes;
+                categories.translation.files += subStats.files;
+              } else if (name === "mineru-result") {
+                categories.mineruResult.bytes += subStats.bytes;
+                categories.mineruResult.files += subStats.files;
+              } else if (name === "chat") {
+                categories.chat.bytes += subStats.bytes;
+                categories.chat.files += subStats.files;
+              } else if (name === "deepseek-web") {
+                categories.deepseekWeb.bytes += subStats.bytes;
+                categories.deepseekWeb.files += subStats.files;
+              } else if (name === "logs" || name === "AI请求审计") {
+                categories.logs.bytes += subStats.bytes;
+                categories.logs.files += subStats.files;
+              } else {
+                categories.other.bytes += subStats.bytes;
+                categories.other.files += subStats.files;
+              }
+            } else {
+              const size = Number(entryInfo.size || 0);
+              docTotalBytes += size;
+              docTotalFiles++;
+
+              if (name === "asset-map.json" || name === "image-map.json") {
+                categories.images.bytes += size;
+                categories.images.files++;
+              } else if (name === "mineru-task.json") {
+                categories.mineruResult.bytes += size;
+                categories.mineruResult.files++;
+              } else if (name.endsWith(".json") || name.endsWith(".md") || name === "document.json") {
+                categories.model.bytes += size;
+                categories.model.files++;
+              } else {
+                categories.other.bytes += size;
+                categories.other.files++;
+              }
+            }
+          }
+
+          // 格式化各子项
+          const formattedCategories = Object.values(categories).map(cat => ({
+            ...cat,
+            formatted: this.formatBytes(cat.bytes)
+          })).filter(cat => cat.bytes > 0 || cat.files > 0);
+
+          // 精准提取文献名称与检查条目在 Zotero 中是否存在
+          let isOrphan = false;
+          let zoteroItemTitle = "";
+          try {
+            const itemID = Number(meta?.itemID || 0);
+            const parentItemID = Number(meta?.parentItemID || 0);
+            if (itemID) {
+              const item = Zotero.Items.get(itemID);
+              if (item) {
+                if (item.isAttachment()) {
+                  const pId = item.parentItemID || parentItemID;
+                  if (pId) {
+                    const parent = Zotero.Items.get(pId);
+                    if (parent) {
+                      zoteroItemTitle = parent.getField?.("title") || parent.getDisplayTitle?.() || "";
+                    }
+                  }
+                }
+                if (!zoteroItemTitle) {
+                  const titleField = item.getField?.("title");
+                  if (titleField && titleField.toLowerCase() !== "pdf") {
+                    zoteroItemTitle = titleField;
+                  } else {
+                    const disp = item.getDisplayTitle?.() || "";
+                    if (disp && disp.toLowerCase() !== "pdf") {
+                      zoteroItemTitle = disp;
+                    }
+                  }
+                }
+              } else if (parentItemID) {
+                const parent = Zotero.Items.get(parentItemID);
+                if (parent) {
+                  zoteroItemTitle = parent.getField?.("title") || parent.getDisplayTitle?.() || "";
+                } else {
+                  isOrphan = true;
+                }
+              } else {
+                isOrphan = true;
+              }
+            }
+          } catch (_) {}
+
+          let finalTitle = meta?.title || zoteroItemTitle;
+          if (!finalTitle || finalTitle.trim().toLowerCase() === "pdf") {
+            if (meta?.sourceFileName) {
+              finalTitle = meta.sourceFileName.replace(/\.[^/.]+$/, "");
+            }
+          }
+          if (!finalTitle || finalTitle.trim().toLowerCase() === "pdf") {
+            finalTitle = `文献 #${documentID}`;
+          }
+
+          if (isOrphan) {
+            orphanedCount++;
+            orphanedTotalBytes += docTotalBytes;
+          }
+          documentsTotalBytes += docTotalBytes;
+
+          documents.push({
+            id: documentID,
+            title: finalTitle,
+            pageCount: meta?.pageCount || 0,
+            updatedAt: meta?.updatedAt || (latestMtime ? new Date(latestMtime).toISOString() : ""),
+            isOrphan,
+            totalBytes: docTotalBytes,
+            totalFiles: docTotalFiles,
+            totalBytesFormatted: this.formatBytes(docTotalBytes),
+            path: docDir,
+            categories: formattedCategories
+          });
+        }
+      }
+
+      // 按体积降序排序
+      documents.sort((a, b) => b.totalBytes - a.totalBytes);
+
+      // 临时缓存统计
+      const tempStats = await this.dirStats(this.tempRoot);
+
+      // 离线引擎统计
+      const edgeLocalDir = PathUtils.join(this.root, "edge-local-translation");
+      const edgeStats = await this.dirStats(edgeLocalDir);
+
+      const totalBytes = documentsTotalBytes + tempStats.bytes + edgeStats.bytes;
+
+      return {
+        rootPath: this.root,
+        tempPath: this.tempRoot,
+        totalBytes,
+        totalBytesFormatted: this.formatBytes(totalBytes),
+        documentsTotalBytes,
+        documentsTotalBytesFormatted: this.formatBytes(documentsTotalBytes),
+        documentsCount: documents.length,
+        tempTotalBytes: tempStats.bytes,
+        tempTotalBytesFormatted: tempStats.formatted,
+        tempFilesCount: tempStats.files,
+        orphanedCount,
+        orphanedTotalBytes,
+        orphanedTotalBytesFormatted: this.formatBytes(orphanedTotalBytes),
+        edgeLocalTotalBytes: edgeStats.bytes,
+        edgeLocalTotalBytesFormatted: edgeStats.formatted,
+        documents
+      };
+    }
+
+    async clearTempFiles() {
+      let clearedBytes = 0;
+      let clearedFiles = 0;
+      if (await this.exists(this.tempRoot)) {
+        const stats = await this.dirStats(this.tempRoot);
+        clearedBytes = stats.bytes;
+        clearedFiles = stats.files;
+        await this.remove(this.tempRoot, true);
+        await this.ensureDir(this.tempRoot);
+      }
+      return { clearedBytes, clearedFiles, formatted: this.formatBytes(clearedBytes) };
+    }
+
+    async clearOrphanedDocuments() {
+      let clearedBytes = 0;
+      let clearedCount = 0;
+      if (!await this.exists(this.documentsRoot)) return { clearedBytes, clearedCount, formatted: "0 B" };
+      const docDirs = await this.list(this.documentsRoot);
+      for (const docDir of docDirs) {
+        const meta = await this.readJSON(PathUtils.join(docDir, "document.json"), null);
+        let isOrphan = false;
+        try {
+          const itemID = Number(meta?.itemID || 0);
+          const parentItemID = Number(meta?.parentItemID || 0);
+          if (itemID) {
+            const item = Zotero.Items.get(itemID);
+            if (!item) {
+              const parent = parentItemID ? Zotero.Items.get(parentItemID) : null;
+              if (!parent) isOrphan = true;
+            }
+          }
+        } catch (_) {}
+        if (isOrphan) {
+          const stats = await this.dirStats(docDir);
+          clearedBytes += stats.bytes;
+          clearedCount++;
+          await this.remove(docDir, true);
+        }
+      }
+      return { clearedBytes, clearedCount, formatted: this.formatBytes(clearedBytes) };
+    }
+
+    async clearDocumentSubcategory(documentID, subcategory) {
+      const docDir = this.documentDir(documentID);
+      if (!await this.exists(docDir)) return { cleared: false };
+
+      if (!subcategory || subcategory === "all") {
+        await this.remove(docDir, true);
+        return { cleared: true };
+      }
+
+      if (subcategory === "images") {
+        await this.remove(PathUtils.join(docDir, "images"), true);
+        await this.remove(PathUtils.join(docDir, "assets"), true);
+        await this.remove(PathUtils.join(docDir, "asset-map.json"), false);
+        await this.remove(PathUtils.join(docDir, "image-map.json"), false);
+      } else if (subcategory === "translation") {
+        await this.clearTranslation(documentID, "all");
+      } else if (subcategory === "mineruResult") {
+        await this.remove(PathUtils.join(docDir, "mineru-result"), true);
+        await this.remove(PathUtils.join(docDir, "mineru-task.json"), false);
+      } else if (subcategory === "chat") {
+        await this.remove(PathUtils.join(docDir, "chat"), true);
+      } else if (subcategory === "deepseekWeb") {
+        await this.remove(PathUtils.join(docDir, "deepseek-web"), true);
+      } else if (subcategory === "logs") {
+        await this.remove(PathUtils.join(docDir, "logs"), true);
+        await this.remove(PathUtils.join(docDir, "AI请求审计"), true);
+      }
+      return { cleared: true };
+    }
+
+    openFolder(targetPath) {
+      const path = String(targetPath || this.root).trim();
+      let file = U.createLocalFile(path);
+      try {
+        if (!file.exists()) {
+          const parentDir = PathUtils.parent(path);
+          if (parentDir) file = U.createLocalFile(parentDir);
+        }
+      } catch (_) {}
+
+      try {
+        if (file.isDirectory()) {
+          file.launch();
+          return true;
+        }
+      } catch (_) {}
+      try {
+        if (typeof file.reveal === "function") {
+          file.reveal();
+          return true;
+        }
+      } catch (_) {}
+      try {
+        file.launch();
+        return true;
+      } catch (_) {
+        const service = Cc["@mozilla.org/uriloader/external-protocol-service;1"]
+          .getService(Ci.nsIExternalProtocolService);
+        service.loadURI(Services.io.newFileURI(file));
+        return true;
+      }
+    }
   }
 
   LitMTrans.Storage = Storage;

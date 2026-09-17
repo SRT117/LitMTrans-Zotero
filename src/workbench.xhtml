@@ -409,6 +409,7 @@
         </details>
       </div>
       <footer class="modal-footer">
+        <button id="open-storage-manager-button" class="button" type="button" title="展开插件数据管理树，直观查看所有文献与临时存储占用">存储数据管理</button>
         <button id="clear-document-button" class="button button-danger-quiet" type="button">清除本文献数据</button>
         <span class="modal-spacer"></span>
         <button class="button" value="cancel" type="submit">取消</button>
@@ -541,6 +542,67 @@
       <span class="diagram-viewer-hint">Ctrl + 鼠标滚轮缩放 · 拖动画布平移</span>
       <span class="modal-spacer"></span><button id="diagram-viewer-export" class="button" type="button">导出SVG</button>
     </footer>
+  </dialog>
+
+  <dialog id="storage-manager-dialog" class="modal storage-manager-modal" aria-label="LitMTrans 存储与数据管理">
+    <div class="modal-card storage-manager-card">
+      <header class="modal-header">
+        <div>
+          <h2>插件存储与数据管理</h2>
+          <p>双击条目进入对应的文件夹位置</p>
+        </div>
+        <button id="close-storage-manager" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div class="storage-manager-body">
+        <section class="storage-summary-board">
+          <div class="storage-summary-card primary">
+            <span class="storage-summary-label">插件总存储占用</span>
+            <strong id="storage-total-bytes" class="storage-summary-value">-</strong>
+            <span id="storage-root-path" class="storage-summary-path" title="">-</span>
+          </div>
+          <div class="storage-summary-card">
+            <span class="storage-summary-label">已解析文献</span>
+            <strong id="storage-doc-count" class="storage-summary-value">-</strong>
+            <span id="storage-doc-bytes" class="storage-summary-sub">0 B</span>
+          </div>
+          <div class="storage-summary-card">
+            <span class="storage-summary-label">临时与碎片缓存</span>
+            <strong id="storage-temp-bytes" class="storage-summary-value">-</strong>
+            <span id="storage-temp-count" class="storage-summary-sub">0 个文件</span>
+          </div>
+          <div class="storage-summary-card" id="storage-orphaned-card" hidden="hidden">
+            <span class="storage-summary-label">失效文献残留</span>
+            <strong id="storage-orphaned-bytes" class="storage-summary-value text-warning">-</strong>
+            <span id="storage-orphaned-count" class="storage-summary-sub">0 篇已删除</span>
+          </div>
+        </section>
+
+        <div class="storage-toolbar">
+          <div class="storage-toolbar-left">
+            <button id="storage-expand-all" class="button small" type="button">全部展开</button>
+            <button id="storage-collapse-all" class="button small" type="button">全部折叠</button>
+            <div class="storage-search-box">
+              <input id="storage-search-input" type="search" placeholder="过滤文献标题或ID..." />
+            </div>
+          </div>
+          <div class="storage-toolbar-right">
+            <button id="storage-open-root" class="button small" type="button" title="在系统文件资源管理器中打开存储根目录">打开存储目录</button>
+            <button id="storage-clean-temp" class="button small" type="button" title="清理临时生成的PDF和解压碎片">清空临时缓存</button>
+            <button id="storage-clean-orphaned" class="button small button-warning-quiet" type="button" hidden="hidden" title="一键清理在Zotero中已删除文献的遗留数据">清理已失效文献</button>
+            <button id="storage-refresh" class="button small" type="button" title="重新计算占用">刷新</button>
+          </div>
+        </div>
+
+        <div id="storage-tree-container" class="storage-tree-container" role="tree" aria-label="数据管理树">
+          <div class="storage-loading-hint">正在扫描磁盘占用...</div>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <span class="storage-footer-note">提示：清理缓存不会影响 Zotero 文献库中的原始 PDF 文件，下次打开文献可随时重新解析与翻译。</span>
+        <span class="modal-spacer"></span>
+        <button id="done-storage-manager" class="button button-primary" type="button">完成</button>
+      </footer>
+    </div>
   </dialog>
 
   <div id="toast-region" class="toast-region" aria-live="assertive"></div>

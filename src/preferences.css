@@ -114,10 +114,75 @@
   color: var(--fill-primary, #222) !important;
   opacity: 1;
 }
-.litmtrans-editable-language { display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 0; min-width: 0; }
-.litmtrans-pref-grid .litmtrans-editable-language input { min-width: 0; border-start-end-radius: 0; border-end-end-radius: 0; }
-.litmtrans-pref-grid .litmtrans-editable-language .litmtrans-language-picker { width: 34px; min-width: 34px; margin-inline-start: -1px; padding-inline: 2px; border-start-start-radius: 0; border-end-start-radius: 0; cursor: pointer; }
+.litmtrans-editable-language {
+  position: relative;
+  display: flex !important;
+  align-items: center !important;
+  border: 1px solid var(--material-border, #d7d7d7);
+  border-radius: 4px;
+  background-color: var(--material-background, #fff) !important;
+  box-sizing: border-box;
+  min-height: 28px;
+  height: 28px;
+  overflow: hidden;
+  transition: border-color .15s ease, outline .15s ease;
+}
+.litmtrans-editable-language:focus-within {
+  border-color: var(--litmtrans-section);
+  outline: 2px solid var(--litmtrans-section);
+  outline-offset: 1px;
+}
+.litmtrans-pref-grid .litmtrans-editable-language input,
+.litmtrans-pref-form-stack .litmtrans-editable-language input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: auto !important;
+  min-height: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding: 0 8px 2px 8px !important;
+  line-height: 1.2 !important;
+  margin: 0 !important;
+  color: var(--fill-primary, #222) !important;
+  font: inherit;
+  font-size: .94em;
+}
+.litmtrans-pref-grid .litmtrans-editable-language .litmtrans-language-picker,
+.litmtrans-pref-form-stack .litmtrans-editable-language .litmtrans-language-picker {
+  flex: 0 0 28px;
+  width: 28px !important;
+  min-width: 28px !important;
+  max-width: 28px !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  align-self: stretch !important;
+  border: none !important;
+  border-left: 1px solid color-mix(in srgb, var(--material-border, #d7d7d7) 75%, transparent) !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  cursor: pointer;
+  appearance: none !important;
+  -moz-appearance: none !important;
+  -webkit-appearance: none !important;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="%23666666" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>') !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 10px 6px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+.litmtrans-pref-grid .litmtrans-editable-language .litmtrans-language-picker:hover,
+.litmtrans-pref-form-stack .litmtrans-editable-language .litmtrans-language-picker:hover {
+  background-color: color-mix(in srgb, var(--material-border, #d7d7d7) 35%, transparent) !important;
+}
 .litmtrans-language-picker option { color: var(--fill-primary, #222); background: var(--material-background, #fff); }
+.litmtrans-editable-language input:focus-visible,
+.litmtrans-editable-language select:focus-visible { outline: none !important; }
 .litmtrans-pref-grid input:focus-visible, .litmtrans-pref-grid select:focus-visible, .litmtrans-pref-grid textarea:focus-visible, .litmtrans-pref-grid button:focus-visible, .litmtrans-pref-form-stack input:focus-visible, .litmtrans-pref-form-stack select:focus-visible, .litmtrans-pref-form-stack textarea:focus-visible, .litmtrans-pref-form-stack button:focus-visible, .litmtrans-shared-toggle input:focus-visible { outline: 2px solid var(--litmtrans-section); outline-offset: 1px; }
 .litmtrans-pref-grid textarea, .litmtrans-pref-form-stack textarea { min-height: 58px; resize: vertical; line-height: 1.35; }
 .litmtrans-pref-grid select[multiple] { min-height: 68px; }

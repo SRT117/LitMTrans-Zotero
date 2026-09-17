@@ -142,7 +142,13 @@
       "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-key-points-prompt", "restore-key-points-prompt",
-      "clear-document-button", "save-settings-button", "custom-translation-instruction-dialog", "custom-translation-instruction-input", "save-custom-translation-instruction",
+      "open-storage-manager-button", "clear-document-button", "save-settings-button",
+      "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
+      "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
+      "storage-temp-bytes", "storage-temp-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
+      "storage-expand-all", "storage-collapse-all", "storage-search-input",
+      "storage-open-root", "storage-clean-temp", "storage-clean-orphaned", "storage-refresh", "storage-tree-container",
+      "custom-translation-instruction-dialog", "custom-translation-instruction-input", "save-custom-translation-instruction",
       "clear-chat-button",
       "provider-cards-dialog", "close-provider-cards", "done-provider-cards", "provider-card-list", "new-provider-card",
       "delete-provider-card", "provider-card-name", "provider-card-provider", "provider-card-base-url", "provider-card-api-key", "provider-card-api-key-state",
@@ -7837,10 +7843,437 @@
       catch (error) { toast(error.message, "error"); }
     });
 
+    bindStorageManagerEvents();
+
     bindScrollSync();
     bindSplitHandle();
     bindSidebarSplitHandle();
     bindLayoutInteractions();
+  }
+
+  function escapeHTML(text) {
+    if (U?.escapeHTML) return U.escapeHTML(String(text ?? ""));
+    return String(text ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  let currentStorageSummary = null;
+  const storageTreeExpandedMap = new Map();
+
+  async function refreshStorageManager() {
+    if (!els["storage-tree-container"]) return;
+    els["storage-tree-container"].innerHTML = '<div class="storage-loading-hint">正在扫描磁盘占用...</div>';
+    try {
+      currentStorageSummary = await hostCall("get-storage-summary");
+      renderStorageSummary();
+      renderStorageTree(els["storage-search-input"]?.value || "");
+    } catch (error) {
+      els["storage-tree-container"].innerHTML = `<div class="storage-empty-hint error">加载存储统计失败: ${escapeHTML(error?.message || error)}</div>`;
+    }
+  }
+
+  function renderStorageSummary() {
+    if (!currentStorageSummary) return;
+    const s = currentStorageSummary;
+    if (els["storage-total-bytes"]) els["storage-total-bytes"].textContent = s.totalBytesFormatted || "0 B";
+    if (els["storage-root-path"]) {
+      els["storage-root-path"].textContent = s.rootPath || "";
+      els["storage-root-path"].title = s.rootPath || "";
+    }
+    if (els["storage-doc-count"]) els["storage-doc-count"].textContent = `${s.documentsCount || 0} 篇`;
+    if (els["storage-doc-bytes"]) els["storage-doc-bytes"].textContent = s.documentsTotalBytesFormatted || "0 B";
+    if (els["storage-temp-bytes"]) els["storage-temp-bytes"].textContent = s.tempTotalBytesFormatted || "0 B";
+    if (els["storage-temp-count"]) els["storage-temp-count"].textContent = `${s.tempFilesCount || 0} 个临时文件`;
+
+    if (els["storage-orphaned-card"]) {
+      if (s.orphanedCount > 0) {
+        els["storage-orphaned-card"].hidden = false;
+        if (els["storage-orphaned-bytes"]) els["storage-orphaned-bytes"].textContent = s.orphanedTotalBytesFormatted || "0 B";
+        if (els["storage-orphaned-count"]) els["storage-orphaned-count"].textContent = `${s.orphanedCount} 篇已删除条目`;
+        if (els["storage-clean-orphaned"]) els["storage-clean-orphaned"].hidden = false;
+      } else {
+        els["storage-orphaned-card"].hidden = true;
+        if (els["storage-clean-orphaned"]) els["storage-clean-orphaned"].hidden = true;
+      }
+    }
+  }
+
+  function getStorageIcon(name) {
+    const icons = {
+      library: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-lib" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/></svg>`,
+      temp: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-temp" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 6 12 12 15 15"/></svg>`,
+      edge: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-edge" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>`,
+      document: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-doc" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`,
+      images: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-img" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+      model: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-model" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`,
+      translation: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-trans" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>`,
+      mineruResult: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-archive" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`,
+      chat: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-chat" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+      deepseekWeb: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-layers" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
+      logs: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-logs" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+      other: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-other" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
+    };
+    return icons[name] || icons.other;
+  }
+
+  function renderStorageTree(query = "") {
+    if (!currentStorageSummary || !els["storage-tree-container"]) return;
+    const container = els["storage-tree-container"];
+    container.innerHTML = "";
+
+    const filter = String(query || "").trim().toLowerCase();
+    const docs = currentStorageSummary.documents || [];
+    const filteredDocs = filter
+      ? docs.filter(d => (d.title && d.title.toLowerCase().includes(filter)) || (d.id && d.id.toLowerCase().includes(filter)))
+      : docs;
+
+    // 根组 1：文献库数据
+    const docRootGroup = document.createElement("div");
+    docRootGroup.className = "tree-root-group";
+
+    const docRootHeader = document.createElement("div");
+    docRootHeader.className = "tree-root-header";
+    docRootHeader.title = `已解析文献库数据 (${filteredDocs.length} 篇)\n\n存储所有已通过 MinerU 解析与翻译的文献数据，包括版面模型、提取图表、对照译文及对话历史。\n\n💡 提示：双击可直接在系统文件管理器中打开文献存储总目录`;
+    docRootHeader.innerHTML = `
+      <div class="tree-root-left">
+        <span class="tree-arrow expanded">▶</span>
+        <span class="tree-node-icon">${getStorageIcon("library")}</span>
+        <span>已解析文献库数据 (${filteredDocs.length} 篇${filter ? " / 过滤结果" : ""})</span>
+      </div>
+      <div class="tree-item-right">
+        <span class="tree-item-size">${currentStorageSummary.documentsTotalBytesFormatted}</span>
+      </div>
+    `;
+
+    const docRootBody = document.createElement("div");
+    docRootBody.className = "tree-root-body";
+
+    if (!filteredDocs.length) {
+      const emptyItem = document.createElement("div");
+      emptyItem.className = "storage-empty-hint";
+      emptyItem.textContent = filter ? "没有匹配的文献" : "暂无已解析的文献数据";
+      docRootBody.appendChild(emptyItem);
+    } else {
+      filteredDocs.forEach(doc => {
+        const isCurrent = doc.id === currentStorageSummary.currentDocumentID;
+        const isExpanded = storageTreeExpandedMap.get(doc.id) ?? false;
+
+        const branch = document.createElement("div");
+        branch.className = `tree-item-branch${isCurrent ? " is-current" : ""}${doc.isOrphan ? " is-orphan" : ""}`;
+
+        const header = document.createElement("div");
+        header.className = "tree-item-header";
+        header.title = `${doc.title}\nID: #${doc.id}\n总占用: ${doc.totalBytesFormatted} (${doc.totalFiles} 个文件)\n路径: ${doc.path}\n\n💡 提示：双击可直接在系统文件管理器中打开此文献文件夹`;
+
+        const badges = [];
+        if (isCurrent) badges.push('<span class="tree-item-badge badge-current">当前打开</span>');
+        if (doc.isOrphan) badges.push('<span class="tree-item-badge badge-orphan">已在Zotero中删除</span>');
+
+        header.innerHTML = `
+          <div class="tree-item-left">
+            <span class="tree-arrow${isExpanded ? " expanded" : ""}">▶</span>
+            <span class="tree-node-icon">${getStorageIcon("document")}</span>
+            <span class="tree-item-title">${escapeHTML(doc.title)}</span>
+            <span class="tree-item-key">#${escapeHTML(doc.id)}</span>
+            ${badges.join(" ")}
+          </div>
+          <div class="tree-item-right">
+            <span class="tree-item-size">${doc.totalBytesFormatted}</span>
+            <div class="tree-item-actions">
+              <button class="tree-action-link" type="button" data-action="open-doc" data-id="${escapeHTML(doc.id)}" title="在系统文件管理器中打开此文件夹">打开</button>
+              <button class="tree-action-link danger" type="button" data-action="clear-doc" data-id="${escapeHTML(doc.id)}" data-title="${escapeHTML(doc.title)}" title="清空这篇文献的全部解析和翻译缓存">清除</button>
+            </div>
+          </div>
+        `;
+
+        const subList = document.createElement("div");
+        subList.className = "tree-sub-list";
+        subList.hidden = !isExpanded;
+
+        (doc.categories || []).forEach(cat => {
+          const subRow = document.createElement("div");
+          subRow.className = "tree-sub-row";
+          subRow.title = `${cat.label}（${cat.formatted}，${cat.files} 个文件）\n\n${cat.desc || ""}\n\n💡 提示：双击可直接在系统文件管理器中打开对应文件夹`;
+
+          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "mineruResult")
+            ? `<button class="tree-action-link danger" type="button" data-action="clear-sub" data-id="${escapeHTML(doc.id)}" data-sub="${cat.key}" title="清空此单项缓存">清空</button>`
+            : "";
+
+          subRow.innerHTML = `
+            <div class="tree-sub-left">
+              <span class="tree-node-icon">${getStorageIcon(cat.key)}</span>
+              <span class="tree-sub-label">${escapeHTML(cat.label)}</span>
+              <span class="tree-sub-files">(${cat.files} 个文件)</span>
+            </div>
+            <div class="tree-sub-right">
+              <span class="tree-sub-size">${cat.formatted}</span>
+              ${cleanBtn}
+            </div>
+          `;
+
+          // 双击子项直接打开对应文件夹
+          subRow.addEventListener("dblclick", (e) => {
+            if (e.target.closest("button")) return;
+            e.stopPropagation();
+            hostCall("open-storage-folder", {
+              kind: "subcategory",
+              documentID: doc.id,
+              subcategory: cat.key
+            }).catch(err => toast(err.message, "error"));
+          });
+
+          subList.appendChild(subRow);
+        });
+
+        // 单击切换展开/折叠
+        header.addEventListener("click", (e) => {
+          if (e.target.closest(".tree-item-actions")) return;
+          const willExpand = subList.hidden;
+          subList.hidden = !willExpand;
+          const arrow = header.querySelector(".tree-arrow");
+          if (arrow) arrow.classList.toggle("expanded", willExpand);
+          storageTreeExpandedMap.set(doc.id, willExpand);
+        });
+
+        // 双击文献条目直接打开文献所在文件夹
+        header.addEventListener("dblclick", (e) => {
+          if (e.target.closest(".tree-item-actions")) return;
+          e.stopPropagation();
+          hostCall("open-storage-folder", {
+            kind: "document",
+            documentID: doc.id
+          }).catch(err => toast(err.message, "error"));
+        });
+
+        branch.appendChild(header);
+        branch.appendChild(subList);
+        docRootBody.appendChild(branch);
+      });
+    }
+
+    docRootHeader.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      const willExpand = docRootBody.hidden;
+      docRootBody.hidden = !willExpand;
+      const arrow = docRootHeader.querySelector(".tree-arrow");
+      if (arrow) arrow.classList.toggle("expanded", willExpand);
+    });
+
+    docRootHeader.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button")) return;
+      e.stopPropagation();
+      hostCall("open-storage-folder", { kind: "documentsRoot" }).catch(err => toast(err.message, "error"));
+    });
+
+    docRootGroup.appendChild(docRootHeader);
+    docRootGroup.appendChild(docRootBody);
+    container.appendChild(docRootGroup);
+
+    // 根组 2：临时与运行时缓存
+    const tempGroup = document.createElement("div");
+    tempGroup.className = "tree-root-group";
+    const tempHeader = document.createElement("div");
+    tempHeader.className = "tree-root-header";
+    tempHeader.title = `临时与运行时缓存 (${currentStorageSummary.tempTotalBytesFormatted})\n\n双语对照 PDF 生成导出以及压缩包解压过程中产生的临时数据，可安全随时清空。\n\n💡 提示：双击可直接在系统文件管理器中打开临时目录`;
+    tempHeader.innerHTML = `
+      <div class="tree-root-left">
+        <span class="tree-node-icon">${getStorageIcon("temp")}</span>
+        <span>临时与运行时缓存 (PDF导出与解压碎片，可安全清空)</span>
+      </div>
+      <div class="tree-item-right">
+        <span class="tree-item-size">${currentStorageSummary.tempTotalBytesFormatted}</span>
+        <div class="tree-item-actions">
+          <button class="tree-action-link" type="button" data-action="open-temp" title="打开临时目录">打开</button>
+          <button class="tree-action-link danger" type="button" data-action="clean-temp" title="清空临时缓存">清空</button>
+        </div>
+      </div>
+    `;
+
+    tempHeader.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button")) return;
+      e.stopPropagation();
+      hostCall("open-storage-folder", { kind: "temp" }).catch(err => toast(err.message, "error"));
+    });
+
+    tempGroup.appendChild(tempHeader);
+    container.appendChild(tempGroup);
+
+    // 根组 3：离线引擎模型
+    if (currentStorageSummary.edgeLocalTotalBytes > 0) {
+      const edgeGroup = document.createElement("div");
+      edgeGroup.className = "tree-root-group";
+      const edgeHeader = document.createElement("div");
+      edgeHeader.className = "tree-root-header";
+      edgeHeader.title = `Edge 本地离线翻译引擎数据 (${currentStorageSummary.edgeLocalTotalBytesFormatted})\n\n本地离线神经网络翻译模型权重、分词器与运行时文件。\n\n💡 提示：双击可直接在系统文件管理器中打开此目录`;
+      edgeHeader.innerHTML = `
+        <div class="tree-root-left">
+          <span class="tree-node-icon">${getStorageIcon("edge")}</span>
+          <span>Edge 本地离线翻译引擎数据</span>
+        </div>
+        <div class="tree-item-right">
+          <span class="tree-item-size">${currentStorageSummary.edgeLocalTotalBytesFormatted}</span>
+          <div class="tree-item-actions">
+            <button class="tree-action-link" type="button" data-action="open-edge" title="打开离线引擎目录">打开</button>
+          </div>
+        </div>
+      `;
+
+      edgeHeader.addEventListener("dblclick", (e) => {
+        if (e.target.closest("button")) return;
+        e.stopPropagation();
+        hostCall("open-storage-folder", { kind: "edge" }).catch(err => toast(err.message, "error"));
+      });
+
+      edgeGroup.appendChild(edgeHeader);
+      container.appendChild(edgeGroup);
+    }
+  }
+
+  function bindStorageManagerEvents() {
+    if (els["open-storage-manager-button"]) {
+      els["open-storage-manager-button"].addEventListener("click", () => {
+        if (els["storage-manager-dialog"]) {
+          els["storage-manager-dialog"].showModal();
+          refreshStorageManager();
+        }
+      });
+    }
+
+    if (els["close-storage-manager"]) {
+      els["close-storage-manager"].addEventListener("click", () => {
+        els["storage-manager-dialog"]?.close();
+      });
+    }
+
+    if (els["done-storage-manager"]) {
+      els["done-storage-manager"].addEventListener("click", () => {
+        els["storage-manager-dialog"]?.close();
+      });
+    }
+
+    if (els["storage-refresh"]) {
+      els["storage-refresh"].addEventListener("click", () => {
+        refreshStorageManager();
+      });
+    }
+
+    if (els["storage-open-root"]) {
+      els["storage-open-root"].addEventListener("click", async () => {
+        try {
+          await hostCall("open-storage-folder", { kind: "root" });
+        } catch (err) { toast(err.message, "error"); }
+      });
+    }
+
+    if (els["storage-clean-temp"]) {
+      els["storage-clean-temp"].addEventListener("click", async () => {
+        if (!window.confirm("确定清空全部临时生成文件与解压缓存吗？")) return;
+        try {
+          const res = await hostCall("clear-storage-data", { target: "temp" });
+          toast(`已清空临时缓存，释放了 ${res.formatted || "0 B"}`);
+          refreshStorageManager();
+        } catch (err) { toast(err.message, "error"); }
+      });
+    }
+
+    if (els["storage-clean-orphaned"]) {
+      els["storage-clean-orphaned"].addEventListener("click", async () => {
+        if (!window.confirm("确定清理所有已在 Zotero 文献库中彻底删除的失效文献残留吗？\n此操作不可撤销。")) return;
+        try {
+          const res = await hostCall("clear-storage-data", { target: "orphaned" });
+          toast(`已清理 ${res.clearedCount || 0} 篇失效文献，释放了 ${res.formatted || "0 B"}`);
+          refreshStorageManager();
+        } catch (err) { toast(err.message, "error"); }
+      });
+    }
+
+    if (els["storage-expand-all"]) {
+      els["storage-expand-all"].addEventListener("click", () => {
+        (currentStorageSummary?.documents || []).forEach(d => storageTreeExpandedMap.set(d.id, true));
+        renderStorageTree(els["storage-search-input"]?.value || "");
+      });
+    }
+
+    if (els["storage-collapse-all"]) {
+      els["storage-collapse-all"].addEventListener("click", () => {
+        storageTreeExpandedMap.clear();
+        renderStorageTree(els["storage-search-input"]?.value || "");
+      });
+    }
+
+    if (els["storage-search-input"]) {
+      els["storage-search-input"].addEventListener("input", () => {
+        renderStorageTree(els["storage-search-input"].value);
+      });
+    }
+
+    if (els["storage-tree-container"]) {
+      els["storage-tree-container"].addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-action]");
+        if (!btn) return;
+        e.stopPropagation();
+
+        const action = btn.dataset.action;
+        const docID = btn.dataset.id;
+        const docTitle = btn.dataset.title;
+        const sub = btn.dataset.sub;
+
+        if (action === "open-doc") {
+          try {
+            await hostCall("open-storage-folder", { kind: "document", documentID: docID });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "open-temp") {
+          try {
+            await hostCall("open-storage-folder", { kind: "temp" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "open-edge") {
+          try {
+            await hostCall("open-storage-folder", { kind: "edge" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "clean-temp") {
+          if (!window.confirm("确定清空全部临时生成文件与解压缓存吗？")) return;
+          try {
+            const res = await hostCall("clear-storage-data", { target: "temp" });
+            toast(`已清空临时缓存，释放了 ${res.formatted || "0 B"}`);
+            refreshStorageManager();
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "clear-doc") {
+          if (!window.confirm(`确定清除文献《${docTitle || docID}》的所有解析、图片与译文数据吗？\n\nZotero中的原PDF附件不会受影响。`)) return;
+          try {
+            const res = await hostCall("clear-storage-data", { target: "document", documentID: docID, category: "all" });
+            if (res.isCurrentDoc && res.nextState) {
+              setData(res.nextState);
+            }
+            toast("已清除该文献的所有数据");
+            refreshStorageManager();
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "clear-sub") {
+          const subNames = {
+            images: "图片与排版素材",
+            translation: "双语译文数据",
+            chat: "对话与附件记录",
+            mineruResult: "原始解析数据包 (MinerU)"
+          };
+          const label = subNames[sub] || sub;
+          const confirmMsg = sub === "mineruResult"
+            ? `确定清空这篇文献的【原始解析数据包 (MinerU)】吗？\n\n清空后将释放该项占用的磁盘空间，且完全不影响当前已生成的排版与双语译文阅读效果。`
+            : `确定清空这篇文献的【${label}】缓存吗？`;
+          if (!window.confirm(confirmMsg)) return;
+          try {
+            const res = await hostCall("clear-storage-data", { target: "document", documentID: docID, category: sub });
+            if (res.isCurrentDoc && res.nextState) {
+              setData(res.nextState);
+            }
+            toast(`已清空文献的【${label}】数据`);
+            refreshStorageManager();
+          } catch (err) { toast(err.message, "error"); }
+        }
+      });
+    }
   }
 
   async function waitForHost() {

@@ -507,7 +507,7 @@
       addPaperPagesItem.addEventListener("command", () => {
         this.sendToPage(runtime, {
           type: "event",
-          payload: { type: "toast", message: "正在生成论文页面图像并添加至DeepSeek...", level: "info" }
+          payload: { type: "toast", message: "正在将论文页面图像添加到AI...", level: "info" }
         });
         void this.appendPaperPagesToDeepSeek(runtime).then((result) => {
           this.sendToPage(runtime, {
@@ -3603,6 +3603,15 @@
           return this.stateForAttachment(attachmentID);
         }
 
+        case "get-storage-summary":
+          return this.getStorageSummary(attachmentID);
+
+        case "open-storage-folder":
+          return this.openStorageFolder(payload);
+
+        case "clear-storage-data":
+          return this.clearStorageData(payload, attachmentID);
+
         case "open-native-pdf":
           await Zotero.Reader.open(attachmentID);
           return { opened: true };
@@ -4025,6 +4034,101 @@
       }
       catch (_) {}
       target?.openDialog?.("chrome://zotero/content/preferences/preferences.xhtml", "zotero-prefs", "chrome,titlebar,toolbar,centerscreen,resizable", "litmtrans-preferences");
+    }
+
+    async getStorageSummary(currentAttachmentID = null) {
+      const summary = await this.storage.getStorageSummary();
+      let currentDocumentID = "";
+      if (currentAttachmentID) {
+        try {
+          const item = await Zotero.Items.getAsync(currentAttachmentID);
+          if (item) currentDocumentID = this.storage.documentID(item);
+        } catch (_) {}
+      }
+      return { ...summary, currentDocumentID };
+    }
+
+    openStorageFolder(payload = {}) {
+      let targetPath = this.storage.root;
+      if (payload?.kind === "temp") {
+        targetPath = this.storage.tempRoot;
+      } else if (payload?.kind === "edge") {
+        targetPath = PathUtils.join(this.storage.root, "edge-local-translation");
+      } else if (payload?.kind === "documentsRoot") {
+        targetPath = this.storage.documentsRoot;
+      } else if (payload?.kind === "document" && payload?.documentID) {
+        targetPath = this.storage.documentDir(payload.documentID);
+      } else if (payload?.kind === "subcategory" && payload?.documentID) {
+        const docDir = this.storage.documentDir(payload.documentID);
+        const subMap = {
+          images: "images",
+          assets: "assets",
+          translation: "translation",
+          mineruResult: "mineru-result",
+          chat: "chat",
+          deepseekWeb: "deepseek-web",
+          logs: "logs"
+        };
+        const sub = subMap[payload?.subcategory];
+        if (sub) {
+          targetPath = PathUtils.join(docDir, sub);
+        } else {
+          targetPath = docDir;
+        }
+      } else if (payload?.path) {
+        targetPath = payload.path;
+      }
+      const opened = this.storage.openFolder(targetPath);
+      return { opened };
+    }
+
+    async clearStorageData(payload = {}, currentAttachmentID = null) {
+      const target = String(payload?.target || "");
+      if (target === "temp") {
+        const res = await this.storage.clearTempFiles();
+        return { success: true, ...res };
+      }
+      if (target === "orphaned") {
+        const res = await this.storage.clearOrphanedDocuments();
+        return { success: true, ...res };
+      }
+      if (target === "document") {
+        const docID = String(payload?.documentID || "");
+        if (!docID) throw new Error("未指定要清理的文献ID");
+        const subcategory = String(payload?.category || "all");
+
+        // 安全互斥检测：若任何标签页正在对该文献进行操作，则禁止清除
+        for (const [tabID, opMap] of this.operationMap.entries()) {
+          if (opMap && opMap.size > 0) {
+            const tabAttachment = this.readerItemID(tabID);
+            if (tabAttachment) {
+              const tabItem = await Zotero.Items.getAsync(tabAttachment).catch(() => null);
+              if (tabItem && this.storage.documentID(tabItem) === docID) {
+                throw new Error("该文献当前有任务正在运行，请先停止后再清理缓存");
+              }
+            }
+          }
+        }
+
+        await this.storage.clearDocumentSubcategory(docID, subcategory);
+
+        let isCurrentDoc = false;
+        if (currentAttachmentID) {
+          try {
+            const currentItem = await Zotero.Items.getAsync(currentAttachmentID);
+            if (currentItem && this.storage.documentID(currentItem) === docID) {
+              isCurrentDoc = true;
+            }
+          } catch (_) {}
+        }
+
+        let nextState = null;
+        if (isCurrentDoc && (subcategory === "all" || subcategory === "translation")) {
+          nextState = await this.stateForAttachment(currentAttachmentID);
+        }
+        return { success: true, isCurrentDoc, nextState };
+      }
+      throw new Error(`未知的清理目标: ${target}`);
     }
   }
 
