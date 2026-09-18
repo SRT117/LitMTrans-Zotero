@@ -114,6 +114,7 @@ async function startup({ id, version, rootURI }) {
     "assets/vendor/pdf-lib/pdf-lib.min.js",
     "src/ported-core.js",
     "src/utils.js",
+    "src/caj-converter.js",
     "src/storage.js",
     "src/secrets.js",
     "src/http.js",

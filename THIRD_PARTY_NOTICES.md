@@ -32,6 +32,15 @@ parts when a source exceeds MinerU's 200-page upload limit. pdf-lib is
 licensed under the MIT License; the complete license is included at
 `assets/vendor/pdf-lib/LICENSE.md`.
 
+## caj2pdf-rs
+
+The plugin bundles `native/caj2pdf/caj2pdf.wasm`, a WebAssembly conversion
+module built from [caj2pdf-rs](https://github.com/duststarr/caj2pdf-rs), to
+convert archived CNKI HN/C8 (JBIG-compressed scan) CAJ documents into PDF so
+they can be opened in the workbench. The module runs inside the plugin on all
+supported platforms and is licensed under GPL-2.0-or-later; the source of the
+locally modified fork lives in `native/caj-backend/` and the complete license
+is included at `native/caj2pdf/LICENSE`.
 
 ## Mermaid
 

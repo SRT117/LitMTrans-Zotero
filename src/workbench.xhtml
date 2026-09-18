@@ -405,6 +405,11 @@
           <label>要点提炼要求<textarea id="setting-key-points-prompt" rows="12"></textarea></label>
           <button id="restore-key-points-prompt" class="button" type="button">恢复默认要求</button>
         </section>
+
+        <section class="settings-section settings-card-caj">
+          <h3>CAJ 文献处理</h3>
+          <label>双击CAJ文献时<select id="setting-caj-double-click-action"><option value="default">保持Zotero默认行为</option><option value="litmtrans">使用LitMTrans打开</option><option value="ask">每次询问</option></select></label>
+        </section>
           </div>
         </details>
       </div>
@@ -544,7 +549,7 @@
     </footer>
   </dialog>
 
-  <dialog id="storage-manager-dialog" class="modal storage-manager-modal" aria-label="LitMTrans 存储与数据管理">
+  <dialog id="storage-manager-dialog" class="modal storage-manager-modal" aria-label="LitMTrans存储与数据管理">
     <div class="modal-card storage-manager-card">
       <header class="modal-header">
         <div>
@@ -564,6 +569,11 @@
             <span class="storage-summary-label">已解析文献</span>
             <strong id="storage-doc-count" class="storage-summary-value">-</strong>
             <span id="storage-doc-bytes" class="storage-summary-sub">0 B</span>
+          </div>
+          <div class="storage-summary-card">
+            <span class="storage-summary-label">CAJ 转换缓存</span>
+            <strong id="storage-caj-bytes" class="storage-summary-value">-</strong>
+            <span id="storage-caj-count" class="storage-summary-sub">0 篇含 CAJ 缓存</span>
           </div>
           <div class="storage-summary-card">
             <span class="storage-summary-label">临时与碎片缓存</span>
@@ -598,7 +608,7 @@
         </div>
       </div>
       <footer class="modal-footer">
-        <span class="storage-footer-note">提示：清理缓存不会影响 Zotero 文献库中的原始 PDF 文件，下次打开文献可随时重新解析与翻译。</span>
+        <span class="storage-footer-note">提示：清理缓存不会影响Zotero文献库中的原始PDF文件，下次打开文献可随时重新解析与翻译。</span>
         <span class="modal-spacer"></span>
         <button id="done-storage-manager" class="button button-primary" type="button">完成</button>
       </footer>

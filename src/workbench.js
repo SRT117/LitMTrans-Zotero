@@ -141,10 +141,11 @@
       "setting-target-language", "setting-target-language-picker", "setting-machine-source-language-group", "setting-machine-source-language", "setting-machine-source-language-picker", "setting-translation-mode",
       "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
-      "setting-key-points-prompt", "restore-key-points-prompt",
+      "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "open-storage-manager-button", "clear-document-button", "save-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
       "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
+      "storage-caj-bytes", "storage-caj-count",
       "storage-temp-bytes", "storage-temp-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
       "storage-expand-all", "storage-collapse-all", "storage-search-input",
       "storage-open-root", "storage-clean-temp", "storage-clean-orphaned", "storage-refresh", "storage-tree-container",
@@ -694,6 +695,20 @@
 
   function handleEvent(event) {
     const type = String(event?.type || "");
+    if (type === "document-state") {
+      if (event.state?.item?.attachmentID === state.data?.item?.attachmentID) setData(event.state);
+      return;
+    }
+    if (type === "caj-cache-cleared") {
+      sourcePDFAvailable = false;
+      sourcePDFLoading = false;
+      sourcePDFAttachmentID = null;
+      sourcePDFFailedAttachmentID = Number(state.data?.item?.attachmentID || 0);
+      sourcePDFRetryBlocked = false;
+      sourcePDFFittedAttachmentID = null;
+      renderMode();
+      return;
+    }
     if (type === "close-active-dialog") {
       const activeDialog = document.querySelector("dialog[open]");
       activeDialog?.close?.();
@@ -1053,7 +1068,9 @@
     const data = state.data;
     if (!data) return;
     els["document-title"].textContent = data.item?.title || "LitMTrans";
-    els["document-subtitle"].textContent = data.item?.fileName || "附件";
+    els["document-subtitle"].textContent = data.item?.isCAJ
+      ? `${data.item?.fileName || "附件"} · 已转换为 PDF`
+      : (data.item?.fileName || "附件");
     updateCapabilities();
     renderStreamPanes();
     if (!preserveLayout) renderLayoutPanes();
@@ -2690,7 +2707,9 @@
     }
     const preparingPDF = layout && sourcePDFLoading && !sourcePDFAvailable;
     const sourcePDFFailed = layout && sourcePDFFailedAttachmentID === Number(state.data?.item?.attachmentID || 0);
+    const isCAJ = Boolean(state.data?.item?.isCAJ);
     els["source-placeholder"].hidden = showPDF || showParsedSource;
+    els["retry-source-pdf-button"].textContent = isCAJ ? "重试加载转换后的 PDF" : "重试加载原始 PDF";
     els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;
     els["empty-parse-button"].hidden = layout;
     // ReaderPreview needs a laid-out iframe to finish PDF.js initialization.
@@ -2707,12 +2726,18 @@
       const title = els["source-placeholder"].querySelector("h2");
       const text = els["source-placeholder"].querySelector("p");
       if (layout) {
-        title.textContent = sourcePDFLoading ? "正在加载PDF" : (sourcePDFFailed ? "原始PDF加载失败" : "无法显示原始PDF");
-        text.textContent = sourcePDFLoading
-          ? "原文将在Zotero PDF阅读器中显示。"
+        title.textContent = sourcePDFLoading
+          ? (isCAJ ? "正在准备 PDF" : "正在加载 PDF")
           : (sourcePDFFailed
-            ? (sourcePDFRetryBlocked ? "PDF初始化仍未结束，请关闭标签页后重新打开。" : "可以点击“重试加载原始PDF”，或关闭标签页后重新打开。")
-            : "请确认当前附件是PDF，并且可以在Zotero中正常打开。");
+            ? (isCAJ ? "转换后的 PDF 加载失败" : "原始 PDF 加载失败")
+            : (isCAJ ? "无法显示转换后的 PDF" : "无法显示原始 PDF"));
+        text.textContent = sourcePDFLoading
+          ? (isCAJ ? "首次打开会准备一个可复用的 PDF 阅读附件。" : "原文将在 Zotero PDF 阅读器中显示。")
+          : (sourcePDFFailed
+            ? (sourcePDFRetryBlocked
+              ? "PDF 初始化仍未结束，请关闭标签页后重新打开。"
+              : (isCAJ ? "可以点击重试；原 CAJ 文件和已有译文不会被修改。" : "可以点击重试加载原始 PDF，或关闭标签页后重新打开。"))
+            : (isCAJ ? "请确认原 CAJ 附件仍可读取，然后重试。" : "请确认当前附件是 PDF，并且可以在 Zotero 中正常打开。"));
       }
       else {
         title.textContent = "尚未解析文档";
@@ -5378,6 +5403,7 @@
     els["setting-chat-api-key"].value = settings.chatAPIKey || "";
     els["setting-mineru-token"].value = settings.mineruToken || "";
     els["setting-mineru-model"].value = "vlm";
+    if (els["setting-caj-double-click-action"]) els["setting-caj-double-click-action"].value = settings.cajDoubleClickAction || "default";
     els["setting-target-language"].value = settings.targetLanguage || "简体中文";
     els["setting-machine-source-language"].value = settings.machineSourceLanguage || "英文";
     els["setting-translation-mode"].value = settings.translationMode || "full_context";
@@ -5877,6 +5903,7 @@
       targetLanguage: U.normalizeLanguageName(els["setting-target-language"].value, "简体中文"),
       machineSourceLanguage: U.normalizeLanguageName(els["setting-machine-source-language"].value, "英文"),
       translationMode: els["setting-translation-mode"].value,
+      cajDoubleClickAction: els["setting-caj-double-click-action"] ? els["setting-caj-double-click-action"].value : "default",
       translationReferencePaths: [...state.referencePaths],
       customTranslationInstruction: els["custom-translation-instruction-input"].value.trim(),
       keyPointsPrompt: els["setting-key-points-prompt"].value.trim() === String(state.settings?.keyPointsDefaultPrompt || "").trim()
@@ -7901,6 +7928,8 @@
     }
     if (els["storage-doc-count"]) els["storage-doc-count"].textContent = `${s.documentsCount || 0} 篇`;
     if (els["storage-doc-bytes"]) els["storage-doc-bytes"].textContent = s.documentsTotalBytesFormatted || "0 B";
+    if (els["storage-caj-bytes"]) els["storage-caj-bytes"].textContent = s.cajTotalBytesFormatted || "0 B";
+    if (els["storage-caj-count"]) els["storage-caj-count"].textContent = `${s.cajDocumentCount || 0} 篇含 CAJ 缓存`;
     if (els["storage-temp-bytes"]) els["storage-temp-bytes"].textContent = s.tempTotalBytesFormatted || "0 B";
     if (els["storage-temp-count"]) els["storage-temp-count"].textContent = `${s.tempFilesCount || 0} 个临时文件`;
 
@@ -7926,6 +7955,7 @@
       images: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-img" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
       model: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-model" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`,
       translation: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-trans" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>`,
+      cajSource: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-caj" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 15a4 4 0 1 0 1.2-2.8"/><polyline points="8 11 8 15 12 15"/></svg>`,
       mineruResult: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-archive" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`,
       chat: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-chat" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
       deepseekWeb: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-layers" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
@@ -7952,12 +7982,12 @@
 
     const docRootHeader = document.createElement("div");
     docRootHeader.className = "tree-root-header";
-    docRootHeader.title = `已解析文献库数据 (${filteredDocs.length} 篇)\n\n存储所有已通过 MinerU 解析与翻译的文献数据，包括版面模型、提取图表、对照译文及对话历史。\n\n💡 提示：双击可直接在系统文件管理器中打开文献存储总目录`;
+    docRootHeader.title = `文献数据 (${filteredDocs.length} 篇)\n\n存储解析、翻译、对话以及 CAJ 转换阅读缓存。\n\n💡 提示：双击可直接在系统文件管理器中打开文献存储总目录`;
     docRootHeader.innerHTML = `
       <div class="tree-root-left">
         <span class="tree-arrow expanded">▶</span>
         <span class="tree-node-icon">${getStorageIcon("library")}</span>
-        <span>已解析文献库数据 (${filteredDocs.length} 篇${filter ? " / 过滤结果" : ""})</span>
+        <span>文献数据 (${filteredDocs.length} 篇${filter ? " / 过滤结果" : ""})</span>
       </div>
       <div class="tree-item-right">
         <span class="tree-item-size">${currentStorageSummary.documentsTotalBytesFormatted}</span>
@@ -7982,11 +8012,12 @@
 
         const header = document.createElement("div");
         header.className = "tree-item-header";
-        header.title = `${doc.title}\nID: #${doc.id}\n总占用: ${doc.totalBytesFormatted} (${doc.totalFiles} 个文件)\n路径: ${doc.path}\n\n💡 提示：双击可直接在系统文件管理器中打开此文献文件夹`;
+        header.title = `${doc.title}\nID: #${doc.id}\n总占用: ${doc.totalBytesFormatted} (${doc.totalFiles} 个文件)${doc.isCAJ ? `\nCAJ: ${doc.caj?.format || "已转换"}${doc.caj?.pageCount ? `，${doc.caj.pageCount} 页` : ""}` : ""}\n路径: ${doc.path}\n\n💡 提示：双击可直接在系统文件管理器中打开此文献文件夹`;
 
         const badges = [];
         if (isCurrent) badges.push('<span class="tree-item-badge badge-current">当前打开</span>');
         if (doc.isOrphan) badges.push('<span class="tree-item-badge badge-orphan">已在Zotero中删除</span>');
+        if (doc.isCAJ) badges.push(`<span class="tree-item-badge badge-caj">CAJ${doc.caj?.format ? ` · ${escapeHTML(doc.caj.format)}` : ""}</span>`);
 
         header.innerHTML = `
           <div class="tree-item-left">
@@ -8000,7 +8031,7 @@
             <span class="tree-item-size">${doc.totalBytesFormatted}</span>
             <div class="tree-item-actions">
               <button class="tree-action-link" type="button" data-action="open-doc" data-id="${escapeHTML(doc.id)}" title="在系统文件管理器中打开此文件夹">打开</button>
-              <button class="tree-action-link danger" type="button" data-action="clear-doc" data-id="${escapeHTML(doc.id)}" data-title="${escapeHTML(doc.title)}" title="清空这篇文献的全部解析和翻译缓存">清除</button>
+              <button class="tree-action-link danger" type="button" data-action="clear-doc" data-id="${escapeHTML(doc.id)}" data-title="${escapeHTML(doc.title)}" data-caj="${doc.isCAJ ? "1" : "0"}" title="清空这篇文献的全部解析和翻译缓存">清除</button>
             </div>
           </div>
         `;
@@ -8014,7 +8045,7 @@
           subRow.className = "tree-sub-row";
           subRow.title = `${cat.label}（${cat.formatted}，${cat.files} 个文件）\n\n${cat.desc || ""}\n\n💡 提示：双击可直接在系统文件管理器中打开对应文件夹`;
 
-          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "mineruResult")
+          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult")
             ? `<button class="tree-action-link danger" type="button" data-action="clear-sub" data-id="${escapeHTML(doc.id)}" data-sub="${cat.key}" title="清空此单项缓存">清空</button>`
             : "";
 
@@ -8236,6 +8267,8 @@
         const docID = btn.dataset.id;
         const docTitle = btn.dataset.title;
         const sub = btn.dataset.sub;
+        const isCAJ = btn.dataset.caj === "1"
+          || Boolean(currentStorageSummary?.documents?.find(doc => doc.id === docID)?.isCAJ);
 
         if (action === "open-doc") {
           try {
@@ -8257,13 +8290,16 @@
             refreshStorageManager();
           } catch (err) { toast(err.message, "error"); }
         } else if (action === "clear-doc") {
-          if (!window.confirm(`确定清除文献《${docTitle || docID}》的所有解析、图片与译文数据吗？\n\nZotero中的原PDF附件不会受影响。`)) return;
+          const confirmMsg = isCAJ
+            ? `确定清除文献《${docTitle || docID}》的全部插件缓存吗？\n\n解析结果、译文和对话记录将被删除，自动生成的 LitMTrans 阅读附件也会移除。原 CAJ 附件和已导出的 PDF 不受影响。`
+            : `确定清除文献《${docTitle || docID}》的所有解析、图片与译文数据吗？\n\nZotero中的原PDF附件不会受影响。`;
+          if (!window.confirm(confirmMsg)) return;
           try {
             const res = await hostCall("clear-storage-data", { target: "document", documentID: docID, category: "all" });
             if (res.isCurrentDoc && res.nextState) {
               setData(res.nextState);
             }
-            toast("已清除该文献的所有数据");
+            toast(`已清除该文献的所有数据${res.formatted && res.clearedBytes ? `，释放 ${res.formatted}` : ""}`);
             refreshStorageManager();
           } catch (err) { toast(err.message, "error"); }
         } else if (action === "clear-sub") {
@@ -8271,10 +8307,13 @@
             images: "图片与排版素材",
             translation: "双语译文数据",
             chat: "对话与附件记录",
+            cajSource: "CAJ 转换与阅读缓存",
             mineruResult: "原始解析数据包 (MinerU)"
           };
           const label = subNames[sub] || sub;
-          const confirmMsg = sub === "mineruResult"
+          const confirmMsg = sub === "cajSource"
+            ? `确定清空这篇文献的【CAJ 转换与阅读缓存】吗？\n\n自动生成的 LitMTrans 阅读附件也会一起移除；原 CAJ 附件、已导出的 PDF 和译文不会受影响。下次打开时会自动重建。`
+            : sub === "mineruResult"
             ? `确定清空这篇文献的【原始解析数据包 (MinerU)】吗？\n\n清空后将释放该项占用的磁盘空间，且完全不影响当前已生成的排版与双语译文阅读效果。`
             : `确定清空这篇文献的【${label}】缓存吗？`;
           if (!window.confirm(confirmMsg)) return;
@@ -8283,7 +8322,9 @@
             if (res.isCurrentDoc && res.nextState) {
               setData(res.nextState);
             }
-            toast(`已清空文献的【${label}】数据`);
+            const released = res.formatted && res.clearedBytes ? `，释放 ${res.formatted}` : "";
+            const readerNote = res.readerAttachmentRemoved ? "，并移除了自动阅读附件" : "";
+            toast(`已清空文献的【${label}】数据${released}${readerNote}`);
             refreshStorageManager();
           } catch (err) { toast(err.message, "error"); }
         }

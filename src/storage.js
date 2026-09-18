@@ -302,6 +302,36 @@
       return `${libraryID}-${key}`;
     }
 
+    parseDocumentID(documentID) {
+      const match = String(documentID || "").match(/^(\d+)-([A-Za-z0-9]+)$/);
+      if (!match) return null;
+      return { libraryID: Number(match[1]), key: match[2] };
+    }
+
+    resolveDocumentItem(documentID, meta = {}) {
+      const itemID = Number(meta?.itemID || 0);
+      if (itemID) {
+        try {
+          const item = Zotero.Items.get(itemID);
+          if (item && !item.deleted) return item;
+        }
+        catch (_) {}
+      }
+      const parsed = this.parseDocumentID(documentID);
+      if (!parsed) return null;
+      try {
+        const item = Zotero.Items.getByLibraryAndKey?.(parsed.libraryID, parsed.key);
+        if (typeof item === "number") {
+          const resolved = Zotero.Items.get(item);
+          return resolved && !resolved.deleted ? resolved : null;
+        }
+        return item && !item.deleted ? item : null;
+      }
+      catch (_) {
+        return null;
+      }
+    }
+
     documentDir(itemOrID) {
       const id = typeof itemOrID === "string" ? itemOrID : this.documentID(itemOrID);
       return PathUtils.join(this.documentsRoot, id);
@@ -380,6 +410,24 @@
         cleared.push(PathUtils.filename(directory));
       }
       return cleared;
+    }
+
+    async findDocumentIDsForItemIDs(itemIDs) {
+      const deleted = new Set((Array.isArray(itemIDs) ? itemIDs : [itemIDs])
+        .map(value => Number(value))
+        .filter(Number.isFinite));
+      if (!deleted.size || !await this.exists(this.documentsRoot)) return [];
+      const matches = [];
+      for (const directory of await this.list(this.documentsRoot)) {
+        const info = await this.stat(directory);
+        if (!info || info.type !== "directory") continue;
+        const meta = await this.readJSON(PathUtils.join(directory, "document.json"), null);
+        const identities = [meta?.itemID, meta?.parentItemID]
+          .map(value => Number(value))
+          .filter(Number.isFinite);
+        if (identities.some(id => deleted.has(id))) matches.push(PathUtils.filename(directory));
+      }
+      return matches;
     }
 
     async clearTranslation(itemOrID, kind = "all") {
@@ -500,6 +548,8 @@
     async getStorageSummary() {
       const documents = [];
       let documentsTotalBytes = 0;
+      let cajTotalBytes = 0;
+      let cajDocumentCount = 0;
       let orphanedCount = 0;
       let orphanedTotalBytes = 0;
 
@@ -510,6 +560,7 @@
           if (!info || info.type !== "directory") continue;
           const documentID = PathUtils.filename(docDir);
           const meta = await this.readJSON(PathUtils.join(docDir, "document.json"), null);
+          const cajMeta = await this.readJSON(PathUtils.join(docDir, "caj-source", "source.meta.json"), null);
 
           // 递归分类分析该文献内部各子目录与文件
           const categories = {
@@ -533,6 +584,13 @@
               label: "双语译文数据",
               key: "translation",
               desc: "双语分块流式译文、版面就地翻译对齐 JSON、公式占位替换映射及翻译状态。"
+            },
+            cajSource: {
+              bytes: 0,
+              files: 0,
+              label: "CAJ 转换与阅读缓存",
+              key: "cajSource",
+              desc: "CAJ 转换后的 PDF、页数校验信息以及 Zotero 阅读附件关联数据。清除后下次打开会自动重建，不影响原 CAJ 附件和已导出的 PDF。"
             },
             mineruResult: {
               bytes: 0,
@@ -595,6 +653,9 @@
               } else if (name === "translation" || name === "layout-translation") {
                 categories.translation.bytes += subStats.bytes;
                 categories.translation.files += subStats.files;
+              } else if (name === "caj-source") {
+                categories.cajSource.bytes += subStats.bytes;
+                categories.cajSource.files += subStats.files;
               } else if (name === "mineru-result") {
                 categories.mineruResult.bytes += subStats.bytes;
                 categories.mineruResult.files += subStats.files;
@@ -638,6 +699,12 @@
             formatted: this.formatBytes(cat.bytes)
           })).filter(cat => cat.bytes > 0 || cat.files > 0);
 
+          const hasCAJData = Boolean(meta?.isCAJ || categories.cajSource.files > 0 || cajMeta?.format);
+          if (categories.cajSource.files > 0 || cajMeta?.format) {
+            cajTotalBytes += categories.cajSource.bytes;
+            cajDocumentCount++;
+          }
+
           // 精准提取文献名称与检查条目在 Zotero 中是否存在
           let isOrphan = false;
           let zoteroItemTitle = "";
@@ -646,7 +713,7 @@
             const parentItemID = Number(meta?.parentItemID || 0);
             if (itemID) {
               const item = Zotero.Items.get(itemID);
-              if (item) {
+              if (item && !item.deleted) {
                 if (item.isAttachment()) {
                   const pId = item.parentItemID || parentItemID;
                   if (pId) {
@@ -667,7 +734,7 @@
                     }
                   }
                 }
-              } else if (parentItemID) {
+              } else if (!hasCAJData && parentItemID) {
                 const parent = Zotero.Items.get(parentItemID);
                 if (parent) {
                   zoteroItemTitle = parent.getField?.("title") || parent.getDisplayTitle?.() || "";
@@ -677,13 +744,30 @@
               } else {
                 isOrphan = true;
               }
+            } else {
+              const item = this.resolveDocumentItem(documentID, meta);
+              if (item) {
+                if (item.isAttachment?.()) {
+                  const parent = item.parentID ? Zotero.Items.get(item.parentID) : null;
+                  zoteroItemTitle = parent?.getField?.("title") || parent?.getDisplayTitle?.() || "";
+                }
+                if (!zoteroItemTitle) {
+                  const titleField = item.getField?.("title");
+                  if (titleField && titleField.toLowerCase() !== "pdf") zoteroItemTitle = titleField;
+                }
+              } else if (this.parseDocumentID(documentID)) {
+                // CAJ 缓存可能只写入 source.meta.json，还没有完成首次解析；
+                // 这时仍按目录 ID 判断是否已经脱离 Zotero 文献库。
+                isOrphan = true;
+              }
             }
           } catch (_) {}
 
           let finalTitle = meta?.title || zoteroItemTitle;
           if (!finalTitle || finalTitle.trim().toLowerCase() === "pdf") {
-            if (meta?.sourceFileName) {
-              finalTitle = meta.sourceFileName.replace(/\.[^/.]+$/, "");
+            const sourceFileName = meta?.sourceFileName || cajMeta?.sourceFileName;
+            if (sourceFileName) {
+              finalTitle = sourceFileName.replace(/\.[^/.]+$/, "");
             }
           }
           if (!finalTitle || finalTitle.trim().toLowerCase() === "pdf") {
@@ -699,6 +783,15 @@
           documents.push({
             id: documentID,
             title: finalTitle,
+            isCAJ: hasCAJData,
+            caj: hasCAJData ? {
+              format: String(cajMeta?.format || meta?.cajFormat || ""),
+              pageCount: Number(cajMeta?.pageCount || meta?.cajPageCount || 0),
+              sourceFileName: String(cajMeta?.sourceFileName || meta?.sourceFileName || ""),
+              cacheValidated: Boolean(cajMeta?.cacheValidated || meta?.cajCacheValidated),
+              readerAttachmentID: Number(cajMeta?.generatedAttachmentID || 0),
+              readerAttachmentMode: String(cajMeta?.readerAttachmentMode || "")
+            } : null,
             pageCount: meta?.pageCount || 0,
             updatedAt: meta?.updatedAt || (latestMtime ? new Date(latestMtime).toISOString() : ""),
             isOrphan,
@@ -730,6 +823,9 @@
         totalBytesFormatted: this.formatBytes(totalBytes),
         documentsTotalBytes,
         documentsTotalBytesFormatted: this.formatBytes(documentsTotalBytes),
+        cajTotalBytes,
+        cajTotalBytesFormatted: this.formatBytes(cajTotalBytes),
+        cajDocumentCount,
         documentsCount: documents.length,
         tempTotalBytes: tempStats.bytes,
         tempTotalBytesFormatted: tempStats.formatted,
@@ -759,9 +855,13 @@
     async clearOrphanedDocuments() {
       let clearedBytes = 0;
       let clearedCount = 0;
-      if (!await this.exists(this.documentsRoot)) return { clearedBytes, clearedCount, formatted: "0 B" };
+      const clearedDocumentIDs = [];
+      if (!await this.exists(this.documentsRoot)) {
+        return { clearedBytes, clearedCount, clearedDocumentIDs, formatted: "0 B" };
+      }
       const docDirs = await this.list(this.documentsRoot);
       for (const docDir of docDirs) {
+        const documentID = PathUtils.filename(docDir);
         const meta = await this.readJSON(PathUtils.join(docDir, "document.json"), null);
         let isOrphan = false;
         try {
@@ -769,38 +869,90 @@
           const parentItemID = Number(meta?.parentItemID || 0);
           if (itemID) {
             const item = Zotero.Items.get(itemID);
-            if (!item) {
+            if (!item || item.deleted) {
               const parent = parentItemID ? Zotero.Items.get(parentItemID) : null;
-              if (!parent) isOrphan = true;
+              if (!parent || meta?.isCAJ) isOrphan = true;
             }
+          } else if (this.parseDocumentID(documentID) && !this.resolveDocumentItem(documentID, meta)) {
+            isOrphan = true;
           }
         } catch (_) {}
         if (isOrphan) {
-          const stats = await this.dirStats(docDir);
-          clearedBytes += stats.bytes;
-          clearedCount++;
-          await this.remove(docDir, true);
+            const stats = await this.dirStats(docDir);
+            clearedBytes += stats.bytes;
+            clearedCount++;
+            clearedDocumentIDs.push(documentID);
+            await this.remove(docDir, true);
         }
       }
-      return { clearedBytes, clearedCount, formatted: this.formatBytes(clearedBytes) };
+      return { clearedBytes, clearedCount, clearedDocumentIDs, formatted: this.formatBytes(clearedBytes) };
     }
 
     async clearDocumentSubcategory(documentID, subcategory) {
       const docDir = this.documentDir(documentID);
       if (!await this.exists(docDir)) return { cleared: false };
 
+      const measure = async targets => {
+        let bytes = 0;
+        let files = 0;
+        const seen = new Set();
+        for (const target of targets) {
+          const path = String(target || "");
+          if (!path || seen.has(path)) continue;
+          seen.add(path);
+          const info = await this.stat(path);
+          if (!info) continue;
+          if (info.type === "directory") {
+            const stats = await this.dirStats(path);
+            bytes += stats.bytes;
+            files += stats.files;
+          } else {
+            bytes += Number(info.size || 0);
+            files++;
+          }
+        }
+        return { bytes, files };
+      };
+
+      let targets = [];
+      if (!subcategory || subcategory === "all") {
+        targets = [docDir];
+      } else if (subcategory === "images") {
+        targets = [
+          PathUtils.join(docDir, "images"),
+          PathUtils.join(docDir, "assets"),
+          PathUtils.join(docDir, "asset-map.json"),
+          PathUtils.join(docDir, "image-map.json")
+        ];
+      } else if (subcategory === "translation") {
+        targets = [
+          PathUtils.join(docDir, "translation"),
+          PathUtils.join(docDir, "layout-translation")
+        ];
+      } else if (subcategory === "cajSource") {
+        targets = [PathUtils.join(docDir, "caj-source")];
+      } else if (subcategory === "mineruResult") {
+        targets = [PathUtils.join(docDir, "mineru-result"), PathUtils.join(docDir, "mineru-task.json")];
+      } else if (subcategory === "chat") {
+        targets = [PathUtils.join(docDir, "chat")];
+      } else if (subcategory === "deepseekWeb") {
+        targets = [PathUtils.join(docDir, "deepseek-web")];
+      } else if (subcategory === "logs") {
+        targets = [PathUtils.join(docDir, "logs"), PathUtils.join(docDir, "AI请求审计")];
+      }
+      const before = await measure(targets);
+
       if (!subcategory || subcategory === "all") {
         await this.remove(docDir, true);
-        return { cleared: true };
-      }
-
-      if (subcategory === "images") {
+      } else if (subcategory === "images") {
         await this.remove(PathUtils.join(docDir, "images"), true);
         await this.remove(PathUtils.join(docDir, "assets"), true);
         await this.remove(PathUtils.join(docDir, "asset-map.json"), false);
         await this.remove(PathUtils.join(docDir, "image-map.json"), false);
       } else if (subcategory === "translation") {
         await this.clearTranslation(documentID, "all");
+      } else if (subcategory === "cajSource") {
+        await this.remove(PathUtils.join(docDir, "caj-source"), true);
       } else if (subcategory === "mineruResult") {
         await this.remove(PathUtils.join(docDir, "mineru-result"), true);
         await this.remove(PathUtils.join(docDir, "mineru-task.json"), false);
@@ -812,7 +964,12 @@
         await this.remove(PathUtils.join(docDir, "logs"), true);
         await this.remove(PathUtils.join(docDir, "AI请求审计"), true);
       }
-      return { cleared: true };
+      return {
+        cleared: true,
+        clearedBytes: before.bytes,
+        clearedFiles: before.files,
+        formatted: this.formatBytes(before.bytes)
+      };
     }
 
     openFolder(targetPath) {

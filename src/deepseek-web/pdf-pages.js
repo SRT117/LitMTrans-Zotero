@@ -322,7 +322,7 @@
           diagnostics.push("附件条目无效");
           return null;
         }
-        const filePath = await item.getFilePathAsync();
+        const { filePath } = await this.controller.attachmentContext(attachmentID);
         if (!filePath || !await IOUtils.exists(filePath)) {
           diagnostics.push(`附件文件不存在: ${filePath || "null"}`);
           return null;

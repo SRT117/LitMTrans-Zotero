@@ -1,15 +1,17 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("snapshot", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe")]
+    [ValidateSet("snapshot", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
     [string]$Operation = "multimodal-probe",
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
     [switch]$NoLaunch,
+    [string]$CajDirectory = "",
     [int]$TimeoutSeconds = 210
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$CajDirectory = if ($CajDirectory) { $CajDirectory } else { Join-Path $env:USERPROFILE "Desktop\新建文件夹" }
 $testVersion = & (Join-Path $PSScriptRoot "prepare-zotero-test-version.ps1") -Major $ZoteroMajor
 $profileRoot = $testVersion.ProfilePath
 $diagnosticsRoot = Join-Path $profileRoot "litmtrans\dev-diagnostics"
@@ -67,6 +69,12 @@ $command = @{
     imageFileName = $probeFileName
     createdAt = [DateTime]::UtcNow.ToString("o")
 }
+if ($Operation -in @("caj-probe", "caj-reader-probe", "caj-storage-probe")) {
+    if (-not (Test-Path -LiteralPath $CajDirectory -PathType Container)) {
+        throw "CAJ sample directory does not exist: $CajDirectory"
+    }
+    $command.directory = (Resolve-Path -LiteralPath $CajDirectory).Path
+}
 $temporaryCommand = "$commandPath.tmp"
 $command | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporaryCommand -Encoding utf8
 Move-Item -LiteralPath $temporaryCommand -Destination $commandPath -Force
@@ -91,7 +99,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
     if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
         $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
         $result | ConvertTo-Json -Depth 20
-        if (-not $result.ok -or ($Operation -in @("multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "gemini-transport-probe", "edge-local-probe", "deepseek-web-probe") -and -not $result.passed)) {
+        if (-not $result.ok -or ($Operation -in @("multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe", "deepseek-web-probe") -and -not $result.passed)) {
             exit 1
         }
         exit 0

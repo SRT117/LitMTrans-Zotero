@@ -1,0 +1,26 @@
+[package]
+name = "caj2pdf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for converting Chinese academic journal (CAJ/HN) files to PDF."
+publish = false
+
+[[bin]]
+name = "caj2pdf"
+path = "src/main.rs"
+
+[dependencies]
+caj2pdf-core = { workspace = true }
+caj2pdf-jbig1 = { workspace = true }
+caj2pdf-jbig2 = { workspace = true }
+caj2pdf-pdf   = { workspace = true }
+
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+lopdf = { version = "0.33", default-features = false, features = ["pom_parser", "default"] }

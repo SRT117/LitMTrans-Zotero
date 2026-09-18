@@ -1016,6 +1016,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .tree-icon-img { color: #2980b9; }
 .tree-icon-model { color: #8e44ad; }
 .tree-icon-trans { color: #27ae60; }
+.tree-icon-caj { color: #16a085; }
 .tree-icon-archive { color: #d35400; }
 .tree-icon-chat { color: #3498db; }
 .tree-icon-layers { color: #9b59b6; }
@@ -1033,6 +1034,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .tree-item-badge { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .tree-item-badge.badge-current { background: color-mix(in srgb, var(--accent) 15%, var(--surface)); color: var(--accent); }
 .tree-item-badge.badge-orphan { background: color-mix(in srgb, #e67e22 15%, var(--surface)); color: #e67e22; }
+.tree-item-badge.badge-caj { background: color-mix(in srgb, #16a085 15%, var(--surface)); color: #087f68; }
 .tree-item-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .tree-item-size { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ink-2); white-space: nowrap; }
 .tree-item-actions { display: flex; align-items: center; gap: 4px; }

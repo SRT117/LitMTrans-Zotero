@@ -124,6 +124,22 @@
             <html:button id="litmtrans-pref-restore-key-points-prompt" type="button">恢复默认要求</html:button>
           </html:div>
         </html:section>
+
+        <html:section class="litmtrans-pref-card litmtrans-pref-card-caj">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:span class="litmtrans-pref-card-mark">格式</html:span>
+            <html:div><html:h2>CAJ 文献处理</html:h2></html:div>
+          </html:div>
+          <html:div class="litmtrans-pref-grid">
+            <html:label>双击 CAJ 时的行为
+              <html:select id="litmtrans-pref-caj-double-click-action">
+                <html:option value="default">保持Zotero默认行为</html:option>
+                <html:option value="litmtrans">使用LitMTrans打开</html:option>
+                <html:option value="ask">每次询问</html:option>
+              </html:select>
+            </html:label>
+          </html:div>
+        </html:section>
         </html:div>
       </html:details>
     </html:main>

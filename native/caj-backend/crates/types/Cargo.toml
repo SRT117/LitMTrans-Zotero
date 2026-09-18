@@ -1,0 +1,10 @@
+[package]
+name = "caj2pdf-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared data types for caj2pdf-rs (used by caj2pdf-core, caj2pdf-pdf, and the GUI)."
+
+[dependencies]
+thiserror = { workspace = true }

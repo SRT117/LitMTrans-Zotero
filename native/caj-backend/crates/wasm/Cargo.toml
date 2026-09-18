@@ -1,0 +1,13 @@
+[package]
+name = "litmtrans-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "WebAssembly glue exposing caj2pdf-core HN/C8 conversion to the Zotero plugin."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+caj2pdf-core = { workspace = true }

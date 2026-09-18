@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/types",
+    "crates/core",
+    "crates/jbig1",
+    "crates/jbig2",
+    "crates/pdf",
+    "crates/cli",
+    "crates/wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "GPL-2.0-or-later"
+authors = ["caj2pdf-rs contributors"]
+repository = "https://github.com/duststarr/caj2pdf-rs"
+description = "Pure-Rust reimplementation of the caj2pdf toolchain for converting Chinese academic journal (CAJ/HN) files to PDF."
+
+[workspace.dependencies]
+# Internal
+caj2pdf-types = { path = "crates/types" }
+caj2pdf-core  = { path = "crates/core" }
+caj2pdf-jbig1 = { path = "crates/jbig1" }
+caj2pdf-jbig2 = { path = "crates/jbig2" }
+caj2pdf-pdf   = { path = "crates/pdf" }
+
+# Binary parsing
+byteorder = "1.5"
+encoding_rs = "0.8"
+fontdue = "0.9"
+
+# PDF
+lopdf = { version = "0.33", default-features = false, features = ["pom_parser"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+thiserror = "1"
+
+# FFI
+libc = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

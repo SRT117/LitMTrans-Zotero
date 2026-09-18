@@ -890,7 +890,9 @@
       const isWeb = requested === this.documentSessionID("web") || requested === "web-document-chat";
       const id = isWeb
         ? this.documentSessionID("web")
-        : requested.replace(/[^A-Za-z0-9_-]+/g, "") || this.documentSessionID();
+        // 嵌入式工作台每篇文献只保留一个当前会话；旧版独立会话 ID
+        // 只能作为迁移线索，不能再次打开成另一条对话。
+        : this.documentSessionID();
       const fallback = await this.ensureDocumentSession(documentID, id);
       const raw = fallback;
       const session = {

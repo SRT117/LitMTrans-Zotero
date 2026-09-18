@@ -1,0 +1,165 @@
+                    GNU GENERAL PUBLIC LICENSE
+                       Version 2, June 1991
+
+ Copyright (C) 2024 caj2pdf-rs contributors
+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program; if not, write to the Free Software
+ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+ ----------------------------------------------------------------------------
+
+ Portions of this software (specifically the JBIG1 decoder in
+ crates/jbig1/src/codec.rs) are derived from JBigDecode.cc by
+ Hin-Tak Leung, distributed under the FreeType Project License.
+
+                   The FreeType Project LICENSE
+                   ----------------------------
+
+                    Copyright 1996-2002, 2006 by
+          David Turner, Robert Wilhelm, and Werner Lemberg
+
+ Introduction
+ ============
+
+   The FreeType Project is distributed in several archive packages;
+   some of them may contain, in addition to the FreeType font engine,
+   various tools and  contributions which rely on, or relate to, the
+   FreeType Project.
+
+   This license applies to all files found in such packages, and
+   which do not fall under their own explicit license.  The license
+   thus  concerns the  FreeType font engine,  the test programs,
+   documentation and makefiles, at the very least.
+
+   This license was inspired by the BSD, Artistic, and IJG (Independent
+   JPEG Group) licenses, which all encourage inclusion and use of
+   free software in commercial and freeware products alike.  As a
+   consequence, its main points are that:
+
+     o We don't promise that this software works. However, we will be
+       interested in any kind of bug reports. ('as is' distribution)
+
+     o You can use this software for whatever you want, in parts or
+       full form, without having to pay us. ('royalty-free' usage)
+
+     o You may not pretend that you wrote this software.  If you use
+       it, or parts of it, in a program, you must acknowledge
+       somewhere in your documentation that you have used the
+       FreeType code. ('credits')
+
+   We specifically permit and encourage the inclusion of this
+   software, with or without modifications, in commercial products.
+   We disclaim all warranties covering The FreeType Project and
+   assume no liability related to The FreeType Project.
+
+   Finally,  we  wish  that  the  FreeType  Project  be  considered
+   as a  commercial-grade,  production-quality  package,  worthy  of
+   its own distribution, rather than something that is tacked on
+   to other software as an afterthought.
+
+ Legal Terms
+ ===========
+
+ 0. Definitions
+ --------------
+
+   Throughout this license,  the  terms  'package',  'FreeType  Project',
+   and  'FreeType  archive'  refer  to  the  set  of  files  originally
+   distributed  by  the  authors  (David Turner, Robert Wilhelm, and
+   Werner Lemberg) as the 'FreeType Project', be they named as alpha,
+   beta or final release.
+
+   'You' refers to  the licensee.  Our 'You' includes any company
+   or organization that uses the software.
+
+   'Source code' refers to  all the  files comprising  the  FreeType
+   Project,  including but not limited to source,  intermediate and
+   generated files,  documentation,  specifications,  and  the  fonts
+   themselves.
+
+   'Distribution' refers to  any  form  of  redistribution  of  the
+   FreeType Project, whether in source or binary form.
+
+ 1. No Warranty
+ --------------
+
+   THE FREETYPE PROJECT IS PROVIDED 'AS IS' WITHOUT WARRANTY OF ANY
+   KIND, EITHER EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO,
+   WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+   IN NO EVENT WILL ANY OF THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+   FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+   WITH THE FREE TYPE  PROJECT OR THE USE OR OTHER DEALINGS IN THE
+   FREE TYPE PROJECT.
+
+ 2. Redistribution
+ -----------------
+
+   This license grants a worldwide, royalty-free, perpetual and
+   irrevocable right  and license to use,  execute,  perform, compile,
+   display, copy, create derivative works of, distribute and
+   sublicense the  FreeType Project (in both source and object code
+   forms) and  derivative works thereof  for any  purpose; and  to
+   authorize others  to exercise  some or all  of the  rights granted
+   herein, subject to the following conditions:
+
+     o Redistribution  of  source code  must retain this license file
+       ('FTL.TXT') unaltered; any  additions, deletions or changes to
+       the original files must be clearly indicated in accompanying
+       documentation.  The  copyright notices of the unaltered,
+       original files must be preserved in all  copies of source
+       files.
+
+     o Redistribution in binary form must provide  a  disclaimer  that
+       states  that  the  software  is  based  in  part  of  the  work
+       of the FreeType Team,  in  the  distribution  documentation.
+       We also encourage you to put an URL to the FreeType web page
+       in your documentation, though this isn't mandatory.
+
+   These conditions apply to any software derived from or based on
+   the FreeType Project, not just the unmodified files.  If you use
+   our work, you must acknowledge us.  However, no fee need be paid
+   to us.
+
+ 3. Advertising
+ --------------
+
+   Neither the  FreeType authors and contributors,  nor the  companies
+   where they work,  shall  be used  to endorse or promote  products
+   derived from this software without specific prior written permission.
+
+   We suggest,  but do not require, that  you use one or more of the
+   following phrases to refer to this software in your documentation
+   or advertising materials:  'FreeType Project',  'FreeType Engine',
+   'FreeType library', or 'FreeType Distribution'.
+
+ 4. Contacts
+ -----------
+
+   There are two mailing lists related to FreeType:
+
+     o freetype@freetype.org
+       Discusses general use and applications of FreeType, as well as
+       future and  wanted  additions to the  library  and distribution.
+       If  you are looking  for support,  start  in  this list  if you
+       haven't found anything to help you in the documentation.
+
+     o freetype-devel@nongnu.org
+       Discusses bugs,  as well as engine internals,  design issues,
+       specific licenses,  porting,  etc.
+
+     o http://www.freetype.org
+       Holds the current  FreeType web page,  which will allow  you
+       download our  latest  public  release  or  browse  the CVS
+ repository.

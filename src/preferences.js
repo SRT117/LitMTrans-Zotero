@@ -229,6 +229,7 @@ var LitMTransControllerPreferences = {
       this.renderReferencePaths();
       this.$("mineru-token").value = settings.mineruToken || "";
       this.$("mineru-model").value = "vlm";
+      if (this.$("caj-double-click-action")) this.$("caj-double-click-action").value = settings.cajDoubleClickAction || "default";
       this.$("key-points-prompt").value = settings.effectiveKeyPointsPrompt || settings.keyPointsDefaultPrompt || "";
       this.updateWebMachineTranslationSettings();
       this.updateDeepSeekFastLayoutControl();
@@ -297,6 +298,7 @@ var LitMTransControllerPreferences = {
       chatProviderProfiles: { ...(this.settings?.chatProviderProfiles || {}), [chatProvider]: { baseURL: this.$("chat-base-url").value.trim(), model: this.$("chat-model").value.trim(), thinkingMode: this.$("chat-thinking-mode").value, reasoningEffort: this.$("chat-reasoning-effort").value } },
       mineruModel: "vlm", targetLanguage: this.$("target-language").value.trim(), machineSourceLanguage: this.$("machine-source-language").value.trim(), translationMode: this.$("translation-mode").value,
       translationReferencePaths: [...this.referencePaths], customTranslationInstruction: this.$("custom-translation-instruction").value.trim(),
+      cajDoubleClickAction: this.$("caj-double-click-action") ? this.$("caj-double-click-action").value : "default",
       keyPointsPrompt: this.$("key-points-prompt").value.trim() === String(this.settings?.keyPointsDefaultPrompt || "").trim() ? "" : this.$("key-points-prompt").value
     };
   },

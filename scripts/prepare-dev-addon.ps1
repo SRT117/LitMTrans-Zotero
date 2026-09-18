@@ -35,6 +35,16 @@ if (-not $NoSync) {
     Copy-Item -LiteralPath (Join-Path $projectRoot "src/bootstrap.js") -Destination (Join-Path $stage "bootstrap.js") -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot "src/prefs.js") -Destination (Join-Path $stage "prefs.js") -Force
 
+    # 分发本地 CAJ 转换器（独立 Rust 组件，随插件包提供）。
+    # 先清空旧副本再拷贝：Copy-Item 对已存在目录会把源目录整体嵌套进去，
+    # 造成 exe 与 wasm 并存、路径错位（native\dist\caj2pdf\...）。
+    $nativeDist = Join-Path $projectRoot "native\dist"
+    $nativeStage = Join-Path $stage "native"
+    Remove-Item -LiteralPath $nativeStage -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $nativeDist) {
+        Copy-Item -LiteralPath $nativeDist -Destination $nativeStage -Recurse -Force
+    }
+
     $generateMap = Join-Path $projectRoot "scripts\generate-repo-map.mjs"
     if (Test-Path -LiteralPath $generateMap -PathType Leaf) {
         & node $generateMap

@@ -47,12 +47,19 @@ echo "Building ${NAME}.xpi"
 cp src/bootstrap.js bootstrap.js
 cp src/prefs.js prefs.js
 zip -X -q -r "$DIST/${NAME}.xpi" "${RUNTIME[@]}"
+# 以 staged 前缀方式把 native/dist 的内容按 native/caj2pdf/* 路径追加进 XPI
+STAGE="$DIST/.xpi-native-stage"
+rm -rf "$STAGE"
+mkdir -p "$STAGE/native"
+cp -R native/dist/caj2pdf "$STAGE/native/"
+(cd "$STAGE" && zip -X -q -r "$ROOT/dist/${NAME}.xpi" native)
+rm -rf "$STAGE"
 cleanup_root_entries
 
 echo "Building ${NAME}-source.zip"
 zip -X -q -r "$DIST/${NAME}-source.zip" . \
   -x 'dist/*' '.git/*' '.env' '.env.*' 'node_modules/*' '.npm-cache/*' '.zotero-dev/*' '.scaffold/*' '.validation-logs/*' \
-     '.playwright-cli/*' 'output/*' 'tmp/*' 'coverage/*' '.idea/*' 'AGENTS.md' 'CLAUDE.md' 'zotero_ai_three_views_codex_execution_spec_v4.md' \
+     '.playwright-cli/*' 'output/*' 'tmp/*' 'coverage/*' '.idea/*' '.serena/*' 'native/caj-backend/target/*' 'feedbacks/*' 'scripts/manage_feedbacks.py' 'docs/feedback-management-guide.md' 'AGENTS.md' 'CLAUDE.md' 'zotero_ai_three_views_codex_execution_spec_v4.md' \
      '*.DS_Store' '__pycache__/*' '*.pyc' '*.xpi' '*.zip' '*.log'
 
 $PYTHON - <<PY
@@ -63,7 +70,7 @@ dist = root / "dist"
 xpi = dist / "${NAME}.xpi"
 source = dist / "${NAME}-source.zip"
 for archive, required in [
-    (xpi, {"manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "PRIVACY.md"}),
+    (xpi, {"manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "src/caj-worker.js", "src/caj-converter.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "native/caj2pdf/caj2pdf.wasm", "native/caj2pdf/LICENSE", "PRIVACY.md"}),
     (source, {"manifest.json", "package.json", "README.md", "LICENSE", "packages/core/src/translation.ts"}),
 ]:
     with zipfile.ZipFile(archive) as z:

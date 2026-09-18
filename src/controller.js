@@ -3,6 +3,7 @@
 
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
+  const CAJ_CACHE_VERSION = 5;
   LitMTrans.FEEDBACK_FORM_URL = "https://acnndsd03tis.feishu.cn/share/base/form/shrcn3I4qD4YIyhM6H1KAEQ59zb";
 
   function localize(zh, en) {
@@ -192,6 +193,7 @@
         getSettings: () => this.getSettings()
       });
       this.windows = new Set();
+      this.windowBindings = new WeakMap();
       this.tabs = new Map();
       this.operations = new Map();
       this.readerHandlers = [];
@@ -207,6 +209,7 @@
     }
 
     async init() {
+      this._cajShuttingDown = false;
       if (this._initialized) return;
       await this.storage.init();
       this.registerItemDeletionObserver();
@@ -221,6 +224,8 @@
     }
 
     async shutdown() {
+      this._cajShuttingDown = true;
+      for (const cancel of this._cajWorkerTasks || []) cancel();
       if (this.itemNotifierID !== null) {
         try { Zotero.Notifier.unregisterObserver(this.itemNotifierID); } catch (_) {}
         this.itemNotifierID = null;
@@ -628,6 +633,7 @@
         await this.withOperation(runtime, "parse", async (signal, emit) => {
           const parseContext = await this.attachmentContext(runtime.attachmentID);
           await this.pipeline.parse(parseContext, {}, emit, signal);
+          this.emit(runtime, { type: "document-state", state: await this.stateForAttachment(runtime.attachmentID) });
         });
         markdown = String((await this.pipeline.snapshot(context))?.parsed?.markdown || "").trim();
         if (!markdown) throw new Error("解析未能产出原文，请调整解析设置后重试。");
@@ -763,6 +769,22 @@
         this.stopOperations(this.tabIDForAttachment(itemID));
         this.cleanupTab(this.tabIDForAttachment(itemID));
       }
+      const relatedDocumentIDs = new Set(await this.storage.findDocumentIDsForItemIDs?.([...deleted]) || []);
+      for (const itemID of deleted) {
+        try {
+          const item = Zotero.Items.get(itemID);
+          if (item) relatedDocumentIDs.add(this.storage.documentID(item));
+        }
+        catch (_) {}
+      }
+      for (const documentID of relatedDocumentIDs) {
+        try {
+          await this.removeCAJReaderAttachment(documentID, { required: false });
+        }
+        catch (error) {
+          Zotero.logError?.(error);
+        }
+      }
       const cleared = await this.storage.clearDocumentsForDeletedItemIDs([...deleted]);
       if (cleared.length) this.log(`Cleared ${cleared.length} document cache(s) for deleted Zotero item(s)`);
       return cleared;
@@ -846,7 +868,174 @@
       if (operation === "gemini-transport-probe") return this.runGeminiTransportProbe();
       if (operation === "edge-local-probe") return this.runEdgeLocalProbe();
       if (operation === "edge-document-probe") return this.runEdgeDocumentProbe(command);
+      if (operation === "caj-probe") return this.runCAJProbe(command);
+      if (operation === "caj-reader-probe") return this.runCAJReaderProbe(command);
+      if (operation === "caj-storage-probe") return this.runCAJStorageProbe(command);
       throw new Error(`不支持的检查操作：${operation}`);
+    }
+
+    async runCAJProbe(command) {
+      const directory = String(command.directory || "").trim();
+      if (!directory || !await this.storage.exists(directory)) throw new Error("CAJ 样本目录不存在");
+      const paths = (await this.storage.list(directory))
+        .filter(path => /\.caj$/i.test(String(path)))
+        .sort((left, right) => String(left).localeCompare(String(right), "zh-CN"));
+      if (!paths.length) throw new Error("CAJ 样本目录中没有 .caj 文件");
+      const files = [];
+      for (const sourcePath of paths) {
+        const bytes = await this.storage.readBytes(sourcePath);
+        const format = LitMTrans.CAJConverter.detectFormat(bytes);
+        const pdf = format === "HN" || format === "C8"
+          ? await this.convertWithNativeBackend(sourcePath, format)
+          : await LitMTrans.CAJConverter.convertToPDF(bytes);
+        const normalizedPDF = this.normalizeCAJBytes(pdf);
+        const parsed = await PDFLib.PDFDocument.load(normalizedPDF, {
+          throwOnInvalidObject: true,
+          updateMetadata: false
+        });
+        const pageCount = parsed.getPageCount();
+        if (!pageCount) throw new Error(`${PathUtils.filename(sourcePath)} 转换后没有页面`);
+        files.push({
+          name: PathUtils.filename(sourcePath),
+          format,
+          sourceBytes: bytes.byteLength || bytes.length || 0,
+          pdfBytes: normalizedPDF.byteLength || normalizedPDF.length || 0,
+          pageCount
+        });
+      }
+      return { passed: true, directory, fileCount: files.length, files };
+    }
+
+    async runCAJReaderProbe(command) {
+      const directory = String(command.directory || "").trim();
+      if (!directory || !await this.storage.exists(directory)) throw new Error("CAJ 样本目录不存在");
+      const sourcePaths = (await this.storage.list(directory))
+        .filter(path => /\.caj$/i.test(String(path)))
+        .sort((left, right) => String(left).localeCompare(String(right), "zh-CN"));
+      if (!sourcePaths.length) throw new Error("CAJ 样本目录中没有 .caj 文件");
+      const mainWindow = Zotero.getMainWindow?.();
+      if (!mainWindow?.Zotero_Tabs?.add) throw new Error("无法创建隔离的 Zotero 工作台标签页");
+      const createdIDs = [];
+      const files = [];
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      for (const sourcePath of sourcePaths) {
+        let sourceAttachment = null;
+        let readerAttachment = null;
+        let tabID = "";
+        try {
+          sourceAttachment = await Zotero.Attachments.linkFromFile({
+            file: U.createLocalFile(sourcePath),
+            title: PathUtils.filename(sourcePath),
+            contentType: "application/octet-stream",
+            libraryID: Zotero.Libraries.userLibraryID
+          });
+          createdIDs.push(sourceAttachment.id);
+          const pdfPath = await this.cachedPDFForCAJ(sourceAttachment);
+          readerAttachment = await this.ensureCAJReaderAttachment(sourceAttachment, pdfPath);
+          if (!readerAttachment.isPDFAttachment?.()) throw new Error("转换附件未被 Zotero 识别为 PDF");
+          createdIDs.push(readerAttachment.id);
+          const readerPath = await readerAttachment.getFilePathAsync?.() || readerAttachment.getFilePath?.();
+          if (this.normalizeCAJPath(readerPath) !== this.normalizeCAJPath(pdfPath)) {
+            throw new Error("Reader 附件未指向缓存 PDF");
+          }
+          tabID = await this.openWorkbench(sourceAttachment, { window: mainWindow });
+          const runtime = this.tabs.get(tabID);
+          const deadline = Date.now() + 90000;
+          while (Date.now() < deadline) {
+            const pdfWindow = runtime?.pdfPreview?._internalReader?._primaryView?._iframeWindow;
+            const viewer = pdfWindow?.PDFViewerApplication?.pdfViewer;
+            if (viewer && Number(viewer.pagesCount || 0) > 0) break;
+            await wait(250);
+          }
+          const pdfWindow = runtime?.pdfPreview?._internalReader?._primaryView?._iframeWindow;
+          const viewer = pdfWindow?.PDFViewerApplication?.pdfViewer;
+          const pageCount = Number(viewer?.pagesCount || 0);
+          if (!viewer || pageCount <= 0) throw new Error("LitMTrans 工作台未创建 PDF.js 页面");
+          files.push({
+            name: PathUtils.filename(sourcePath),
+            readerAttachmentID: readerAttachment.id,
+            pageCount
+          });
+        }
+        finally {
+          if (tabID) {
+            try { mainWindow.Zotero_Tabs.close(tabID); } catch (_) { this.cleanupTab(tabID); }
+          }
+          for (const id of createdIDs.splice(-2).reverse()) {
+            try { await Zotero.Items.trashTx(id); } catch (_) {}
+          }
+        }
+      }
+      return { passed: files.length === sourcePaths.length, directory, fileCount: files.length, files };
+    }
+
+    async runCAJStorageProbe(command) {
+      const directory = String(command.directory || "").trim();
+      if (!directory || !await this.storage.exists(directory)) throw new Error("CAJ 样本目录不存在");
+      const sourcePath = (await this.storage.list(directory))
+        .filter(path => /\.caj$/i.test(String(path)))
+        .sort((left, right) => String(left).localeCompare(String(right), "zh-CN"))[0];
+      if (!sourcePath) throw new Error("CAJ 样本目录中没有 .caj 文件");
+
+      const createdIDs = [];
+      let sourceAttachment = null;
+      let readerAttachment = null;
+      try {
+        sourceAttachment = await Zotero.Attachments.linkFromFile({
+          file: U.createLocalFile(sourcePath),
+          title: PathUtils.filename(sourcePath),
+          contentType: "application/octet-stream",
+          libraryID: Zotero.Libraries.userLibraryID
+        });
+        createdIDs.push(sourceAttachment.id);
+
+        const pdfPath = await this.cachedPDFForCAJ(sourceAttachment);
+        readerAttachment = await this.ensureCAJReaderAttachment(sourceAttachment, pdfPath);
+        createdIDs.push(readerAttachment.id);
+        const documentID = this.storage.documentID(sourceAttachment);
+        const summary = await this.storage.getStorageSummary();
+        const document = summary.documents.find(row => row.id === documentID);
+        const cajCategory = document?.categories?.find(row => row.key === "cajSource");
+        if (!document?.isCAJ || !cajCategory?.files || !document.caj?.cacheValidated) {
+          throw new Error("存储管理器未识别 CAJ 转换缓存");
+        }
+
+        const cleared = await this.clearStorageData({
+          target: "document",
+          documentID,
+          category: "cajSource"
+        }, sourceAttachment.id);
+        if (await this.storage.exists(pdfPath)) throw new Error("CAJ 缓存清理后 source.pdf 仍存在");
+        const deletedReader = Zotero.Items.get(readerAttachment.id);
+        if (deletedReader && !deletedReader.deleted) throw new Error("CAJ 自动阅读附件未同步清理");
+
+        const rebuiltPath = await this.cachedPDFForCAJ(sourceAttachment);
+        const rebuiltReader = await this.ensureCAJReaderAttachment(sourceAttachment, rebuiltPath);
+        createdIDs.push(rebuiltReader.id);
+        if (!(await this.storage.exists(rebuiltPath)) || !rebuiltReader.isPDFAttachment?.()) {
+          throw new Error("CAJ 缓存清理后无法重建阅读附件");
+        }
+        return {
+          passed: true,
+          name: PathUtils.filename(sourcePath),
+          format: String(document.caj.format || ""),
+          pageCount: Number(document.caj.pageCount || 0),
+          cachedBytes: cajCategory.bytes,
+          clearedBytes: Number(cleared.clearedBytes || 0),
+          readerAttachmentRemoved: Boolean(cleared.readerAttachmentRemoved),
+          rebuiltReaderAttachmentID: rebuiltReader.id
+        };
+      }
+      finally {
+        if (sourceAttachment) {
+          try { await this.storage.clearDocument(sourceAttachment); }
+          catch (_) {}
+        }
+        for (const id of createdIDs.reverse()) {
+          try { await Zotero.Items.trashTx(id); }
+          catch (_) {}
+        }
+      }
     }
 
     async runEdgeDocumentProbe(command) {
@@ -1495,6 +1684,194 @@
       while (enumerator.hasMoreElements()) this.addToWindow(enumerator.getNext());
     }
 
+    detachWindowItemBindings(win, state) {
+      if (!state) return;
+      try { state.observer?.disconnect?.(); } catch (_) {}
+      state.observer = null;
+      try {
+        if (state.itemMenu && state.itemMenuRefresh) {
+          state.itemMenu.removeEventListener("popupshowing", state.itemMenuRefresh);
+        }
+      }
+      catch (_) {}
+      try { state.menuItem?.remove?.(); } catch (_) {}
+      try { state.convertItem?.remove?.(); } catch (_) {}
+      try {
+        if (state.itemsTree && state.onDblClick) {
+          state.itemsTree.removeEventListener("dblclick", state.onDblClick, true);
+        }
+      }
+      catch (_) {}
+      state.itemMenu = null;
+      state.itemMenuRefresh = null;
+      state.menuItem = null;
+      state.convertItem = null;
+      state.itemsTree = null;
+      state.onDblClick = null;
+      state.ensureScheduled = false;
+      if (this.windowBindings.get(win) === state) this.windowBindings.delete(win);
+    }
+
+    bindWindowItemInteractions(win) {
+      if (!win?.document) return;
+      let state = this.windowBindings.get(win);
+      if (state) {
+        state.ensure?.();
+        return;
+      }
+      state = { itemMenu: null, itemMenuRefresh: null, menuItem: null, convertItem: null, itemsTree: null, onDblClick: null, observer: null, ensureScheduled: false, ensure: null };
+      this.windowBindings.set(win, state);
+
+      const schedule = () => {
+        if (state.ensureScheduled || this.windowBindings.get(win) !== state || !this.windows.has(win)) return;
+        state.ensureScheduled = true;
+        const timer = win.setTimeout || global.setTimeout;
+        timer(() => {
+          state.ensureScheduled = false;
+          if (this.windowBindings.get(win) === state && this.windows.has(win)) state.ensure?.();
+        }, 0);
+      };
+
+      const ensure = () => {
+        if (this.windowBindings.get(win) !== state || !this.windows.has(win)) return;
+        const doc = win.document;
+        const itemMenu = doc.getElementById("zotero-itemmenu");
+        if (state.itemMenu !== itemMenu) {
+          if (state.itemMenu && state.itemMenuRefresh) {
+            try { state.itemMenu.removeEventListener("popupshowing", state.itemMenuRefresh); } catch (_) {}
+          }
+          try { state.menuItem?.remove?.(); } catch (_) {}
+          try { state.convertItem?.remove?.(); } catch (_) {}
+          state.itemMenu = itemMenu || null;
+          state.itemMenuRefresh = null;
+          state.menuItem = null;
+          state.convertItem = null;
+        }
+
+        const menuBindingsStale = itemMenu && state.itemMenu === itemMenu
+          && ((!state.menuItem || state.menuItem.parentNode !== itemMenu)
+            || (!state.convertItem || state.convertItem.parentNode !== itemMenu));
+        if (menuBindingsStale) {
+          try {
+            if (state.itemMenuRefresh) itemMenu.removeEventListener("popupshowing", state.itemMenuRefresh);
+          }
+          catch (_) {}
+          try { state.menuItem?.remove?.(); } catch (_) {}
+          try { state.convertItem?.remove?.(); } catch (_) {}
+          state.itemMenuRefresh = null;
+          state.menuItem = null;
+          state.convertItem = null;
+        }
+
+        if (itemMenu && !state.menuItem) {
+          const menuItem = itemMenu.querySelector('[id="litmtrans-item-menuitem"]') || doc.createXULElement("menuitem");
+          menuItem.id = "litmtrans-item-menuitem";
+          menuItem.setAttribute("label", localize("LitMTrans：解析、翻译与阅读", "LitMTrans: Parse, Translate, and Read"));
+          menuItem.setAttribute("class", "menuitem-iconic");
+          menuItem.setAttribute("image", this.rootURI + "assets/icon.ico");
+          if (!menuItem._litmtransCommandAttached) {
+            menuItem.addEventListener("command", () => this.openFromCurrentSelection(win));
+            menuItem._litmtransCommandAttached = true;
+          }
+          if (!menuItem.parentNode) itemMenu.appendChild(menuItem);
+
+          const convertItem = itemMenu.querySelector('[id="litmtrans-convert-caj-menuitem"]') || doc.createXULElement("menuitem");
+          convertItem.id = "litmtrans-convert-caj-menuitem";
+          convertItem.setAttribute("label", localize("LitMTrans：将 CAJ 转换为 PDF", "LitMTrans: Convert CAJ to PDF"));
+          convertItem.setAttribute("class", "menuitem-iconic");
+          convertItem.setAttribute("image", this.rootURI + "assets/icon.ico");
+          if (!convertItem._litmtransCommandAttached) {
+            convertItem.addEventListener("command", () => this.convertSelectedCAJToPDF(win));
+            convertItem._litmtransCommandAttached = true;
+          }
+          if (!convertItem.parentNode) itemMenu.appendChild(convertItem);
+
+          const refresh = () => {
+            try {
+              const selected = win.ZoteroPane?.getSelectedItems?.() || [];
+              menuItem.hidden = !selected.some(item => this.itemCouldHaveAttachment(item));
+              convertItem.hidden = !selected.some(item => this.hasCAJAttachment(item));
+            }
+            catch (error) {
+              // 菜单刷新失败不能中断 Zotero 原生菜单。
+              menuItem.hidden = true;
+              convertItem.hidden = true;
+              this.log(`Item menu refresh error: ${error}`);
+            }
+          };
+          state.menuItem = menuItem;
+          state.convertItem = convertItem;
+          state.itemMenuRefresh = refresh;
+          itemMenu.addEventListener("popupshowing", refresh);
+        }
+
+        const itemsTree = doc.getElementById("zotero-items-tree");
+        if (state.itemsTree !== itemsTree) {
+          if (state.itemsTree && state.onDblClick) {
+            try { state.itemsTree.removeEventListener("dblclick", state.onDblClick, true); } catch (_) {}
+          }
+          state.itemsTree = itemsTree || null;
+          state.onDblClick = null;
+        }
+        if (itemsTree && !state.onDblClick) {
+          const onDblClick = async (event) => {
+            try {
+              // 默认值设为 "default"：不拦截，完全尊重原生 Zotero 和其他已安装的 CAJ 插件
+              const action = U.getPref("cajDoubleClickAction", "default");
+              if (action === "default" || action === "external") return;
+              const selected = win.ZoteroPane?.getSelectedItems?.() || [];
+              if (selected.length !== 1 || event.button !== 0) return;
+              const cajAttachment = this.getCAJAttachment(selected[0]);
+              if (!cajAttachment) return;
+
+              if (action === "litmtrans") {
+                event.preventDefault();
+                event.stopPropagation();
+                await this.openFromCurrentSelection(win);
+                return;
+              }
+
+              if (action === "ask") {
+                const prompts = Services.prompt;
+                const checkState = { value: false };
+                const flags = (prompts.BUTTON_POS_0 * prompts.BUTTON_TITLE_IS_STRING) +
+                              (prompts.BUTTON_POS_1 * prompts.BUTTON_TITLE_IS_STRING);
+                const button0Title = localize("使用 LitMTrans 打开", "Open in LitMTrans");
+                const button1Title = localize("默认 / 外部或其他插件处理", "Default / Other Plugins");
+                const checkMsg = localize("记住我的选择，不再提示", "Remember my choice and do not ask again");
+                const dialogTitle = localize("打开 CAJ 文献", "Open CAJ Document");
+                const dialogText = localize("检测到此文献为 CAJ 格式。您希望如何打开？", "This item is a CAJ document. How would you like to open it?");
+                const buttonPressed = prompts.confirmEx(win, dialogTitle, dialogText, flags, button0Title, button1Title, null, checkMsg, checkState);
+                if (checkState.value) U.setPref("cajDoubleClickAction", buttonPressed === 0 ? "litmtrans" : "default");
+                if (buttonPressed !== 1) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+                if (buttonPressed === 0) {
+                  event.stopPropagation();
+                  await this.openFromCurrentSelection(win);
+                }
+              }
+            }
+            catch (error) { this.log(`Double click handler error: ${error}`); }
+          };
+          state.onDblClick = onDblClick;
+          itemsTree.addEventListener("dblclick", onDblClick, true);
+        }
+      };
+      state.ensure = ensure;
+
+      try {
+        const Observer = win.MutationObserver || global.MutationObserver;
+        if (Observer && win.document.documentElement) {
+          state.observer = new Observer(schedule);
+          state.observer.observe(win.document.documentElement, { childList: true, subtree: true });
+        }
+      }
+      catch (error) { this.log(`Unable to observe Zotero item pane: ${error}`); }
+      ensure();
+    }
+
     ensureWindowLocalization(win) {
       try {
         win?.MozXULElement?.insertFTLIfNeeded?.("litmtrans.ftl");
@@ -1529,25 +1906,7 @@
       }
       catch (error) { Zotero.logError(error); }
 
-      try {
-        const itemMenu = doc.getElementById("zotero-itemmenu");
-        if (itemMenu && !doc.getElementById("litmtrans-item-menuitem")) {
-          const menuItem = doc.createXULElement("menuitem");
-          menuItem.id = "litmtrans-item-menuitem";
-          menuItem.setAttribute("label", localize("LitMTrans：解析、翻译与阅读", "LitMTrans: Parse, Translate, and Read"));
-          menuItem.setAttribute("class", "menuitem-iconic");
-          menuItem.setAttribute("image", this.rootURI + "assets/icon.ico");
-          menuItem.addEventListener("command", () => this.openFromCurrentSelection(win));
-          itemMenu.appendChild(menuItem);
-          const refresh = () => {
-            const selected = win.ZoteroPane?.getSelectedItems?.() || [];
-            menuItem.hidden = !selected.some(item => this.itemCouldHaveAttachment(item));
-          };
-          itemMenu.addEventListener("popupshowing", refresh);
-          menuItem._litmtransRefresh = refresh;
-        }
-      }
-      catch (error) { Zotero.logError(error); }
+      this.bindWindowItemInteractions(win);
     }
 
     removeFromWindow(win) {
@@ -1559,13 +1918,533 @@
       try { doc.getElementById("litmtrans-tools-menuitem")?.remove(); } catch (_) {}
       try { doc.querySelector('link[href="litmtrans.ftl"]')?.remove(); } catch (_) {}
       try {
+        const state = this.windowBindings.get(win);
+        this.detachWindowItemBindings(win, state);
+      }
+      catch (_) {}
+      try {
         const item = doc.getElementById("litmtrans-item-menuitem");
         if (item?._litmtransRefresh) doc.getElementById("zotero-itemmenu")?.removeEventListener("popupshowing", item._litmtransRefresh);
         item?.remove();
       }
       catch (_) {}
+      try {
+        const convertItem = doc.getElementById("litmtrans-convert-caj-menuitem");
+        convertItem?.remove();
+      }
+      catch (_) {}
+      try {
+        const itemsTree = doc.getElementById("zotero-items-tree");
+        if (itemsTree?._litmtransDblClickHandler) {
+          itemsTree.removeEventListener("dblclick", itemsTree._litmtransDblClickHandler, true);
+          delete itemsTree._litmtransDblClickHandler;
+          delete itemsTree._litmtransDblClickAttached;
+        }
+      }
+      catch (_) {}
       for (const [tabID, runtime] of [...this.tabs]) {
         if (runtime.window === win) this.cleanupTab(tabID);
+      }
+    }
+
+    hasCAJAttachment(item) {
+      if (!item) return false;
+      try {
+        if (item.isAttachment?.()) {
+          const fn = item.attachmentFilename || item.getFilePath?.() || "";
+          return LitMTrans.CAJConverter?.isCAJExtension(fn);
+        }
+        const ids = item.getAttachments?.() || [];
+        for (const id of ids) {
+          const att = Zotero.Items.get(id);
+          if (att) {
+            const fn = att.attachmentFilename || att.getFilePath?.() || "";
+            if (LitMTrans.CAJConverter?.isCAJExtension(fn)) return true;
+          }
+        }
+        return false;
+      }
+      catch (_) { return false; }
+    }
+
+    getCAJAttachment(item) {
+      if (!item) return null;
+      try {
+        if (item.isAttachment?.()) {
+          const fn = item.attachmentFilename || item.getFilePath?.() || "";
+          if (LitMTrans.CAJConverter?.isCAJExtension(fn)) return item;
+        }
+        const ids = item.getAttachments?.() || [];
+        for (const id of ids) {
+          const att = Zotero.Items.get(id);
+          if (att) {
+            const fn = att.attachmentFilename || att.getFilePath?.() || "";
+            if (LitMTrans.CAJConverter?.isCAJExtension(fn)) return att;
+          }
+        }
+        return null;
+      }
+      catch (_) { return null; }
+    }
+
+    async createCAJPreview(context, frame) {
+      // Reader 的正常数据通道使用 zotero://attachment/... URL。把百 MB 级
+      // Uint8Array 跨进程 clone 给 reader.html 会同时占用多份内存，HN 文献
+      // 因此很容易在 PDF.js 尚未启动前就空白。将缓存文件注册为链接附件，
+      // 让 Zotero 10 自己按文件路径加载，工作台仍然保留原 CAJ 的文档 ID。
+      const readerAttachment = await this.ensureCAJReaderAttachment(context.attachment, context.filePath);
+      return Zotero.Reader.openPreview(readerAttachment.id, frame);
+    }
+
+    normalizeCAJBytes(value) {
+      // IOUtils may return a typed array from a privileged compartment;
+      // pdf-lib validates the typed-array constructor from its own realm.
+      return value instanceof global.Uint8Array
+        ? value
+        : global.Uint8Array.from(value || []);
+    }
+
+    async validateCachedCAJPDF(pdfPath) {
+      const stat = await this.storage.stat(pdfPath);
+      if (!stat || Number(stat.size || 0) < 32) throw new Error("缓存 PDF 文件不完整");
+      const bytes = this.normalizeCAJBytes(await this.storage.readBytes(pdfPath));
+      if (bytes[0] !== 0x25 || bytes[1] !== 0x50 || bytes[2] !== 0x44 || bytes[3] !== 0x46) {
+        throw new Error("缓存文件不是有效 PDF");
+      }
+      const parsed = await PDFLib.PDFDocument.load(bytes, {
+        throwOnInvalidObject: true,
+        updateMetadata: false
+      });
+      const pageCount = parsed.getPageCount();
+      if (!pageCount) throw new Error("缓存 PDF 没有可用页面");
+      return { pageCount, size: Number(stat.size || bytes.length) };
+    }
+
+    normalizeCAJPath(value) {
+      const path = String(value || "").replace(/[\\/]+/g, "/").replace(/\/+$/, "");
+      return Zotero.isWin ? path.toLowerCase() : path;
+    }
+
+    async findCAJReaderAttachment(attachment, pdfPath, meta = {}) {
+      const candidateIDs = [];
+      const rememberedID = Number(meta?.generatedAttachmentID || 0);
+      if (rememberedID > 0) candidateIDs.push(rememberedID);
+      const parent = attachment.parentID ? Zotero.Items.get(attachment.parentID) : null;
+      for (const id of parent?.getAttachments?.() || []) candidateIDs.push(id);
+      const targetPath = this.normalizeCAJPath(pdfPath);
+      const seen = new Set();
+      for (const id of candidateIDs) {
+        const candidateID = Number(id);
+        if (!candidateID || seen.has(candidateID) || candidateID === Number(attachment.id)) continue;
+        seen.add(candidateID);
+        const candidate = Zotero.Items.get(candidateID);
+        if (!candidate || candidate.deleted) continue;
+        if (candidate.libraryID !== attachment.libraryID) continue;
+        if (String(candidate.attachmentContentType || "").toLowerCase() !== "application/pdf") continue;
+        try {
+          const candidatePath = await candidate.getFilePathAsync?.() || candidate.getFilePath?.();
+          const importedCache = candidateID === rememberedID
+            && candidate.key === meta.generatedAttachmentKey
+            && meta.readerAttachmentMode === "imported-cache"
+            && meta.readerIdentity === meta.identity
+            && meta.readerVersion === meta.version;
+          if (!importedCache && this.normalizeCAJPath(candidatePath) !== targetPath) continue;
+          if (!(await this.storage.exists(candidatePath))) continue;
+          return candidate;
+        }
+        catch (_) {}
+      }
+      return null;
+    }
+
+    async removeCAJReaderAttachment(documentID, options = {}) {
+      const metaPath = this.storage.path(documentID, "caj-source", "source.meta.json");
+      const meta = await this.storage.readJSON(metaPath, null);
+      const generatedID = Number(meta?.generatedAttachmentID || 0);
+      if (!generatedID) return { removed: false, stale: false };
+
+      let attachment = null;
+      try { attachment = await Zotero.Items.getAsync?.(generatedID); }
+      catch (_) {}
+      if (!attachment) {
+        try { attachment = Zotero.Items.get(generatedID); }
+        catch (_) {}
+      }
+      if (!attachment || attachment.deleted) return { removed: false, stale: true };
+
+      const mode = String(meta?.readerAttachmentMode || "");
+      const title = String(attachment.getField?.("title") || "");
+      const source = this.storage.parseDocumentID(documentID);
+      const isGenerated = (['linked-cache', 'imported-cache'].includes(mode) || title.includes("（LitMTrans）"))
+        && String(attachment.attachmentContentType || "").toLowerCase() === "application/pdf"
+        && (!source || attachment.libraryID === source.libraryID)
+        && (!meta.generatedAttachmentKey || attachment.key === meta.generatedAttachmentKey)
+        && Number(attachment.id) === generatedID;
+      if (!isGenerated) {
+        if (options.required) throw new Error("CAJ 阅读附件关联信息异常，已停止清理以避免误删 Zotero 附件");
+        return { removed: false, stale: false };
+      }
+      if (typeof Zotero.Items.trashTx !== "function") {
+        if (options.required) throw new Error("当前 Zotero 无法安全移除 CAJ 自动阅读附件，已保留缓存");
+        return { removed: false, stale: false };
+      }
+      await Zotero.Items.trashTx(generatedID);
+      return { removed: true, attachmentID: generatedID, mode };
+    }
+
+    async ensureCAJReaderAttachment(attachment, pdfPath = null) {
+      this._cajReaderAttachments ||= new Map();
+      const key = this.storage.documentID(attachment);
+      if (this._cajReaderAttachments.has(key)) return this._cajReaderAttachments.get(key);
+      const task = (async () => {
+        const path = pdfPath || await this.cachedPDFForCAJ(attachment);
+        const metaPath = this.storage.path(attachment, "caj-source", "source.meta.json");
+        const meta = await this.storage.readJSON(metaPath) || {};
+        const existing = await this.findCAJReaderAttachment(attachment, path, meta);
+        if (existing) {
+          const linkedMode = existing.attachmentLinkMode === Zotero.Attachments?.LINK_MODE_LINKED_FILE
+            ? "linked-cache"
+            : "imported-cache";
+          const sourceFileName = String(meta.sourceFileName || attachment.attachmentFilename || "document.caj");
+          if (Number(meta.generatedAttachmentID) !== Number(existing.id)
+            || meta.readerAttachmentMode !== linkedMode
+            || meta.sourceFileName !== sourceFileName) {
+            await this.storage.writeJSON(metaPath, {
+              ...meta,
+              generatedAttachmentID: existing.id,
+              generatedAttachmentKey: existing.key,
+              readerAttachmentMode: linkedMode,
+              sourceFileName
+            });
+          }
+          return existing;
+        }
+
+        if (meta.readerAttachmentMode === "imported-cache" && meta.generatedAttachmentID) {
+          await this.removeCAJReaderAttachment(key, { required: true });
+        }
+
+        const filename = String(attachment.attachmentFilename || "document.caj");
+        const stem = U.safeStem(filename.replace(/\.caj$/i, "") || "document", 90);
+        const title = `${stem}.pdf（LitMTrans）`;
+        const options = {
+          file: U.createLocalFile(path),
+          title,
+          contentType: "application/pdf",
+          libraryID: attachment.libraryID
+        };
+        if (attachment.parentID) options.parentItemID = attachment.parentID;
+        else options.collections = attachment.getCollections?.() || [];
+
+        // 链接到稳定的插件缓存，避免再次复制大型 HN PDF；Zotero 10 的
+        // Reader 对链接附件和导入附件使用同一 zotero://attachment 通道。
+        const createLinked = Zotero.Attachments?.linkFromFile;
+        let readerAttachment;
+        let readerAttachmentMode = "imported-cache";
+        if (typeof createLinked === "function") {
+          try {
+            readerAttachment = await createLinked.call(Zotero.Attachments, options);
+            readerAttachmentMode = "linked-cache";
+          }
+          catch (error) {
+            // 群组库不允许链接附件；此时只把缓存复制到 Zotero 存储，
+            // 保证阅读功能仍可用，并把原因留在日志而不打断用户。
+            Zotero.logError?.(error);
+          }
+        }
+        if (!readerAttachment) readerAttachment = await Zotero.Attachments.importFromFile(options);
+        readerAttachment.setField("title", title);
+        await readerAttachment.saveTx();
+        await this.storage.writeJSON(metaPath, {
+          ...meta,
+          generatedAttachmentID: readerAttachment.id,
+          generatedAttachmentKey: readerAttachment.key,
+          readerAttachmentMode,
+          readerIdentity: meta.identity,
+          readerVersion: meta.version,
+          sourceFileName: String(meta.sourceFileName || attachment.attachmentFilename || "document.caj")
+        });
+        return readerAttachment;
+      })();
+      this._cajReaderAttachments.set(key, task);
+      try { return await task; }
+      finally { this._cajReaderAttachments.delete(key); }
+    }
+
+    async persistCAJDocumentMeta(attachment, sourceFileName, patch = {}) {
+      await this.storage.setDocumentMeta(attachment, {
+        documentID: this.storage.documentID(attachment),
+        itemID: attachment.id,
+        libraryID: attachment.libraryID,
+        itemKey: attachment.key,
+        parentItemID: attachment.parentID || null,
+        parentItemKey: attachment.parentKey || "",
+        sourceFileName,
+        isCAJ: true,
+        ...patch
+      });
+    }
+
+    async cachedPDFForCAJ(attachment) {
+      const sourcePath = await this.attachmentPath(attachment);
+      const sourceFileName = String(attachment.attachmentFilename || PathUtils.filename(sourcePath) || "document.caj");
+      const identity = await this.storage.sourceIdentity(attachment, sourcePath);
+      const pdfPath = this.storage.path(attachment, "caj-source", "source.pdf");
+      const metaPath = this.storage.path(attachment, "caj-source", "source.meta.json");
+      const meta = await this.storage.readJSON(metaPath);
+      const cachedStat = meta?.identity === identity && meta?.version === CAJ_CACHE_VERSION
+        ? await this.storage.stat(pdfPath)
+        : null;
+      if (cachedStat && Number(cachedStat.size || 0) > 0) {
+        if (meta.cacheValidated && Number(meta.pageCount) > 0
+          && (!meta.outputBytes || Number(meta.outputBytes) === Number(cachedStat.size))) {
+          if (meta.sourceFileName !== sourceFileName) {
+            await this.storage.writeJSON(metaPath, { ...meta, sourceFileName });
+          }
+          await this.persistCAJDocumentMeta(attachment, sourceFileName, {
+            sourceIdentity: identity,
+            cajFormat: meta.format || "",
+            cajPageCount: Number(meta.pageCount || 0),
+            cajCacheValidated: true
+          });
+          return pdfPath;
+        }
+        try {
+          const cached = await this.validateCachedCAJPDF(pdfPath);
+          await this.storage.writeJSON(metaPath, {
+            ...meta,
+            cacheValidated: true,
+            pageCount: cached.pageCount,
+            outputBytes: cached.size,
+            sourceFileName
+          });
+          await this.persistCAJDocumentMeta(attachment, sourceFileName, {
+            sourceIdentity: identity,
+            cajFormat: meta.format || "",
+            cajPageCount: cached.pageCount,
+            cajCacheValidated: true
+          });
+          return pdfPath;
+        }
+        catch (_) {
+          // 旧版本可能在转换中断前写入了元数据；下面会原子地重建缓存。
+        }
+      }
+      this._cajConversions ||= new Map();
+      const key = this.storage.documentID(attachment);
+      if (this._cajConversions.has(key)) return this._cajConversions.get(key);
+      const task = (async () => {
+        const progress = new Zotero.ProgressWindow({ closeOnClick: false });
+        progress.changeHeadline("正在准备 CAJ");
+        progress.show();
+        const row = new progress.ItemProgress("attachment", sourceFileName);
+        const stage = new progress.ItemProgress("", "正在读取文件");
+        const started = Date.now();
+        let message = "正在读取文件";
+        const update = event => {
+          message = event.message;
+          stage.setText(`${message} · 已用 ${Math.floor((Date.now() - started) / 1000)} 秒`);
+          if (event.total > 0) row.setProgress(Math.min(95, Math.round(event.completed / event.total * 90)));
+        };
+        const timer = setInterval(() => update({ message }), 1000);
+        try {
+          const result = await this.convertCAJInWorker(sourcePath, update);
+          const normalizedPDF = result.pdf;
+          const { pageCount, format } = result;
+          update({ message: "正在保存 PDF" });
+          await this.storage.ensureDir(PathUtils.parent(pdfPath));
+          await IOUtils.write(pdfPath, normalizedPDF, { tmpPath: pdfPath + ".tmp" });
+          await this.storage.writeJSON(metaPath, {
+            ...(meta && typeof meta === "object" ? meta : {}),
+            identity,
+            version: CAJ_CACHE_VERSION,
+            format,
+            pageCount,
+            outputBytes: normalizedPDF.byteLength || normalizedPDF.length || 0,
+            cacheValidated: true,
+            sourceFileName
+          });
+          await this.persistCAJDocumentMeta(attachment, sourceFileName, {
+            sourceIdentity: identity,
+            cajFormat: format,
+            cajPageCount: pageCount,
+            cajCacheValidated: true
+          });
+          row.setProgress(100);
+          stage.setText(`已准备 ${pageCount} 页`);
+          progress.startCloseTimer(1800);
+          return pdfPath;
+        }
+        catch (error) {
+          row.setError();
+          stage.setText(`准备失败：${error?.message || error}`);
+          progress.startCloseTimer(8000);
+          throw error;
+        }
+        finally { clearInterval(timer); }
+      })();
+      this._cajConversions.set(key, task);
+      try { return await task; }
+      finally { this._cajConversions.delete(key); }
+    }
+
+    // HN/C8 格式交给随插件分发的 WebAssembly 转换模块（caj2pdf-core 编译产物，全平台可用）
+    async convertWithNativeBackend(sourcePath, format) {
+      return (await this.convertCAJInWorker(sourcePath)).pdf;
+    }
+
+    async convertCAJInWorker(sourcePath, onProgress = () => {}) {
+      const previous = this._cajWorkerQueue || Promise.resolve();
+      let release;
+      this._cajWorkerQueue = new Promise(resolve => { release = resolve; });
+      onProgress({ message: "等待转换" });
+      try {
+        await previous;
+        if (this._cajShuttingDown) throw new Error("插件已停止");
+        onProgress({ message: "正在读取文件" });
+        const bytes = this.normalizeCAJBytes(await this.storage.readBytes(sourcePath));
+        const format = LitMTrans.CAJConverter.detectFormat(bytes);
+        const module = format === "HN" || format === "C8" ? await this.loadNativeCAJModule() : null;
+        if ((format === "HN" || format === "C8") && !module) {
+          throw new Error(`CAJ 转换组件加载失败：${this._cajWasmError?.message || "请重启 Zotero 后重试"}`);
+        }
+        if (this._cajShuttingDown) throw new Error("插件已停止");
+        const WorkerClass = global.ChromeWorker || Zotero.getMainWindow()?.ChromeWorker;
+        if (!WorkerClass) throw new Error("当前 Zotero 无法启动 CAJ 后台转换线程");
+        return await new Promise((resolve, reject) => {
+          const worker = new WorkerClass("chrome://litmtrans/content/src/caj-worker.js");
+          this._cajWorkerTasks ||= new Set();
+          const finish = (error, result) => {
+            worker.terminate();
+            this._cajWorkerTasks.delete(cancel);
+            if (error) reject(error);
+            else resolve(result);
+          };
+          const cancel = () => finish(new Error("插件已停止"));
+          this._cajWorkerTasks.add(cancel);
+          worker.onmessage = ({ data }) => {
+            if (data.type === "progress") onProgress(data);
+            else if (data.type === "error") finish(new Error(data.message));
+            else if (data.type === "result") finish(null, { ...data, pdf: new Uint8Array(data.pdf) });
+          };
+          worker.onerror = event => {
+            event.preventDefault?.();
+            finish(new Error(event.message || "CAJ 后台转换失败"));
+          };
+          try {
+            // 每份文献使用独立线程，完成即释放 WASM 的高水位内存。
+            const source = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+              ? bytes.buffer
+              : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+            worker.postMessage({ source, wasm: module?.bytes }, [source]);
+          }
+          catch (error) { finish(error); }
+        });
+      }
+      finally { release(); }
+    }
+
+    // 加载随插件分发的 WebAssembly 转换模块并缓存
+    async loadNativeCAJModule() {
+      if (this._cajWasmModule) return this._cajWasmModule;
+      if (this._cajWasmLoading) return this._cajWasmLoading;
+      this._cajWasmLoading = (async () => {
+        try {
+          const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
+          const channel = NetUtil.newChannel({
+            uri: this.rootURI + "native/caj2pdf/caj2pdf.wasm",
+            loadUsingSystemPrincipal: true
+          });
+          const bytes = await new Promise((resolve, reject) => {
+            NetUtil.asyncFetch(channel, (input, status) => {
+              if (!Components.isSuccessCode(status)) {
+                reject(new Error(`无法读取 CAJ 转换组件（${status}）`));
+                return;
+              }
+              const stream = Cc["@mozilla.org/binaryinputstream;1"].createInstance(Ci.nsIBinaryInputStream);
+              try {
+                stream.setInputStream(input);
+                resolve(Uint8Array.from(stream.readByteArray(stream.available())));
+              }
+              catch (error) { reject(error); }
+              finally { stream.close(); }
+            });
+          });
+          this._cajWasmModule = { bytes };
+        }
+        catch (error) {
+          this._cajWasmError = error;
+          this._cajWasmModule = null;
+          Zotero.logError?.(new Error(`LitMTrans CAJ wasm 加载失败：${error?.message || error}`));
+        }
+        return this._cajWasmModule;
+      })();
+      try { return await this._cajWasmLoading; }
+      finally { this._cajWasmLoading = null; }
+    }
+
+    async convertSelectedCAJToPDF(win) {
+      const items = win?.ZoteroPane?.getSelectedItems?.() || [];
+      if (!items.length) {
+        this.alert(localize("请先选择包含 CAJ 附件的文献条目", "Please select an item with a CAJ attachment first"), win);
+        return;
+      }
+      let cajAttachment = null;
+      for (const item of items) {
+        cajAttachment = this.getCAJAttachment(item);
+        if (cajAttachment) break;
+      }
+      if (!cajAttachment) {
+        this.alert(localize("所选条目未找到 CAJ 格式附件", "No CAJ attachment found in the selected item"), win);
+        return;
+      }
+      try {
+        const baseCaj = U.safeStem(
+          (cajAttachment.attachmentFilename || "document.caj").replace(/\.caj$/i, "") || "document",
+          120
+        );
+        const pdfPath = await this.cachedPDFForCAJ(cajAttachment);
+        const title = `${baseCaj}.pdf`;
+        const sourcePath = await this.attachmentPath(cajAttachment);
+        const sourceIdentity = await this.storage.sourceIdentity(cajAttachment, sourcePath);
+        const metaPath = this.storage.path(cajAttachment, "caj-source", "source.meta.json");
+        const meta = await this.storage.readJSON(metaPath) || {};
+        let outputAttachment = null;
+        let created = false;
+        if (meta.exportIdentity === sourceIdentity && Number(meta.exportAttachmentID) > 0) {
+          const remembered = Zotero.Items.get(Number(meta.exportAttachmentID));
+          if (remembered && !remembered.deleted
+            && String(remembered.getField?.("title") || "") === title
+            && String(remembered.attachmentContentType || "").toLowerCase() === "application/pdf") {
+            try {
+              const rememberedPath = await remembered.getFilePathAsync?.() || remembered.getFilePath?.();
+              if (rememberedPath && await this.storage.exists(rememberedPath)) outputAttachment = remembered;
+            }
+            catch (_) {}
+          }
+        }
+        if (!outputAttachment) {
+          const options = { file: U.createLocalFile(pdfPath), libraryID: cajAttachment.libraryID };
+          if (cajAttachment.parentID) options.parentItemID = cajAttachment.parentID;
+          else options.collections = cajAttachment.getCollections();
+          outputAttachment = await Zotero.Attachments.importFromFile(options);
+          outputAttachment.setField("title", title);
+          await outputAttachment.saveTx();
+          created = true;
+          await this.storage.writeJSON(metaPath, {
+            ...meta,
+            exportAttachmentID: outputAttachment.id,
+            exportAttachmentKey: outputAttachment.key,
+            exportIdentity: sourceIdentity
+          });
+        }
+        const message = created
+          ? localize(`已将 CAJ 转换为 PDF 并添加至条目：\n${title}`, `Converted the CAJ file to PDF and added it to the item:\n${title}`)
+          : localize(`该文献已经有对应的 PDF 附件：\n${title}\n未重复创建。`, `A matching PDF attachment already exists:\n${title}\nNo duplicate was created.`);
+        this.alert(message, win);
+      }
+      catch (error) {
+        this.alert(localize(`CAJ 转换失败：${error.message || error}`, `CAJ conversion failed: ${error.message || error}`), win);
       }
     }
 
@@ -1607,7 +2486,7 @@
     async selectedAttachment(win) {
       const items = win?.ZoteroPane?.getSelectedItems?.() || [];
       if (!items.length) throw new Error(localize("请先选择一个带有附件的条目", "Select an item with an attachment first"));
-      return this.resolveAttachment(items[0]);
+      return this.getCAJAttachment(items[0]) || this.resolveAttachment(items[0]);
     }
 
     async selectReferenceFiles(win = null, currentPaths = []) {
@@ -2155,7 +3034,7 @@
     async openFromCurrentSelection(win) {
       try {
         const attachment = await this.selectedAttachment(win);
-        return this.openWorkbench(attachment, { window: win });
+        return await this.openWorkbench(attachment, { window: win });
       }
       catch (error) {
         this.alert(error.message, win);
@@ -2532,7 +3411,12 @@
     }
 
     async openWorkbench(itemOrID, options = {}) {
-      const attachment = await this.resolveAttachment(itemOrID);
+      const rawItem = typeof itemOrID === "number" || typeof itemOrID === "string"
+        ? Zotero.Items.get(Number(itemOrID))
+        : itemOrID;
+      // 选中文献条目时优先使用 CAJ 子附件。Zotero 的 getBestAttachment()
+      // 可能在同一条目同时存在 PDF 和 CAJ 时返回 PDF，导致 CAJ 入口被绕过。
+      const attachment = this.getCAJAttachment(rawItem) || await this.resolveAttachment(rawItem);
       const mainWindow = Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
       const win = mainWindow?.Zotero_Tabs?.add
         ? mainWindow
@@ -2546,6 +3430,12 @@
         try { runtime.window?.focus?.(); } catch (_) {}
         this.sendToPage(runtime, { type: "open-context", payload: runtime.pendingOpen });
         return tabID;
+      }
+
+      if (this.hasCAJAttachment(attachment)) {
+        const pdfPath = await this.cachedPDFForCAJ(attachment);
+        await this.ensureCAJReaderAttachment(attachment, pdfPath);
+        if (this.tabs.has(tabID)) return this.openWorkbench(attachment, options);
       }
 
       const parentItem = attachment.parentID ? Zotero.Items.get(attachment.parentID) : attachment;
@@ -2845,9 +3735,11 @@
       }
     }
 
-    async attachmentContext(attachmentID) {
+    async attachmentContext(attachmentID, prepareCAJ = true) {
       const attachment = await this.resolveAttachment(attachmentID);
-      const filePath = await this.attachmentPath(attachment);
+      const filePath = this.hasCAJAttachment(attachment)
+        ? (prepareCAJ ? await this.cachedPDFForCAJ(attachment) : this.storage.path(attachment, "caj-source", "source.pdf"))
+        : await this.attachmentPath(attachment);
       const parent = attachment.parentID ? Zotero.Items.get(attachment.parentID) : attachment;
       return {
         attachment,
@@ -2862,7 +3754,11 @@
       const context = await this.attachmentContext(attachmentID);
       if (U.extension(context.filePath) !== ".pdf") return { pageCount: 0 };
       try {
-        const pdf = await PDFLib.PDFDocument.load(await this.storage.readBytes(context.filePath), {
+        if (this.hasCAJAttachment(context.attachment)) {
+          const meta = await this.storage.readJSON(this.storage.path(context.documentID, "caj-source", "source.meta.json"));
+          if (meta?.cacheValidated && Number(meta.pageCount) > 0) return { pageCount: Number(meta.pageCount) };
+        }
+        const pdf = await PDFLib.PDFDocument.load(this.normalizeCAJBytes(await this.storage.readBytes(context.filePath)), {
           ignoreEncryption: true
         });
         return { pageCount: pdf.getPageCount() };
@@ -2875,12 +3771,13 @@
       }
     }
 
-    async stateForAttachment(attachmentID) {
-      const context = await this.attachmentContext(attachmentID);
+    async stateForAttachment(attachmentID, prepareCAJ = true) {
+      const context = await this.attachmentContext(attachmentID, prepareCAJ);
       const snapshot = await this.pipeline.snapshot(context);
-      const contentType = String(context.attachment.attachmentContentType || "").toLowerCase();
+      const contentType = U.extension(context.filePath) === ".pdf" ? "application/pdf" : String(context.attachment.attachmentContentType || "").toLowerCase();
       const documentMeta = await this.storage.getDocumentMeta(context.documentID);
       const readerMode = documentMeta?.readerMode === "stream" ? "stream" : "layout";
+      const isCAJ = this.hasCAJAttachment(context.attachment);
       return {
         pluginVersion: this.version,
         item: {
@@ -2890,6 +3787,7 @@
           attachmentTitle: String(context.attachment.getField?.("title") || context.attachment.attachmentFilename || ""),
           fileName: String(context.attachment.attachmentFilename || PathUtils.filename(context.filePath)),
           contentType,
+          isCAJ,
           documentID: context.documentID,
           // New documents intentionally start in layout mode. A document-level
           // value is kept alongside its translation artifacts, rather than in
@@ -3005,8 +3903,9 @@
             }
           };
           const initializePreview = async () => {
-          const attachment = await this.resolveAttachment(attachmentID);
-          if (!attachment.isPDFAttachment?.()) return { available: false };
+          const context = await this.attachmentContext(attachmentID);
+          const attachment = context.attachment;
+          if (U.extension(context.filePath) !== ".pdf") return { available: false };
           ensureTaskActive();
           if (runtime.pdfPreview && Number(runtime.pdfPreviewAttachmentID) === attachmentID) return { available: true };
           if (runtime.pdfPreview) {
@@ -3030,7 +3929,9 @@
             try { frame.setAttribute("src", "resource://zotero/reader/reader.html"); }
             catch (error) { finish(reject)(error); }
           });
-          const preview = await Zotero.Reader.openPreview(attachmentID, frame);
+          const preview = this.hasCAJAttachment(attachment)
+            ? await this.createCAJPreview(context, frame)
+            : await Zotero.Reader.openPreview(attachmentID, frame);
           preview._isLitMTransWorkbench = true;
           preview._runtime = runtime;
           if (preview._internalReader) {
@@ -3100,27 +4001,24 @@
           // nested iframe coordinates into the Zotero window's screen space.
           const controller = this;
           const hostWindow = runtime.browser?.ownerGlobal || Zotero.getMainWindow();
-          const popupset = hostWindow?.document?.getElementById?.("mainPopupSet")
-            || hostWindow?.document?.querySelector?.("popupset")
-            || runtime.popupset;
+          const popupset = hostWindow.document.createXULElement("popupset");
+          hostWindow.document.documentElement.appendChild(popupset);
           preview._window = hostWindow;
           preview._popupset = popupset;
           preview._openContextMenu = async ({ x, y, itemGroups }) => {
             try {
               if (!hostWindow) return;
-              const targetPopupset = hostWindow.document.getElementById("mainPopupSet")
-                || hostWindow.document.querySelector("popupset")
-                || runtime.popupset
-                || popupset;
+              const targetPopupset = popupset;
               if (!targetPopupset) return;
 
               const popup = hostWindow.document.createXULElement("menupopup");
               targetPopupset.appendChild(popup);
               const done = Zotero.Promise.defer();
-              popup.addEventListener("popuphidden", () => {
+              popup.addEventListener("popuphidden", event => {
+                if (event.target !== popup) return;
                 try { popup.remove(); } catch (_) {}
                 done.resolve();
-              }, { once: true });
+              });
 
               const openInLitMTransLabel = localize("在LitMTrans中打开", "Open in LitMTrans");
               const isOpenInLitMTrans = (it) => {
@@ -3220,6 +4118,7 @@
                 try {
                   popup.openPopupAtScreen(screenX, screenY, true);
                 } catch (e) {
+                  popup.remove();
                   controller.log(`popup.openPopupAtScreen error: ${e?.message || e}`);
                   done.resolve();
                 }
@@ -3236,6 +4135,7 @@
             if (task.openStarted && !task.openSettled) return;
             if (task.cleanupDone) return;
             task.cleanupDone = true;
+            try { popupset.remove(); } catch (_) {}
             try { preview.uninit?.(); } catch (_) {}
             finishTask();
           };
@@ -3533,7 +4433,7 @@
 
         case "reveal-native-reference": {
           const attachment = await this.resolveAttachment(attachmentID);
-          if (!attachment.isPDFAttachment?.()) {
+          if (!attachment.isPDFAttachment?.() && !this.hasCAJAttachment(attachment)) {
             throw new Error("这条引用来自PDF，但当前附件不是PDF文件");
           }
           const nativePageIndex = Number(payload.nativePageIndex);
@@ -3541,6 +4441,9 @@
           const pageIndex = Number.isFinite(nativePageIndex)
             ? Math.max(0, Math.trunc(nativePageIndex))
             : Math.max(0, Math.trunc(Number.isFinite(fallbackPage) && fallbackPage > 0 ? fallbackPage - 1 : 0));
+          if (this.hasCAJAttachment(attachment)) {
+            return this.dispatch(runtime, "reader-preview-jump", { page: pageIndex + 1 });
+          }
           await Zotero.Reader.open(attachment.id, { pageIndex });
           return { opened: true, pageIndex, page: pageIndex + 1 };
         }
@@ -3781,9 +4684,9 @@
 
         case "clear-document": {
           if (this.activeOperationMap(runtime.tabID).size) throw new Error("请先停止当前任务，再清除文档缓存");
-          const context = await this.attachmentContext(attachmentID);
-          await this.pipeline.clearDocument(context);
-          return this.stateForAttachment(attachmentID);
+          const attachment = await this.resolveAttachment(attachmentID);
+          const result = await this.clearStorageData({ target: "document", documentID: this.storage.documentID(attachment), category: "all" }, attachmentID);
+          return result.nextState;
         }
 
         case "get-storage-summary":
@@ -3916,6 +4819,7 @@
         apiKey: this.secrets.getLLMKey(translation.provider),
         chatAPIKey: this.secrets.getLLMKey(chat.provider),
         mineruToken: this.secrets.getMinerUToken(),
+        cajDoubleClickAction: ["ask", "litmtrans"].includes(U.getPref("cajDoubleClickAction", "default")) ? U.getPref("cajDoubleClickAction", "default") : "default",
         layoutReaderFonts,
         promptLibrary: this.promptLibrary(),
         hasChatAPIKey: chat.hasAPIKey,
@@ -4112,6 +5016,9 @@
       if (Object.prototype.hasOwnProperty.call(values || {}, "webInputMode")) {
         U.setPref("webInputMode", values.webInputMode === "clipboard" ? "clipboard" : "auto");
       }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "cajDoubleClickAction")) {
+        U.setPref("cajDoubleClickAction", ["ask", "litmtrans"].includes(values.cajDoubleClickAction) ? values.cajDoubleClickAction : "default");
+      }
       if (values && values.layoutReaderFonts && typeof values.layoutReaderFonts === "object" && !Array.isArray(values.layoutReaderFonts)) {
         const fonts = {};
         for (const [documentID, value] of Object.entries(values.layoutReaderFonts)) {
@@ -4252,6 +5159,7 @@
           images: "images",
           assets: "assets",
           translation: "translation",
+          cajSource: "caj-source",
           mineruResult: "mineru-result",
           chat: "chat",
           deepseekWeb: "deepseek-web",
@@ -4277,8 +5185,19 @@
         return { success: true, ...res };
       }
       if (target === "orphaned") {
-        const res = await this.storage.clearOrphanedDocuments();
-        return { success: true, ...res };
+        const summary = await this.storage.getStorageSummary();
+        let readerAttachmentsRemoved = 0;
+        let clearedBytes = 0;
+        const clearedDocumentIDs = [];
+        for (const document of summary.documents || []) {
+          if (!document.isOrphan) continue;
+          const result = await this.clearStorageData({ target: "document", documentID: document.id, category: "all" });
+          if (result.readerAttachmentRemoved) readerAttachmentsRemoved++;
+          clearedBytes += Number(result.clearedBytes || 0);
+          if (result.cleared) clearedDocumentIDs.push(document.id);
+        }
+        return { success: true, clearedBytes, clearedCount: clearedDocumentIDs.length,
+          clearedDocumentIDs, formatted: this.storage.formatBytes(clearedBytes), readerAttachmentsRemoved };
       }
       if (target === "document") {
         const docID = String(payload?.documentID || "");
@@ -4286,9 +5205,9 @@
         const subcategory = String(payload?.category || "all");
 
         // 安全互斥检测：若任何标签页正在对该文献进行操作，则禁止清除
-        for (const [tabID, opMap] of this.operationMap.entries()) {
+        for (const [tabID, opMap] of this.operations.entries()) {
           if (opMap && opMap.size > 0) {
-            const tabAttachment = this.readerItemID(tabID);
+            const tabAttachment = this.tabs.get(tabID)?.attachmentID;
             if (tabAttachment) {
               const tabItem = await Zotero.Items.getAsync(tabAttachment).catch(() => null);
               if (tabItem && this.storage.documentID(tabItem) === docID) {
@@ -4298,7 +5217,37 @@
           }
         }
 
-        await this.storage.clearDocumentSubcategory(docID, subcategory);
+        let readerAttachmentRemoved = false;
+        if (subcategory === "all" || subcategory === "cajSource") {
+          if (this._cajConversions?.has(docID) || this._cajReaderAttachments?.has(docID)) {
+            throw new Error("正在准备 CAJ 阅读缓存，请稍后再清理");
+          }
+          for (const runtime of this.tabs.values()) {
+            const item = Zotero.Items.get(runtime.attachmentID);
+            if (!item || this.storage.documentID(item) !== docID || !this.hasCAJAttachment(item)) continue;
+            if (runtime.pdfPreviewInitializationTasks?.size) throw new Error("阅读器正在加载，请稍后再清理");
+          }
+          const result = await this.removeCAJReaderAttachment(docID, { required: true });
+          readerAttachmentRemoved = Boolean(result.removed);
+          for (const runtime of this.tabs.values()) {
+            const item = Zotero.Items.get(runtime.attachmentID);
+            if (!item || this.storage.documentID(item) !== docID || !this.hasCAJAttachment(item)) continue;
+            try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
+            try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
+            runtime.pdfPreview = null;
+            runtime.pdfPreviewAttachmentID = null;
+            this.emit(runtime, { type: "caj-cache-cleared" });
+          }
+        }
+        const clearResult = await this.storage.clearDocumentSubcategory(docID, subcategory);
+        if (subcategory === "cajSource" && clearResult.cleared) {
+          await this.storage.setDocumentMeta(docID, {
+            isCAJ: true,
+            cajCacheValidated: false,
+            cajPageCount: 0,
+            cajFormat: ""
+          });
+        }
 
         let isCurrentDoc = false;
         if (currentAttachmentID) {
@@ -4311,10 +5260,25 @@
         }
 
         let nextState = null;
-        if (isCurrentDoc && (subcategory === "all" || subcategory === "translation")) {
-          nextState = await this.stateForAttachment(currentAttachmentID);
+        let isCurrentCAJ = false;
+        if (isCurrentDoc) {
+          try {
+            const currentItem = await Zotero.Items.getAsync(currentAttachmentID);
+            isCurrentCAJ = Boolean(currentItem && this.hasCAJAttachment(currentItem));
+          }
+          catch (_) {}
         }
-        return { success: true, isCurrentDoc, nextState };
+        if (isCurrentDoc && (subcategory === "all" || subcategory === "translation")) {
+          nextState = await this.stateForAttachment(currentAttachmentID, !(isCurrentCAJ && subcategory === "all"));
+        }
+        return {
+          success: true,
+          ...clearResult,
+          isCurrentDoc,
+          isCurrentCAJ,
+          readerAttachmentRemoved,
+          nextState
+        };
       }
       throw new Error(`未知的清理目标: ${target}`);
     }

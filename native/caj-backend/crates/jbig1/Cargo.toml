@@ -1,0 +1,11 @@
+[package]
+name = "caj2pdf-jbig1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust port of the custom JBigCodec used by CAJViewer (5-context MPS/ST, non-standard)."
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }

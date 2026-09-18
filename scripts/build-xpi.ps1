@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$SkipValidate
 )
@@ -34,6 +34,16 @@ Remove-Item -LiteralPath (Join-Path $stage "chrome.manifest") -Force -ErrorActio
 Copy-Item -LiteralPath (Join-Path $projectRoot "src/bootstrap.js") -Destination (Join-Path $stage "bootstrap.js") -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "src/prefs.js") -Destination (Join-Path $stage "prefs.js") -Force
 
+# 分发本地 CAJ 转换器（独立 Rust 组件，随插件包提供）。
+# 先清空旧副本再拷贝：Copy-Item 对已存在目录会把源目录整体嵌套进去，
+# 造成 exe 与 wasm 并存、路径错位（native\dist\caj2pdf\...）。
+$nativeDist = Join-Path $projectRoot "native\dist"
+$nativeStage = Join-Path $stage "native"
+Remove-Item -LiteralPath $nativeStage -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $nativeDist) {
+    Copy-Item -LiteralPath $nativeDist -Destination $nativeStage -Recurse -Force
+}
+
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 # Compress-Archive stores Windows path separators in ZIP entry names. Zotero
@@ -65,7 +75,7 @@ try {
     if ($invalidEntries.Count) {
         throw "XPI contains invalid ZIP path: $($invalidEntries -join ', ')"
     }
-    foreach ($required in @("manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/katex/LICENSE.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "PRIVACY.md", "THIRD_PARTY_NOTICES.md")) {
+    foreach ($required in @("manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "src/caj-worker.js", "src/caj-converter.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/katex/LICENSE.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "native/caj2pdf/caj2pdf.wasm", "native/caj2pdf/LICENSE", "PRIVACY.md", "THIRD_PARTY_NOTICES.md")) {
         if ($entries -notcontains $required) {
             throw "XPI missing required runtime file: $required"
         }

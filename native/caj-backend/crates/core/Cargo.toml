@@ -1,0 +1,23 @@
+[package]
+name = "caj2pdf-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core types, format detection, and CAJ/HN parsing for caj2pdf-rs."
+
+[dependencies]
+byteorder = { workspace = true }
+encoding_rs = { workspace = true }
+fontdue = { workspace = true }
+flate2 = "1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Internal crates. `caj2pdf-types` holds the data types shared with
+# `caj2pdf-pdf`; the codec + PDF-assembly crates are pulled in by
+# `convert::convert`.
+caj2pdf-types = { workspace = true }
+caj2pdf-jbig1 = { workspace = true }
+caj2pdf-jbig2 = { workspace = true }
+caj2pdf-pdf   = { workspace = true }

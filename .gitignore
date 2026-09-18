@@ -25,6 +25,9 @@ docs/deepseek-web-provider-upgrade-plan.md
 .env
 .env.local
 .env.*.local
+scripts/manage_feedbacks.py
+docs/feedback-management-guide.md
+feedbacks/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -47,3 +50,10 @@ __pycache__/
 *.pyc
 docs/repo-map.md
 DeepSeek网页版交互与实现机制笔记.md
+
+native/caj-backend/target/
+
+# CAJ 运行时产物会随插件发布；全局 dist/ 规则忽略构建目录时保留该目录。
+!native/dist/
+!native/dist/caj2pdf/
+!native/dist/caj2pdf/*

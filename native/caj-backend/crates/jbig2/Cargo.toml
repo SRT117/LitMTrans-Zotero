@@ -1,0 +1,12 @@
+[package]
+name = "caj2pdf-jbig2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust JBIG2 decoder for caj2pdf-rs, using pdfluent-jbig2."
+
+[dependencies]
+pdfluent-jbig2 = "0.2"
+thiserror = { workspace = true }
+tracing = { workspace = true }
