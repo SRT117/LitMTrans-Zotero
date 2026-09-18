@@ -47,7 +47,10 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(controller.includes('case "pdf-page-count"'), "workbench must be able to check the source PDF page count before translating");
   assert(workbench.includes('els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;'), "failed source PDFs must expose the retry action when retrying is safe");
   assert(workbench.includes("summary.documentsPrimaryBytes ??") && workbench.includes("summary.orphanedCoreBytes ??"), "storage chart segments must use non-overlapping document totals");
-  assert(deepSeekDriver.includes("if (options.throwOnTimeout !== false)"), "attachment readiness timeouts must fail explicitly instead of being mistaken for a successful upload");
+  assert(deepSeekDriver.includes("while (true)")
+    && deepSeekDriver.includes("网络较慢，DeepSeek仍在上传或解析附件，请继续等待…")
+    && deepSeekDriver.includes("if (options.throwOnTimeout === true)"),
+  "observed attachment uploads must keep waiting by default on slow networks");
   assert(deepSeekDriver.includes('"DEEPSEEK_ATTACHMENT_REJECTED"')
     && deepSeekDriver.includes('"DEEPSEEK_ATTACHMENT_TIMEOUT"'),
   "attachment rejection and readiness timeout must remain distinct outcomes");

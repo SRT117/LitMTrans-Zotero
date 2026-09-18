@@ -565,7 +565,7 @@
           if (uploadFiles.length) {
             options.emit?.({ type: "log", message: `[探针5-Provider] 正在向DeepSeek上传文献资料 (共 ${uploadFiles.length} 个附件)...` });
             try {
-              await driver.attachFiles(uploadFiles, signal);
+              await driver.attachFiles(uploadFiles, signal, { emit: options.emit });
               options.emit?.({ type: "log", message: "[探针5-Provider] 附件上传完成" });
             } catch (error) {
               if (error?.code !== "DEEPSEEK_ATTACHMENT_REJECTED") throw error;
@@ -578,7 +578,7 @@
           if (questionImages.length) {
             options.emit?.({ type: "log", message: `[DeepSeek网页] 正在附加本轮图片（${questionImages.length} 张）` });
             try {
-              await driver.attachImages(questionImages, signal);
+              await driver.attachImages(questionImages, signal, { emit: options.emit });
             } catch (error) {
               if (error?.code !== "DEEPSEEK_ATTACHMENT_REJECTED") throw error;
               options.emit?.({ type: "warning", message: `[DeepSeek网页] 本轮图片上传被拒绝，已跳过: ${error?.message || error}` });

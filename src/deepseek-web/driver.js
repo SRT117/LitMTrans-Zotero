@@ -337,41 +337,48 @@
         throw error;
       }
 
-      // 上传完成后以输入区发送按钮恢复可用及附件预览渲染完成为准，保底 60 秒给足慢网速上传与解析时间
-      const waitTimeout = Math.min(180000, Math.max(60000, filesPayload.length * 3000));
-      let ready;
-      try {
-        ready = await this.execute("wait-attachments-ready", {
-          timeout: waitTimeout,
-          expectedCount: filesPayload.length,
-          chatInputSelectors: SELECTORS.chatInput,
-          sendButtonSelectors: SELECTORS.sendButton
-        }, waitTimeout + 3000);
-      } catch (cause) {
-        const error = new Error(String(cause?.message || cause || "DeepSeek附件状态检查超时"));
-        error.code = "DEEPSEEK_ATTACHMENT_TIMEOUT";
-        throw error;
-      }
-
-      if (!ready?.ready) {
-        const rejected = !ready?.attachmentObserved;
-        if (options.throwOnTimeout !== false) {
-          const error = new Error(rejected
-            ? "DeepSeek网页当前未接受附件上传。"
-            : "DeepSeek附件仍在上传或解析，等待超时，请稍后重试。");
-          error.code = rejected
-            ? "DEEPSEEK_ATTACHMENT_REJECTED"
-            : "DEEPSEEK_ATTACHMENT_TIMEOUT";
-          throw error;
+      // 每轮只做有限时长的状态检查；只要网页已经显示上传迹象，就持续等待，
+      // 不因用户网速慢而中止或擅自降级。用户仍可通过任务停止按钮取消。
+      const waitTimeout = Math.min(60000, Math.max(30000, filesPayload.length * 1000));
+      let attachmentObserved = false;
+      while (true) {
+        U.throwIfAborted(signal);
+        let ready;
+        try {
+          ready = await this.execute("wait-attachments-ready", {
+            timeout: waitTimeout,
+            expectedCount: filesPayload.length,
+            chatInputSelectors: SELECTORS.chatInput,
+            sendButtonSelectors: SELECTORS.sendButton
+          }, waitTimeout + 3000);
+        } catch (cause) {
+          if (!attachmentObserved) {
+            const error = new Error(String(cause?.message || cause || "DeepSeek附件状态检查超时"));
+            error.code = "DEEPSEEK_ATTACHMENT_TIMEOUT";
+            throw error;
+          }
+          ready = { ready: false, attachmentObserved: true };
         }
-        if (rejected) {
+
+        attachmentObserved ||= Boolean(ready?.attachmentObserved);
+        if (ready?.ready) break;
+        if (!attachmentObserved) {
           const error = new Error("DeepSeek网页当前未接受附件上传。");
           error.code = "DEEPSEEK_ATTACHMENT_REJECTED";
           throw error;
         }
-        // 仅供明确允许后台继续上传的独立附件操作使用。
+        if (options.throwOnTimeout === true) {
+          const error = new Error("DeepSeek附件仍在上传或解析，等待超时，请稍后重试。");
+          error.code = "DEEPSEEK_ATTACHMENT_TIMEOUT";
+          throw error;
+        }
+        options.emit?.({
+          type: "progress",
+          phase: "deepseek-attachments",
+          message: "网络较慢，DeepSeek仍在上传或解析附件，请继续等待…"
+        });
         try {
-          Zotero.debug(`[DeepSeekWeb] 附件上传派发完成，等待就绪超时（已等待 ${waitTimeout}ms），继续放行由网页端后台完成`);
+          Zotero.debug(`[DeepSeekWeb] 附件仍在上传或解析（已继续等待 ${waitTimeout}ms）`);
         } catch (_) {}
       }
       if (options.settleMs) await U.sleep(Math.max(0, Number(options.settleMs) || 0), signal);
