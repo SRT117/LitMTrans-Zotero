@@ -4,6 +4,9 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
 
+  const PAGE_CACHE_ALERT_THRESHOLD_BYTES = 700 * 1024 * 1024; // 700 MB
+  const PAGE_CACHE_ALERT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000; // 3 天
+
   class Storage {
     constructor() {
       this.root = PathUtils.join(Zotero.Profile.dir, "litmtrans");
@@ -397,7 +400,9 @@
     }
 
     async clearDocument(itemOrID) {
+      const pageStats = await this.deepSeekWebPagesStatsAtDocumentDir?.(this.documentDir(itemOrID)) || { bytes: 0 };
       await this.remove(this.documentDir(itemOrID), true);
+      if (pageStats.bytes > 0) this.adjustDeepSeekWebPagesCacheBytes?.(-pageStats.bytes);
     }
 
     // Zotero's item-deletion notification is delivered after the item may no
@@ -416,7 +421,9 @@
           .map(value => Number(value))
           .filter(Number.isFinite);
         if (!identities.some(id => deleted.has(id))) continue;
+        const pageStats = await this.deepSeekWebPagesStatsAtDocumentDir?.(directory) || { bytes: 0 };
         await this.remove(directory, true);
+        if (pageStats.bytes > 0) this.adjustDeepSeekWebPagesCacheBytes?.(-pageStats.bytes);
         cleared.push(PathUtils.filename(directory));
       }
       return cleared;
@@ -555,13 +562,38 @@
       return { bytes, files, formatted: this.formatBytes(bytes) };
     }
 
+    async deepSeekWebPagesStatsAtDocumentDir(docDir) {
+      const webDir = PathUtils.join(docDir, "deepseek-web");
+      let bytes = 0;
+      let files = 0;
+      if (!await this.exists(webDir)) return { bytes, files };
+      for (const entry of await this.list(webDir)) {
+        const name = PathUtils.filename(entry);
+        const info = await this.stat(entry);
+        if (!info) continue;
+        if (info.type === "directory" && name.startsWith("pages-")) {
+          const stats = await this.dirStats(entry);
+          bytes += stats.bytes;
+          files += stats.files;
+        } else if (info.type !== "directory" && (name.startsWith("pages-") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png"))) {
+          bytes += Number(info.size || 0);
+          files++;
+        }
+      }
+      return { bytes, files };
+    }
+
     async getStorageSummary() {
       const documents = [];
       let documentsTotalBytes = 0;
+      let deepseekWebTotalBytes = 0;
+      let deepseekWebTotalFiles = 0;
       let cajTotalBytes = 0;
       let cajDocumentCount = 0;
       let orphanedCount = 0;
       let orphanedTotalBytes = 0;
+      let orphanedDeepSeekWebBytes = 0;
+      let orphanedCajBytes = 0;
 
       if (await this.exists(this.documentsRoot)) {
         const docDirs = await this.list(this.documentsRoot);
@@ -680,8 +712,40 @@
                 categories.chat.bytes += subStats.bytes;
                 categories.chat.files += subStats.files;
               } else if (name === "deepseek-web") {
-                categories.deepseekWeb.bytes += subStats.bytes;
-                categories.deepseekWeb.files += subStats.files;
+                const subEntries = await this.list(entry);
+                let pagesBytes = 0;
+                let pagesFiles = 0;
+                let metaBytes = 0;
+                let metaFiles = 0;
+                for (const sub of subEntries) {
+                  const sName = PathUtils.filename(sub);
+                  const sInfo = await this.stat(sub);
+                  if (!sInfo) continue;
+                  if (sInfo.type === "directory" && sName.startsWith("pages-")) {
+                    const ps = await this.dirStats(sub);
+                    pagesBytes += ps.bytes;
+                    pagesFiles += ps.files;
+                  } else if (sInfo.type !== "directory") {
+                    const fSize = Number(sInfo.size || 0);
+                    if (sName.startsWith("pages-") || sName.endsWith(".jpg") || sName.endsWith(".jpeg") || sName.endsWith(".png")) {
+                      pagesBytes += fSize;
+                      pagesFiles++;
+                    } else {
+                      metaBytes += fSize;
+                      metaFiles++;
+                    }
+                  } else {
+                    const otherStats = await this.dirStats(sub);
+                    metaBytes += otherStats.bytes;
+                    metaFiles += otherStats.files;
+                  }
+                }
+                categories.deepseekWeb.bytes += pagesBytes;
+                categories.deepseekWeb.files += pagesFiles;
+                if (metaFiles > 0) {
+                  categories.chat.bytes += metaBytes;
+                  categories.chat.files += metaFiles;
+                }
               } else if (name === "diagrams") {
                 categories.diagrams.bytes += subStats.bytes;
                 categories.diagrams.files += subStats.files;
@@ -794,9 +858,14 @@
             finalTitle = `文献 #${documentID}`;
           }
 
+          deepseekWebTotalBytes += categories.deepseekWeb.bytes;
+          deepseekWebTotalFiles += categories.deepseekWeb.files;
+
           if (isOrphan) {
             orphanedCount++;
             orphanedTotalBytes += docTotalBytes;
+            orphanedDeepSeekWebBytes += categories.deepseekWeb.bytes;
+            orphanedCajBytes += categories.cajSource.bytes;
           }
           documentsTotalBytes += docTotalBytes;
 
@@ -827,14 +896,24 @@
       // 按体积降序排序
       documents.sort((a, b) => b.totalBytes - a.totalBytes);
 
-      // 临时缓存统计
+      // 临时缓存统计：包含全局导出临时目录 + 所有文献的页面切片缓存（可随时现场重新生成）
       const tempStats = await this.dirStats(this.tempRoot);
+      const tempTotalBytes = tempStats.bytes + deepseekWebTotalBytes;
+      const tempFilesCount = tempStats.files + deepseekWebTotalFiles;
 
       // 离线引擎统计
       const edgeLocalDir = PathUtils.join(this.root, "edge-local-translation");
       const edgeStats = await this.dirStats(edgeLocalDir);
 
       const totalBytes = documentsTotalBytes + tempStats.bytes + edgeStats.bytes;
+      const documentsCoreBytes = Math.max(0, documentsTotalBytes - deepseekWebTotalBytes);
+      const orphanedCoreBytes = Math.max(0, orphanedTotalBytes - orphanedDeepSeekWebBytes);
+      const cajActiveBytes = Math.max(0, cajTotalBytes - orphanedCajBytes);
+      const documentsPrimaryBytes = Math.max(0, documentsCoreBytes - orphanedCoreBytes - cajActiveBytes);
+
+      // 零开销校准页面切图累计缓存大小
+      this.setDeepSeekWebPagesCacheBytes?.(deepseekWebTotalBytes);
+      U.setPref("deepseekWebCacheBytesInitialized", true);
 
       return {
         rootPath: this.root,
@@ -843,16 +922,28 @@
         totalBytesFormatted: this.formatBytes(totalBytes),
         documentsTotalBytes,
         documentsTotalBytesFormatted: this.formatBytes(documentsTotalBytes),
+        documentsCoreBytes,
+        documentsCoreBytesFormatted: this.formatBytes(documentsCoreBytes),
+        documentsPrimaryBytes,
+        documentsPrimaryBytesFormatted: this.formatBytes(documentsPrimaryBytes),
         cajTotalBytes,
         cajTotalBytesFormatted: this.formatBytes(cajTotalBytes),
+        cajActiveBytes,
+        cajActiveBytesFormatted: this.formatBytes(cajActiveBytes),
         cajDocumentCount,
         documentsCount: documents.length,
-        tempTotalBytes: tempStats.bytes,
-        tempTotalBytesFormatted: tempStats.formatted,
-        tempFilesCount: tempStats.files,
+        tempTotalBytes,
+        tempTotalBytesFormatted: this.formatBytes(tempTotalBytes),
+        tempFilesCount,
+        tempGlobalBytes: tempStats.bytes,
+        tempGlobalBytesFormatted: tempStats.formatted,
+        tempPagesBytes: deepseekWebTotalBytes,
+        tempPagesBytesFormatted: this.formatBytes(deepseekWebTotalBytes),
         orphanedCount,
         orphanedTotalBytes,
         orphanedTotalBytesFormatted: this.formatBytes(orphanedTotalBytes),
+        orphanedCoreBytes,
+        orphanedCoreBytesFormatted: this.formatBytes(orphanedCoreBytes),
         edgeLocalTotalBytes: edgeStats.bytes,
         edgeLocalTotalBytesFormatted: edgeStats.formatted,
         documents
@@ -862,13 +953,45 @@
     async clearTempFiles() {
       let clearedBytes = 0;
       let clearedFiles = 0;
+
+      // 1. 清理全局临时目录
       if (await this.exists(this.tempRoot)) {
         const stats = await this.dirStats(this.tempRoot);
-        clearedBytes = stats.bytes;
-        clearedFiles = stats.files;
+        clearedBytes += stats.bytes;
+        clearedFiles += stats.files;
         await this.remove(this.tempRoot, true);
         await this.ensureDir(this.tempRoot);
       }
+
+      // 2. 清理所有文献下的页面切图缓存 (deepseek-web/pages-*)，严格保留 session.json 会话元数据
+      if (await this.exists(this.documentsRoot)) {
+        const docDirs = await this.list(this.documentsRoot);
+        for (const docDir of docDirs) {
+          const webDir = PathUtils.join(docDir, "deepseek-web");
+          if (!await this.exists(webDir)) continue;
+          const subEntries = await this.list(webDir);
+          for (const sub of subEntries) {
+            const sName = PathUtils.filename(sub);
+            const sInfo = await this.stat(sub);
+            if (!sInfo) continue;
+            if (sInfo.type === "directory" && sName.startsWith("pages-")) {
+              const ps = await this.dirStats(sub);
+              clearedBytes += ps.bytes;
+              clearedFiles += ps.files;
+              await this.remove(sub, true);
+            } else if (sInfo.type !== "directory" && (sName.startsWith("pages-") || sName.endsWith(".jpg") || sName.endsWith(".jpeg") || sName.endsWith(".png"))) {
+              clearedBytes += Number(sInfo.size || 0);
+              clearedFiles++;
+              await this.remove(sub, false);
+            }
+          }
+        }
+      }
+
+      // 清零页面切图记账值
+      this.setDeepSeekWebPagesCacheBytes?.(0);
+      U.setPref("deepseekWebCacheBytesInitialized", true);
+
       return { clearedBytes, clearedFiles, formatted: this.formatBytes(clearedBytes) };
     }
 
@@ -910,11 +1033,13 @@
           }
         } catch (_) {}
         if (isOrphan) {
-            const stats = await this.dirStats(docDir);
-            clearedBytes += stats.bytes;
-            clearedCount++;
-            clearedDocumentIDs.push(documentID);
-            await this.remove(docDir, true);
+          const stats = await this.dirStats(docDir);
+          const pageStats = await this.deepSeekWebPagesStatsAtDocumentDir?.(docDir) || { bytes: 0 };
+          clearedBytes += stats.bytes;
+          clearedCount++;
+          clearedDocumentIDs.push(documentID);
+          await this.remove(docDir, true);
+          if (pageStats.bytes > 0) this.adjustDeepSeekWebPagesCacheBytes?.(-pageStats.bytes);
         }
       }
       return { clearedBytes, clearedCount, clearedDocumentIDs, formatted: this.formatBytes(clearedBytes) };
@@ -968,7 +1093,20 @@
       } else if (subcategory === "chat") {
         targets = [PathUtils.join(docDir, "chat")];
       } else if (subcategory === "deepseekWeb") {
-        targets = [PathUtils.join(docDir, "deepseek-web")];
+        const webDir = PathUtils.join(docDir, "deepseek-web");
+        if (await this.exists(webDir)) {
+          const subEntries = await this.list(webDir);
+          for (const sub of subEntries) {
+            const sName = PathUtils.filename(sub);
+            const sInfo = await this.stat(sub);
+            if (!sInfo) continue;
+            if (sInfo.type === "directory" && sName.startsWith("pages-")) {
+              targets.push(sub);
+            } else if (sInfo.type !== "directory" && (sName.startsWith("pages-") || sName.endsWith(".jpg") || sName.endsWith(".jpeg") || sName.endsWith(".png"))) {
+              targets.push(sub);
+            }
+          }
+        }
       } else if (subcategory === "diagrams") {
         targets = [PathUtils.join(docDir, "diagrams")];
       } else if (subcategory === "logs") {
@@ -990,6 +1128,9 @@
         }
       }
       const before = await measure(targets);
+      const pageStatsBefore = (!subcategory || subcategory === "all")
+        ? await this.deepSeekWebPagesStatsAtDocumentDir(docDir)
+        : null;
 
       if (!subcategory || subcategory === "all") {
         await this.remove(docDir, true);
@@ -1008,7 +1149,14 @@
       } else if (subcategory === "chat") {
         await this.remove(PathUtils.join(docDir, "chat"), true);
       } else if (subcategory === "deepseekWeb") {
-        await this.remove(PathUtils.join(docDir, "deepseek-web"), true);
+        for (const target of targets) {
+          const info = await this.stat(target);
+          if (info?.type === "directory") {
+            await this.remove(target, true);
+          } else if (info) {
+            await this.remove(target, false);
+          }
+        }
       } else if (subcategory === "diagrams") {
         await this.remove(PathUtils.join(docDir, "diagrams"), true);
       } else if (subcategory === "logs") {
@@ -1017,6 +1165,13 @@
       } else if (subcategory === "model" || subcategory === "other") {
         for (const target of targets) await this.remove(target, false);
       }
+
+      if (subcategory === "deepseekWeb" && before.bytes > 0 && typeof this.getDeepSeekWebPagesCacheBytes === "function") {
+        this.adjustDeepSeekWebPagesCacheBytes?.(-before.bytes);
+      } else if ((!subcategory || subcategory === "all") && pageStatsBefore?.bytes > 0) {
+        this.adjustDeepSeekWebPagesCacheBytes?.(-pageStatsBefore.bytes);
+      }
+
       return {
         cleared: true,
         clearedBytes: before.bytes,
@@ -1056,6 +1211,54 @@
         service.loadURI(Services.io.newFileURI(file));
         return true;
       }
+    }
+
+    getDeepSeekWebPagesCacheBytes() {
+      return Number(U.getPref("deepseekWebCacheBytes", 0)) || 0;
+    }
+
+    setDeepSeekWebPagesCacheBytes(bytes) {
+      const val = Math.max(0, Number(bytes) || 0);
+      U.setPref("deepseekWebCacheBytes", val);
+      return val;
+    }
+
+    recordDeepSeekWebPagesWritten(bytesWritten) {
+      return this.adjustDeepSeekWebPagesCacheBytes(Math.max(0, Number(bytesWritten) || 0));
+    }
+
+    adjustDeepSeekWebPagesCacheBytes(delta) {
+      const current = this.getDeepSeekWebPagesCacheBytes();
+      return this.setDeepSeekWebPagesCacheBytes(Math.max(0, current + (Number(delta) || 0)));
+    }
+
+    async ensureDeepSeekWebPagesCacheBytesInitialized() {
+      if (U.getPref("deepseekWebCacheBytesInitialized", false)) {
+        return this.getDeepSeekWebPagesCacheBytes();
+      }
+      let total = 0;
+      if (await this.exists(this.documentsRoot)) {
+        for (const docDir of await this.list(this.documentsRoot)) {
+          const info = await this.stat(docDir);
+          if (!info || info.type !== "directory") continue;
+          total += (await this.deepSeekWebPagesStatsAtDocumentDir(docDir)).bytes;
+        }
+      }
+      this.setDeepSeekWebPagesCacheBytes(total);
+      U.setPref("deepseekWebCacheBytesInitialized", true);
+      return total;
+    }
+
+    dismissDeepSeekWebCacheAlert(cooldownMs = PAGE_CACHE_ALERT_COOLDOWN_MS) {
+      const until = Date.now() + Math.max(0, Number(cooldownMs) || PAGE_CACHE_ALERT_COOLDOWN_MS);
+      U.setPref("deepseekWebCacheAlertDismissedUntil", until);
+    }
+
+    shouldAlertDeepSeekWebCache(currentBytes = null) {
+      const bytes = currentBytes !== null ? Number(currentBytes) : this.getDeepSeekWebPagesCacheBytes();
+      if (bytes < PAGE_CACHE_ALERT_THRESHOLD_BYTES) return false;
+      const dismissedUntil = Number(U.getPref("deepseekWebCacheAlertDismissedUntil", 0)) || 0;
+      return Date.now() > dismissedUntil;
     }
   }
 

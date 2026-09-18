@@ -548,17 +548,36 @@
 
         sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: true, count: payload.files.length } });
       } else if (action === "wait-attachments-ready") {
-        const timeout = Math.max(3000, Number(payload.timeout) || 15000);
+        const timeout = Math.max(1000, Number(payload.timeout) || 15000);
+        const expectedCount = Number(payload.expectedCount) || 0;
         const start = Date.now();
         let ready = false;
-        await delay(400);
         while (Date.now() - start < timeout) {
-          const loadingEl = doc?.querySelector("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading");
-          if (!loadingEl) {
+          const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
+          const composer = (input && (
+            input.closest?.("form, [class*='chat-input'], [class*='composer'], [class*='input-box'], [class*='bottom']")
+            || input.parentElement?.parentElement
+          )) || null;
+
+          const hasUploading = Boolean(
+            (composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
+          );
+
+          const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
+          if (sendBtn && !hasUploading) {
             ready = true;
             break;
           }
-          await delay(250);
+
+          if (!hasUploading && composer) {
+            const thumbs = composer.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment']");
+            if (thumbs.length > 0 && (expectedCount <= 0 || thumbs.length >= expectedCount)) {
+              ready = true;
+              break;
+            }
+          }
+
+          await delay(100);
         }
         sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ready } });
       } else if (action === "get-assistant-text") {

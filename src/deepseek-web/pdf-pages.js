@@ -146,8 +146,11 @@
       const candidates = ["pages-v2", ...Object.values(PAGE_IMAGE_PROFILES).map(profile => profile.cacheDir)];
       for (const cacheDir of candidates) {
         if (cacheDir === activeCacheDir) continue;
+        const cachePath = PathUtils.join(this.getPageImagesRoot(documentID), cacheDir);
         try {
-          await IOUtils.remove(PathUtils.join(this.getPageImagesRoot(documentID), cacheDir), { recursive: true, ignoreAbsent: true });
+          const stats = await this.storage.dirStats(cachePath);
+          await IOUtils.remove(cachePath, { recursive: true, ignoreAbsent: true });
+          if (stats.bytes > 0) this.storage.adjustDeepSeekWebPagesCacheBytes?.(-stats.bytes);
         } catch (error) {
           options.emit?.({ type: "warning", message: `[探针5-Provider] 页面图缓存清理失败: ${error?.message || error}` });
           return;
@@ -344,6 +347,7 @@
       const profile = pageImageProfile(options.quality);
       const pagesDir = this.getPagesDir(documentID, profile);
       await this.storage.ensureDir(pagesDir);
+      await this.storage.ensureDeepSeekWebPagesCacheBytesInitialized?.();
 
       const diagnostics = [];
       const emitDiagnostics = () => {
@@ -404,6 +408,7 @@
         return { images: targetPaths, downgraded: false, cached: true };
       }
 
+      let newBytesWritten = 0;
       for (let i = 0; i < strategy.groups.length; i++) {
         const group = strategy.groups[i];
         const filePath = targetPaths[i];
@@ -437,6 +442,20 @@
         const base64Data = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
         const bytes = base64ToUint8Array(base64Data);
         await IOUtils.write(filePath, bytes);
+        newBytesWritten += Number(bytes.byteLength || bytes.length || 0);
+      }
+
+      if (newBytesWritten > 0 && this.storage?.recordDeepSeekWebPagesWritten) {
+        const totalPagesBytes = this.storage.recordDeepSeekWebPagesWritten(newBytesWritten);
+        if (this.storage.shouldAlertDeepSeekWebCache && this.storage.shouldAlertDeepSeekWebCache(totalPagesBytes)) {
+          const formatted = this.storage.formatBytes ? this.storage.formatBytes(totalPagesBytes) : `${Math.round(totalPagesBytes / 1048576)} MB`;
+          options.emit?.({
+            type: "deepseek-web-cache-warning",
+            bytes: totalPagesBytes,
+            formatted
+          });
+          this.controller?.notifyDeepSeekWebCacheWarning?.({ bytes: totalPagesBytes, formatted });
+        }
       }
 
       const readyPaths = [];

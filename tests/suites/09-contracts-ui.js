@@ -40,9 +40,15 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   const xhtml = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
   const css = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+  const deepSeekDriver = fs.readFileSync(path.join(root, "src", "deepseek-web", "driver.js"), "utf8");
+  const deepSeekPages = fs.readFileSync(path.join(root, "src", "deepseek-web", "pdf-pages.js"), "utf8");
 
   assert(controller.includes('case "operation-state"'), "workbench must be able to reconcile lost operation events");
   assert(controller.includes('case "pdf-page-count"'), "workbench must be able to check the source PDF page count before translating");
+  assert(workbench.includes('els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;'), "failed source PDFs must expose the retry action when retrying is safe");
+  assert(workbench.includes("summary.documentsPrimaryBytes ??") && workbench.includes("summary.orphanedCoreBytes ??"), "storage chart segments must use non-overlapping document totals");
+  assert(deepSeekDriver.includes("if (options.throwOnTimeout !== false)"), "attachment readiness timeouts must fail by default so document chat can degrade safely");
+  assert(deepSeekPages.includes("adjustDeepSeekWebPagesCacheBytes?.(-stats.bytes)"), "obsolete page-image profiles must be deducted from the cache ledger");
   assert(controller.includes('pdf.getPageCount()'), "source PDF page count must come from the original PDF");
   assert(workbench.includes('recommendedTranslationModeForLongPDF'), "workbench must offer a long-PDF translation-mode recommendation");
   assert(xhtml.includes('当前所译文档超过150页'), "long-PDF recommendation text must be present in the workbench dialog");

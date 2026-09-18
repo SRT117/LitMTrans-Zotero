@@ -324,14 +324,24 @@
 
       if (res?.error) throw new Error(res.error);
 
-      // 上传完成后以输入区发送按钮恢复可用为准
-      const waitTimeout = Math.min(12000, Math.max(1500, filesPayload.length * 250));
+      // 上传完成后以输入区发送按钮恢复可用及附件预览渲染完成为准，保底 60 秒给足慢网速上传与解析时间
+      const waitTimeout = Math.min(180000, Math.max(60000, filesPayload.length * 3000));
       const ready = await this.execute("wait-attachments-ready", {
         timeout: waitTimeout,
+        expectedCount: filesPayload.length,
         chatInputSelectors: SELECTORS.chatInput,
         sendButtonSelectors: SELECTORS.sendButton
-      }, waitTimeout + 1000);
-      if (!ready?.ready) throw new Error("DeepSeek附件上传后未就绪");
+      }, waitTimeout + 3000).catch(() => null);
+
+      if (!ready?.ready) {
+        if (options.throwOnTimeout !== false) {
+          throw new Error("DeepSeek附件上传后未就绪，请检查网络后重试。");
+        }
+        // 仅供明确允许后台继续上传的独立附件操作使用；问答链路默认失败并触发降级。
+        try {
+          Zotero.debug(`[DeepSeekWeb] 附件上传派发完成，等待就绪超时（已等待 ${waitTimeout}ms），继续放行由网页端后台完成`);
+        } catch (_) {}
+      }
       if (options.settleMs) await U.sleep(Math.max(0, Number(options.settleMs) || 0), signal);
       return true;
     }

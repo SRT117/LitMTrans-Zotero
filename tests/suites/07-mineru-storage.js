@@ -195,6 +195,130 @@ async function testDeletedZoteroItemsClearDocumentCaches() {
   }
 }
 
+async function testDeepSeekWebPagesCacheAndClearTemp() {
+  const files = new Map([
+    ["/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json", JSON.stringify({ documentID: "1-ATTACH", url: "https://chat.deepseek.com/123" })],
+    ["/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3/Page_01.jpg", "image-bytes-1"],
+    ["/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3/Page_02.jpg", "image-bytes-2"],
+    ["/profile/litmtrans/documents/1-ATTACH/document.json", JSON.stringify({ itemID: 40 })]
+  ]);
+  const removedPaths = [];
+  let recordedBytes = 0;
+
+  const mockStorage = {
+    root: "/profile/litmtrans",
+    documentsRoot: "/profile/litmtrans/documents",
+    tempRoot: "/profile/litmtrans-tmp",
+    formatBytes(bytes) { return `${bytes} B`; },
+    documentDir(id) { return `/profile/litmtrans/documents/${id}`; },
+    async exists(p) {
+      return p === "/profile/litmtrans/documents"
+        || p === "/profile/litmtrans-tmp"
+        || p === "/profile/litmtrans/documents/1-ATTACH"
+        || p === "/profile/litmtrans/documents/1-ATTACH/deepseek-web"
+        || p === "/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3"
+        || files.has(p);
+    },
+    async list(dir) {
+      if (dir === "/profile/litmtrans/documents") return ["/profile/litmtrans/documents/1-ATTACH"];
+      if (dir === "/profile/litmtrans/documents/1-ATTACH") return [
+        "/profile/litmtrans/documents/1-ATTACH/deepseek-web",
+        "/profile/litmtrans/documents/1-ATTACH/document.json"
+      ];
+      if (dir === "/profile/litmtrans/documents/1-ATTACH/deepseek-web") return [
+        "/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json",
+        "/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3"
+      ];
+      if (dir === "/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3") return [
+        "/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3/Page_01.jpg",
+        "/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3/Page_02.jpg"
+      ];
+      return [];
+    },
+    async stat(p) {
+      if (p.endsWith("pages-v3") || p.endsWith("deepseek-web") || p.endsWith("1-ATTACH") || p === "/profile/litmtrans/documents" || p === "/profile/litmtrans-tmp") {
+        return { type: "directory" };
+      }
+      if (files.has(p)) {
+        return { type: "regular", size: files.get(p).length, lastModified: 1000 };
+      }
+      return null;
+    },
+    async dirStats(p) {
+      if (p === "/profile/litmtrans-tmp") return { bytes: 0, files: 0, formatted: "0 B" };
+      if (p.endsWith("deepseek-web")) {
+        const sessionBytes = files.get("/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json").length;
+        return { bytes: 26 + sessionBytes, files: 3, formatted: `${26 + sessionBytes} B` };
+      }
+      if (p.endsWith("pages-v3")) return { bytes: 26, files: 2, formatted: "26 B" };
+      return { bytes: 0, files: 0, formatted: "0 B" };
+    },
+    async readJSON(p) {
+      if (files.has(p)) return JSON.parse(files.get(p));
+      return null;
+    },
+    async remove(p, recursive) {
+      removedPaths.push(p);
+      files.delete(p);
+    },
+    async ensureDir() {},
+    getDeepSeekWebPagesCacheBytes() { return recordedBytes; },
+    setDeepSeekWebPagesCacheBytes(b) { recordedBytes = b; return b; },
+    adjustDeepSeekWebPagesCacheBytes(delta) {
+      return context.LitMTrans.Storage.prototype.adjustDeepSeekWebPagesCacheBytes.call(this, delta);
+    },
+    deepSeekWebPagesStatsAtDocumentDir(docDir) {
+      return context.LitMTrans.Storage.prototype.deepSeekWebPagesStatsAtDocumentDir.call(this, docDir);
+    }
+  };
+
+  // 1. 测试 getStorageSummary：切图汇总进 tempTotalBytes，session.json 归入 chat
+  const summary = await context.LitMTrans.Storage.prototype.getStorageSummary.call(mockStorage);
+  assert.equal(summary.tempTotalBytes, 26, "tempTotalBytes must include deepseekWeb page images");
+  assert.equal(summary.tempFilesCount, 2, "tempFilesCount must count deepseekWeb page images");
+  const doc = summary.documents[0];
+  const webCat = doc.categories.find(c => c.key === "deepseekWeb");
+  assert(webCat && webCat.bytes === 26 && webCat.files === 2, "deepseekWeb category must reflect page images");
+  const chatCat = doc.categories.find(c => c.key === "chat");
+  assert(chatCat && chatCat.files >= 1, "session.json must be categorized into chat, not deepseekWeb");
+  assert.equal(
+    summary.documentsPrimaryBytes + summary.cajActiveBytes + summary.orphanedCoreBytes + summary.tempTotalBytes + summary.edgeLocalTotalBytes,
+    summary.totalBytes,
+    "storage chart partitions must add up to the displayed total without overlap"
+  );
+
+  // 2. 测试 clearTempFiles 联动清理且保护 session.json
+  const clearRes = await context.LitMTrans.Storage.prototype.clearTempFiles.call(mockStorage);
+  assert.equal(clearRes.clearedBytes, 26, "clearedBytes must include cleaned page images");
+  assert(removedPaths.includes("/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3"), "pages-v3 folder must be removed");
+  assert(!removedPaths.includes("/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json"), "session.json MUST NOT be removed");
+  assert(!removedPaths.includes("/profile/litmtrans/documents/1-ATTACH/deepseek-web"), "entire deepseek-web directory MUST NOT be removed");
+  assert(files.has("/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json"), "session.json must survive");
+
+  // 3. 测试 clearDocumentSubcategory("deepseekWeb") 保护 session.json
+  files.set("/profile/litmtrans/documents/1-ATTACH/deepseek-web/pages-v3", "dummy");
+  recordedBytes = 26;
+  const subResult = await context.LitMTrans.Storage.prototype.clearDocumentSubcategory.call(mockStorage, "1-ATTACH", "deepseekWeb");
+  assert(subResult.cleared, "clearDocumentSubcategory must succeed");
+  assert(!removedPaths.includes("/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json"), "session.json must still not be removed by subcategory clear");
+  assert.equal(recordedBytes, 0, "clearing one document's page cache must decrement the cache ledger");
+
+  // 4. 测试 700MB 切图增量记账与冷却告警
+  context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 500 * 1024 * 1024);
+  assert.equal(recordedBytes, 500 * 1024 * 1024, "recording written bytes must accumulate");
+  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), false, "under 700MB must not alert");
+
+  context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 250 * 1024 * 1024);
+  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), true, "750MB must trigger alert");
+
+  context.LitMTrans.Storage.prototype.adjustDeepSeekWebPagesCacheBytes.call(mockStorage, -300 * 1024 * 1024);
+  assert.equal(recordedBytes, 450 * 1024 * 1024, "removed page caches must be deducted from the cache ledger");
+  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), false, "removing caches below the threshold must clear the alert condition");
+
+  context.LitMTrans.Storage.prototype.dismissDeepSeekWebCacheAlert.call(mockStorage, 3 * 86400 * 1000);
+  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), false, "dismissed alert must be silenced during cooldown");
+}
+
   return {
     testMinerUImageAssetValidation,
     testMinerUAutomaticPDFSplit,
@@ -202,5 +326,6 @@ async function testDeletedZoteroItemsClearDocumentCaches() {
     testLegacySecretMigration,
     testPortableMinerUZipFallback,
     testDeletedZoteroItemsClearDocumentCaches,
+    testDeepSeekWebPagesCacheAndClearTemp,
   };
 };

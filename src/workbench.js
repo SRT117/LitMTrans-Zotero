@@ -129,7 +129,7 @@
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button", "prompt-library-button",
       "copy-source-markdown-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
-      "translation-layout", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
+      "translation-layout", "empty-actions", "empty-parse-only-button", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
       "system-messages-button", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
       "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
       "deepseek-web-container", "deepseek-web-frame",
@@ -149,6 +149,8 @@
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "open-storage-manager-button", "clear-document-button", "save-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
+      "storage-chart-card", "storage-donut-chart", "storage-chart-legend",
+      "storage-cache-warning-banner", "storage-warning-banner-text", "storage-warning-clean-button", "storage-warning-dismiss-button", "storage-warning-close-button",
       "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
       "storage-caj-bytes", "storage-caj-count",
       "storage-temp-bytes", "storage-temp-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
@@ -657,10 +659,26 @@
     els["stop-button"].hidden = !running;
     els["translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
     els["manual-translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
+    if (els["empty-parse-button"]) {
+      els["empty-parse-button"].disabled = running || !state.data?.capabilities?.canTranslate;
+    }
+    if (els["empty-parse-only-button"]) {
+      els["empty-parse-only-button"].disabled = running || !state.data?.capabilities?.canParse;
+    }
     els["export-pdf-button"].disabled = running || exportBusy
       || !hasCurrentExportContent(state.mode === "layout", exportToolbarPane());
-    els["chat-send-button"].disabled = state.running.has("chat") || state.running.has("document");
-    els["chat-document-button"].disabled = state.running.has("chat") || state.running.has("document");
+    const isChatRunning = state.running.has("chat");
+    const isDocRunning = state.running.has("document");
+    els["chat-send-button"].disabled = isChatRunning || isDocRunning;
+    if (isChatRunning) {
+      els["chat-send-button"].textContent = "响应中…";
+      els["chat-send-button"].classList.add("is-loading");
+    }
+    else {
+      els["chat-send-button"].textContent = "发送";
+      els["chat-send-button"].classList.remove("is-loading");
+    }
+    els["chat-document-button"].disabled = isChatRunning || isDocRunning;
     if (els["copy-source-markdown-button"]) {
       els["copy-source-markdown-button"].disabled = copySourceMarkdownBusy || state.running.has("parse");
     }
@@ -755,6 +773,10 @@
     }
     if (type === "toast") {
       toast(event.message || "操作失败", event.level || "error");
+      return;
+    }
+    if (type === "deepseek-web-cache-warning") {
+      showDeepSeekWebCacheWarningBanner(event.bytes, event.formatted);
       return;
     }
     if (type === "export-reader-pdf") {
@@ -2761,7 +2783,10 @@
     els["source-placeholder"].hidden = showPDF || showParsedSource;
     els["retry-source-pdf-button"].textContent = isCAJ ? "重试加载转换后的 PDF" : "重试加载原始 PDF";
     els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;
-    els["empty-parse-button"].hidden = layout;
+    const hideEmptyActions = Boolean(layout);
+    if (els["empty-actions"]) els["empty-actions"].hidden = hideEmptyActions;
+    if (els["empty-parse-only-button"]) els["empty-parse-only-button"].hidden = hideEmptyActions;
+    els["empty-parse-button"].hidden = hideEmptyActions;
     // ReaderPreview needs a laid-out iframe to finish PDF.js initialization.
     // Keep it in the layout tree behind the loading placeholder instead of
     // using hidden="hidden" (display:none), which deadlocks Zotero 7.
@@ -3250,19 +3275,20 @@
     }
     const currentSent = (state.currentSession?.messages || []).some(message => message?.role === "user" && message.currentDocument);
     const currentTitle = String(state.data?.item?.title || state.data?.item?.fileName || "当前文献");
+    const isChatRunning = state.running.has("chat");
     els["context-status"].textContent = state.running.has("document")
       ? "正在解析添加的文件，请等待解析完成后再发送…"
       : (
         state.pendingDocuments.length
           ? `本轮将额外发送 ${state.pendingDocuments.length} 个文件：${state.pendingDocuments.map(item => item.name || "未命名文档").join("；")}`
           : (
-            currentSent
-              ? (
-                state.running.has("chat")
-                  ? `当前文献全文及图片已随本轮发送，正在阅读：${currentTitle}`
-                  : `当前文献全文及图片已附加，可以继续提问：${currentTitle}`
+            isChatRunning
+              ? `AI 正在响应回答中…（当前文献：${currentTitle}）`
+              : (
+                currentSent
+                  ? `当前文献全文及图片已附加，可以继续提问：${currentTitle}`
+                  : `首次提问会自动附上当前文献全文及图片：${currentTitle}`
               )
-              : `首次提问会自动附上当前文献全文及图片：${currentTitle}`
           )
       );
     els["remove-pending-documents-button"].disabled = !state.pendingDocuments.length;
@@ -3511,7 +3537,8 @@
       addAction("删除本轮", () => deleteChatTurn(message), "删除这条问题及其对应回答");
     }
     const bubble = document.createElement("div");
-    bubble.className = `chat-bubble${streaming ? " streaming-cursor" : ""}`;
+    const hasStreamingCursor = streaming && Boolean(message.content);
+    bubble.className = `chat-bubble${hasStreamingCursor ? " streaming-cursor" : ""}`;
     const messageQuotes = Array.isArray(message.referenceQuotes) ? message.referenceQuotes : [];
     if (messageQuotes.length) {
       const quoteList = document.createElement("div");
@@ -3570,6 +3597,7 @@
         resolveEvidence,
         onLocate: locateEvidence
       }));
+      bubble.appendChild(body);
     }
     else if (mapV2 && !mapV2.error) {
       body.className = "markdown-body chat-mindmap-body";
@@ -3586,10 +3614,12 @@
         onLocate: locateEvidence
       }));
       body.appendChild(open);
+      bubble.appendChild(body);
     }
     else if (map) {
       body.className = "markdown-body chat-mindmap-body";
       Mindmap.renderMindmap(body, map, openImagePreview);
+      bubble.appendChild(body);
     }
     else if (renderAssistantMarkdown) {
       body.className = "markdown-body";
@@ -3601,12 +3631,26 @@
         imageCitationDisplayText(displayContent, message.citedImages),
         { normalizeEscapedTeX: true, repairBareTeX: true }
       );
+      bubble.appendChild(body);
+    }
+    else if (streaming && !displayContent) {
+      const loadingWrap = document.createElement("div");
+      const hasReasoningText = Boolean(String(message.reasoning || "").trim());
+      loadingWrap.className = `chat-loading-indicator${hasReasoningText ? " chat-thinking-indicator" : ""}`;
+      const dots = document.createElement("span");
+      dots.className = "chat-loading-dots";
+      dots.innerHTML = '<span class="chat-loading-dot"></span><span class="chat-loading-dot"></span><span class="chat-loading-dot"></span>';
+      const label = document.createElement("span");
+      label.className = "chat-loading-text";
+      label.textContent = hasReasoningText ? "正在思考并组织回答…" : "AI 正在响应…";
+      loadingWrap.append(dots, label);
+      bubble.appendChild(loadingWrap);
     }
     else {
       body.className = "chat-raw";
       body.textContent = displayContent;
+      bubble.appendChild(body);
     }
-    bubble.appendChild(body);
     if (citedGallery) bubble.appendChild(citedGallery);
     if (collapsed) {
       const note = document.createElement("div");
@@ -3621,7 +3665,7 @@
     }
     // Keep message operations out of the reading line and at the bubble's
     // lower-left edge, where they do not compete with the content itself.
-    bubble.appendChild(actions);
+    if (!streaming || Boolean(displayContent)) bubble.appendChild(actions);
     if (reasoning) wrap.appendChild(reasoning);
     wrap.appendChild(bubble);
     return wrap;
@@ -3632,8 +3676,23 @@
     const shouldFollowLatest = state.chatFollowLatest || chatIsNearBottom(container);
     if (shouldFollowLatest) state.chatFollowLatest = true;
     container.replaceChildren();
-    const messages = state.currentSession?.messages || [];
-    const hasStreamingTurn = Boolean(state.streamingChatText || state.reasoning);
+    let messages = (state.currentSession?.messages || []).slice();
+    if (state.pendingComposerSubmission?.text || state.pendingComposerSubmission?.images?.length || state.pendingComposerSubmission?.documents?.length) {
+      const last = messages[messages.length - 1];
+      const pendingText = String(state.pendingComposerSubmission.text || "").trim();
+      if (!last || last.role !== "user" || String(last.content || "").trim() !== pendingText) {
+        messages.push({
+          id: "pending-user-submission",
+          role: "user",
+          content: pendingText,
+          attachments: state.pendingComposerSubmission.images || [],
+          documents: state.pendingComposerSubmission.documents || [],
+          referenceQuotes: state.referenceQuotes || []
+        });
+      }
+    }
+    const isChatRunning = state.running.has("chat");
+    const hasStreamingTurn = Boolean(state.streamingChatText || state.reasoning) || isChatRunning;
     if (!messages.length && !hasStreamingTurn) {
       const empty = document.createElement("div");
       empty.id = "chat-empty";
@@ -3689,12 +3748,6 @@
       renderChat();
       return;
     }
-    const output = stream.querySelector(".chat-raw");
-    if (!output) {
-      renderChat();
-      return;
-    }
-    output.textContent = state.streamingChatText;
     const reasoning = stream.querySelector(".chat-reasoning.streaming pre");
     if (state.reasoning && !reasoning) {
       // The first reasoning fragment needs its disclosure element created.
@@ -3702,6 +3755,16 @@
       return;
     }
     if (reasoning) reasoning.textContent = state.reasoning;
+
+    const output = stream.querySelector(".chat-raw");
+    if (state.streamingChatText) {
+      if (!output) {
+        renderChat();
+        return;
+      }
+      output.textContent = state.streamingChatText;
+    }
+
     requestAnimationFrame(() => {
       scrollChatToLatest();
       if (reasoning) reasoning.scrollTop = reasoning.scrollHeight;
@@ -3722,8 +3785,8 @@
     popup.replaceChildren();
     const messages = (state.currentSession?.messages || []).filter(message => message?.role === "user");
     const showNavigator = state.aiMode !== "web" && messages.length > 0;
-    els["chat-navigator-button"].disabled = !messages.length;
-    els["chat-navigator-button"].hidden = !showNavigator;
+    els["chat-navigator-button"].disabled = true;
+    els["chat-navigator-button"].hidden = true;
     if (!showNavigator) {
       popup.hidden = true;
       return;
@@ -4550,7 +4613,11 @@
     if (state.running.has("chat") || message?.role !== "user") return;
     state.reasoning = "";
     state.streamingChatText = "";
-    state.streamingChatInsertIndex = -1;
+    const userIndex = (state.currentSession?.messages || []).findIndex(m => m.id === message.id);
+    state.streamingChatInsertIndex = userIndex >= 0 ? userIndex + 1 : -1;
+    state.running.add("chat");
+    updateOperationUI();
+    renderChat();
     try {
       const result = await hostCall("chat-resend", {
         ...chatContextPayload(),
@@ -4563,6 +4630,9 @@
       }
     }
     catch (error) {
+      state.running.delete("chat");
+      updateOperationUI();
+      renderChat();
       if (!error.cancelled) toast(error.message, "error");
     }
   }
@@ -4576,7 +4646,11 @@
     if (text === null || !text.trim() || text.trim() === String(message.content || "").trim()) return;
     state.reasoning = "";
     state.streamingChatText = "";
-    state.streamingChatInsertIndex = -1;
+    const userIndex = (state.currentSession?.messages || []).findIndex(m => m.id === message.id);
+    state.streamingChatInsertIndex = userIndex >= 0 ? userIndex + 1 : -1;
+    state.running.add("chat");
+    updateOperationUI();
+    renderChat();
     try {
       const result = await hostCall("chat-edit-message", {
         ...chatContextPayload(),
@@ -4590,6 +4664,9 @@
       }
     }
     catch (error) {
+      state.running.delete("chat");
+      updateOperationUI();
+      renderChat();
       if (!error.cancelled) toast(error.message, "error");
     }
   }
@@ -7263,7 +7340,14 @@
         setStatus(`第 ${manualTranslationSteps.length} 轮补救命令已生成`, null, "running");
       } catch (error) { toast(String(error?.message || error), "error"); }
     });
-    els["empty-parse-button"].addEventListener("click", () => els["translate-button"].click());
+    els["empty-parse-only-button"]?.addEventListener("click", () => {
+      if (state.running.size > 0) return;
+      void runAction("parse", {}, { success: "解析完成" });
+    });
+    els["empty-parse-button"].addEventListener("click", () => {
+      if (state.running.size > 0) return;
+      els["translate-button"].click();
+    });
     els["reconnect-host-button"].addEventListener("click", reconnectHost);
     els["retry-source-pdf-button"].addEventListener("click", retrySourcePDF);
     els["stop-button"].addEventListener("click", async () => {
@@ -8002,8 +8086,13 @@
       els["chat-input"].value = "";
       state.reasoning = "";
       state.streamingChatText = "";
+      state.streamingChatInsertIndex = -1;
+      if (!isWeb) {
+        state.running.add("chat");
+        updateOperationUI();
+        renderChat();
+      }
       try {
-        const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
         const result = await hostCall("chat-send", {
           ...chatContextPayload(),
           text,
@@ -8052,6 +8141,11 @@
         }
       }
       catch (error) {
+        if (!isWeb) {
+          state.running.delete("chat");
+          updateOperationUI();
+          renderChat();
+        }
         if (state.pendingComposerSubmission) {
           if (!els["chat-input"].value) els["chat-input"].value = state.pendingComposerSubmission.text || "";
           state.pendingImages = state.pendingComposerSubmission.images || [];
@@ -8311,6 +8405,115 @@
     }
   }
 
+  function formatStorageBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (!n || n <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    const value = n / Math.pow(1024, i);
+    return `${value >= 100 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+  }
+
+  function renderStorageChart(summary) {
+    const graphicEl = els["storage-donut-chart"];
+    const legendEl = els["storage-chart-legend"];
+    if (!graphicEl || !summary) return;
+
+    const coreBytes = Number(summary.documentsPrimaryBytes ?? summary.documentsCoreBytes ?? 0);
+    const cajBytes = Number(summary.cajActiveBytes ?? 0);
+    const tempBytes = summary.tempTotalBytes || 0;
+    const edgeBytes = summary.edgeLocalTotalBytes || 0;
+    const orphanBytes = Number(summary.orphanedCoreBytes ?? 0);
+
+    const segments = [
+      { key: "core", label: "文献核心", bytes: coreBytes, formatted: summary.documentsCoreBytesFormatted || formatStorageBytes(coreBytes), color: "#3b82f6" },
+      { key: "caj", label: "CAJ缓存", bytes: cajBytes, formatted: summary.cajTotalBytesFormatted || formatStorageBytes(cajBytes), color: "#10b981" },
+      { key: "temp", label: "临时与切片", bytes: tempBytes, formatted: summary.tempTotalBytesFormatted || formatStorageBytes(tempBytes), color: "#f59e0b" }
+    ];
+    if (edgeBytes > 0) {
+      segments.push({ key: "edge", label: "离线引擎", bytes: edgeBytes, formatted: summary.edgeLocalTotalBytesFormatted || formatStorageBytes(edgeBytes), color: "#8b5cf6" });
+    }
+    if (orphanBytes > 0) {
+      segments.push({ key: "orphan", label: "失效残留", bytes: orphanBytes, formatted: summary.orphanedTotalBytesFormatted || formatStorageBytes(orphanBytes), color: "#ef4444" });
+    }
+
+    const totalValid = segments.reduce((acc, cur) => acc + cur.bytes, 0);
+
+    segments.forEach(s => {
+      s.percent = totalValid > 0 ? (s.bytes / totalValid * 100) : 0;
+      s.percentFormatted = s.percent > 0 ? (s.percent < 1 ? "<1%" : `${Math.round(s.percent)}%`) : "0%";
+    });
+
+    const radius = 34;
+    const circumference = 2 * Math.PI * radius;
+    let currentOffset = 0;
+
+    let svgCircles = "";
+    if (totalValid <= 0) {
+      svgCircles = `<circle cx="50" cy="50" r="${radius}" fill="none" stroke="var(--line)" stroke-width="12" opacity="0.35" />`;
+    } else {
+      svgCircles = segments.map(seg => {
+        if (seg.bytes <= 0) return "";
+        const dash = (seg.percent / 100) * circumference;
+        const gap = circumference - dash;
+        const offset = -currentOffset;
+        currentOffset += dash;
+        return `<circle class="donut-slice" data-key="${seg.key}" data-label="${seg.label}" data-size="${seg.formatted}" data-percent="${seg.percentFormatted}" cx="50" cy="50" r="${radius}" fill="none" stroke="${seg.color}" stroke-width="12" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 50 50)"><title>${seg.label}: ${seg.formatted} (${seg.percentFormatted})</title></circle>`;
+      }).join("");
+    }
+
+    graphicEl.innerHTML = `
+      <svg class="storage-donut-svg" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="${radius}" fill="none" stroke="var(--line)" stroke-width="12" opacity="0.2" />
+        ${svgCircles}
+        <text class="donut-center-total" x="50" y="47" text-anchor="middle">${escapeHTML(summary.totalBytesFormatted || "0 B")}</text>
+        <text class="donut-center-desc" x="50" y="58" text-anchor="middle">总占用</text>
+      </svg>
+    `;
+
+    const totalEl = graphicEl.querySelector(".donut-center-total");
+    const descEl = graphicEl.querySelector(".donut-center-desc");
+    graphicEl.querySelectorAll(".donut-slice").forEach(slice => {
+      slice.addEventListener("mouseenter", () => {
+        if (totalEl) totalEl.textContent = slice.dataset.size || "";
+        if (descEl) descEl.textContent = `${slice.dataset.label} ${slice.dataset.percent}`;
+      });
+      slice.addEventListener("mouseleave", () => {
+        if (totalEl) totalEl.textContent = summary.totalBytesFormatted || "0 B";
+        if (descEl) descEl.textContent = "总占用";
+      });
+    });
+
+    if (legendEl) {
+      legendEl.innerHTML = segments.map(seg => `
+        <div class="storage-legend-item" data-key="${seg.key}" title="${seg.label}: ${seg.formatted}">
+          <span class="storage-legend-dot" style="background-color: ${seg.color}"></span>
+          <span class="storage-legend-label">${escapeHTML(seg.label)}</span>
+          <span class="storage-legend-val">${seg.percentFormatted}</span>
+        </div>
+      `).join("");
+
+      legendEl.querySelectorAll(".storage-legend-item").forEach(item => {
+        const key = item.dataset.key;
+        item.addEventListener("mouseenter", () => {
+          const slice = graphicEl.querySelector(`.donut-slice[data-key="${key}"]`);
+          if (slice) slice.classList.add("slice-active");
+          const seg = segments.find(s => s.key === key);
+          if (seg && totalEl && descEl) {
+            totalEl.textContent = seg.formatted;
+            descEl.textContent = `${seg.label} ${seg.percentFormatted}`;
+          }
+        });
+        item.addEventListener("mouseleave", () => {
+          const slice = graphicEl.querySelector(`.donut-slice[data-key="${key}"]`);
+          if (slice) slice.classList.remove("slice-active");
+          if (totalEl) totalEl.textContent = summary.totalBytesFormatted || "0 B";
+          if (descEl) descEl.textContent = "总占用";
+        });
+      });
+    }
+  }
+
   function renderStorageSummary() {
     if (!currentStorageSummary) return;
     const s = currentStorageSummary;
@@ -8337,6 +8540,17 @@
         if (els["storage-clean-orphaned"]) els["storage-clean-orphaned"].hidden = true;
       }
     }
+
+    renderStorageChart(s);
+  }
+
+  function showDeepSeekWebCacheWarningBanner(bytes, formatted) {
+    const banner = els["storage-cache-warning-banner"];
+    const textEl = els["storage-warning-banner-text"];
+    if (!banner) return;
+    const text = `页面转图缓存已累积约 ${formatted || "700 MB"}，建议清理以释放磁盘空间（使用时随时现场重新生成）。`;
+    if (textEl) textEl.textContent = text;
+    banner.hidden = false;
   }
 
   function getStorageIcon(name) {
@@ -8581,7 +8795,7 @@
           subRow.className = "tree-sub-row";
           subRow.title = `${cat.label}（${cat.formatted}，${cat.files} 个文件）\n\n${cat.desc || ""}\n\n💡 提示：双击可直接在系统文件管理器中打开对应文件夹`;
 
-          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult" || cat.key === "diagrams")
+          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult" || cat.key === "diagrams" || cat.key === "deepseekWeb")
             ? `<button class="tree-action-link danger" type="button" data-action="clear-sub" data-id="${escapeHTML(doc.id)}" data-sub="${cat.key}" title="清空此单项缓存">清空</button>`
             : "";
 
@@ -8681,11 +8895,11 @@
     tempGroup.className = "tree-root-group";
     const tempHeader = document.createElement("div");
     tempHeader.className = "tree-root-header";
-    tempHeader.title = `临时与运行时缓存 (${currentStorageSummary.tempTotalBytesFormatted})\n\n双语对照 PDF 生成导出以及压缩包解压过程中产生的临时数据，可安全随时清空。\n\n💡 提示：双击可直接在系统文件管理器中打开临时目录`;
+    tempHeader.title = `临时与运行时缓存 (${currentStorageSummary.tempTotalBytesFormatted})\n\n包含 PDF 导出临时文件、解压碎片及文献页面的高清切图（可随时现场重新生成）。\n清除后不影响文献解析数据、翻译译文与历史会话，可安全随时清空。\n\n💡 提示：双击可直接在系统文件管理器中打开临时目录`;
     tempHeader.innerHTML = `
       <div class="tree-root-left">
         <span class="tree-node-icon">${getStorageIcon("temp")}</span>
-        <span>临时与运行时缓存 (PDF导出与解压碎片，可安全清空)</span>
+        <span>临时与碎片缓存 (PDF导出碎片与页面高清切图，可安全清空)</span>
       </div>
       <div class="tree-item-right">
         <span class="tree-item-size">${currentStorageSummary.tempTotalBytesFormatted}</span>
@@ -8774,6 +8988,35 @@
       });
     }
 
+    if (els["storage-warning-clean-button"]) {
+      els["storage-warning-clean-button"].addEventListener("click", async () => {
+        try {
+          const res = await hostCall("clear-storage-data", { target: "temp" });
+          toast(`已清空页面转图与临时缓存，释放了 ${res.formatted || "0 B"}`);
+          if (els["storage-cache-warning-banner"]) els["storage-cache-warning-banner"].hidden = true;
+          refreshStorageManager();
+        } catch (err) { toast(err.message, "error"); }
+      });
+    }
+
+    if (els["storage-warning-dismiss-button"]) {
+      els["storage-warning-dismiss-button"].addEventListener("click", async () => {
+        try {
+          await hostCall("dismiss-deepseek-web-cache-alert");
+          if (els["storage-cache-warning-banner"]) els["storage-cache-warning-banner"].hidden = true;
+          toast("已设为3天内不再提示转图缓存预警");
+        } catch (_) {
+          if (els["storage-cache-warning-banner"]) els["storage-cache-warning-banner"].hidden = true;
+        }
+      });
+    }
+
+    if (els["storage-warning-close-button"]) {
+      els["storage-warning-close-button"].addEventListener("click", () => {
+        if (els["storage-cache-warning-banner"]) els["storage-cache-warning-banner"].hidden = true;
+      });
+    }
+
     if (els["storage-open-root"]) {
       els["storage-open-root"].addEventListener("click", async () => {
         try {
@@ -8784,7 +9027,7 @@
 
     if (els["storage-clean-temp"]) {
       els["storage-clean-temp"].addEventListener("click", async () => {
-        if (!window.confirm("确定清空全部临时生成文件与解压缓存吗？")) return;
+        if (!window.confirm("确定清空全部临时缓存吗？\n包括生成的临时 PDF 文件、解压碎片以及文献页面的高清切图（不影响历史会话记录，使用时可现场自动重新生成）。")) return;
         try {
           const res = await hostCall("clear-storage-data", { target: "temp" });
           toast(`已清空临时缓存，释放了 ${res.formatted || "0 B"}`);

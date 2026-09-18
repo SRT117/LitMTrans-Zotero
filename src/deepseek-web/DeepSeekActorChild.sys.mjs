@@ -979,14 +979,32 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
     }
 
     if (action === "wait-attachments-ready") {
-      const timeout = Math.max(500, Number(payload.timeout) || 5000);
+      const timeout = Math.max(1000, Number(payload.timeout) || 15000);
+      const expectedCount = Number(payload.expectedCount) || 0;
       const start = Date.now();
       while (Date.now() - start < timeout) {
         const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
+        const composer = (input && (
+          input.closest?.("form, [class*='chat-input'], [class*='composer'], [class*='input-box'], [class*='bottom']")
+          || input.parentElement?.parentElement
+        )) || null;
+
+        const hasUploading = Boolean(
+          (composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
+        );
+
         const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
-        // DeepSeek 在附件仍在后台上传解析时禁用发送。按钮恢复可用即表示
-        // 当前附件已上传就绪，无需等待页面其他无关的加载状态。
-        if (sendBtn) return { ready: true };
+        // DeepSeek 在附件后台上传时禁用发送按钮。当发送按钮恢复可用且无加载动画时，表示附件已就绪
+        if (sendBtn && !hasUploading) return { ready: true };
+
+        // 兜底：若输入区中附件缩略图已渲染，且无上传加载动画，亦视作就绪
+        if (!hasUploading && composer) {
+          const thumbs = composer.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment']");
+          if (thumbs.length > 0 && (expectedCount <= 0 || thumbs.length >= expectedCount)) {
+            return { ready: true };
+          }
+        }
+
         await delay(100);
       }
       return { ready: false };

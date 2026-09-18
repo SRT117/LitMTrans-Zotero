@@ -760,17 +760,7 @@
       if (pageResult.error) throw new Error(pageResult.error);
       const imagePaths = pageResult.images || [];
       if (!imagePaths.length) throw new Error("未能生成页面图像，请确认文献已在预览中打开。");
-      try {
-        await driver.attachFiles(imagePaths, null);
-      } catch (error) {
-        const message = String(error?.message || "");
-        const hint = "页面图像添加失败，可稍后重试或改用「原文添加至AI」。";
-        this.sendToPage(runtime, {
-          type: "event",
-          payload: { type: "toast", message: hint, level: "warning" }
-        });
-        throw new Error(`页面图像上传失败：${message}`);
-      }
+      await driver.attachFiles(imagePaths, null);
       if (pageResult.downgraded && pageResult.message) {
         this.sendToPage(runtime, {
           type: "event",
@@ -781,18 +771,8 @@
     }
 
     async addPaperSourceToAI(runtime) {
-      this.sendToPage(runtime, {
-        type: "event",
-        payload: { type: "toast", message: "正在添加论文原文至DeepSeek...", level: "info" }
-      });
       try {
         const result = await this.appendPaperSourceToDeepSeek(runtime);
-        if (!result?.cancelled) {
-          this.sendToPage(runtime, {
-            type: "event",
-            payload: { type: "toast", message: "论文原文已成功添加至DeepSeek", level: "success" }
-          });
-        }
         return result;
       } catch (error) {
         this.log(`添加论文原文到DeepSeek失败: ${error?.message || error}`);
@@ -805,16 +785,8 @@
     }
 
     async addPaperPagesToAI(runtime) {
-      this.sendToPage(runtime, {
-        type: "event",
-        payload: { type: "toast", message: "正在将论文页面图像添加到AI...", level: "info" }
-      });
       try {
         const result = await this.appendPaperPagesToDeepSeek(runtime);
-        this.sendToPage(runtime, {
-          type: "event",
-          payload: { type: "toast", message: `论文页面图像已添加至DeepSeek（共 ${result?.attached || 0} 页）`, level: "success" }
-        });
         return result;
       } catch (error) {
         this.log(`添加论文页面图像到DeepSeek失败: ${error?.message || error}`);
@@ -3758,6 +3730,17 @@
       this.sendToPage(runtime, { type: "event", payload: event });
     }
 
+    notifyDeepSeekWebCacheWarning(payload = {}) {
+      const event = {
+        type: "deepseek-web-cache-warning",
+        bytes: Number(payload?.bytes || 0),
+        formatted: String(payload?.formatted || "700 MB")
+      };
+      for (const runtime of this.runtimes.values()) {
+        try { this.emit(runtime, event); } catch (_) {}
+      }
+    }
+
     async handleBridgeCall(runtime, method, payload, requestID) {
       try {
         const result = await this.dispatch(runtime, method, payload || {});
@@ -4973,6 +4956,10 @@
 
         case "copy-image":
           return this.copyImageData(runtime, payload);
+
+        case "dismiss-deepseek-web-cache-alert":
+          this.storage.dismissDeepSeekWebCacheAlert(payload?.cooldownMs);
+          return { success: true };
 
         default:
           throw new Error(`不支持的操作：${method}`);

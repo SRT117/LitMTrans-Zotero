@@ -49,6 +49,18 @@
       </div>
     </header>
 
+    <aside id="storage-cache-warning-banner" class="storage-warning-banner" hidden="hidden" aria-label="存储缓存提醒">
+      <div class="storage-warning-banner-left">
+        <span class="storage-warning-icon">💡</span>
+        <span id="storage-warning-banner-text">页面转图缓存已累积超过 700 MB，建议清理以释放磁盘空间（使用时随时现场重新生成）。</span>
+      </div>
+      <div class="storage-warning-banner-actions">
+        <button id="storage-warning-clean-button" class="button small primary" type="button">立即清空</button>
+        <button id="storage-warning-dismiss-button" class="button small" type="button">3天内不再提醒</button>
+        <button id="storage-warning-close-button" class="icon-button small" type="button" aria-label="关闭提醒" title="关闭">×</button>
+      </div>
+    </aside>
+
     <div class="progress-row" aria-live="polite">
       <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
       <div id="progress-label" class="progress-label">就绪</div>
@@ -97,9 +109,12 @@
             <div id="source-scroll" class="document-scroll" tabindex="0">
               <div id="source-placeholder" class="empty-state">
                 <div class="empty-mark">M</div>
-                <h2>开始翻译当前附件</h2>
-                <p>首次翻译会自动提取正文、公式、表格、图片与页面布局；结果只保存在本机Zotero配置目录。</p>
-                <button id="empty-parse-button" class="button button-primary" type="button">开始翻译</button>
+                <h2>尚未解析文档</h2>
+                <p>首次翻译前需要先解析正文、图片、公式、表格和页面结构。</p>
+                <div id="empty-actions" class="empty-actions">
+                  <button id="empty-parse-only-button" class="button" type="button" title="解析正文、图片、公式和页面结构">解析</button>
+                  <button id="empty-parse-button" class="button button-primary" type="button" title="解析并开始翻译当前阅读模式">解析并翻译</button>
+                </div>
                 <button id="retry-source-pdf-button" class="button" type="button" hidden="hidden">重试加载原始PDF</button>
               </div>
               <iframe id="source-pdf" class="source-pdf" title="Zotero Reader原始PDF" hidden="hidden"></iframe>
@@ -130,7 +145,7 @@
       <div id="sidebar-split-handle" class="sidebar-split-handle" role="separator" aria-label="调整对话侧栏宽度" aria-orientation="vertical" aria-valuemin="240" aria-valuenow="350" tabindex="0"></div>
 
       <aside class="ai-sidebar" aria-label="文献对话">
-        <div class="embedded-ai-topbar">
+        <div class="embedded-ai-topbar" hidden="hidden">
           <div class="embedded-ai-mode-tabs" role="tablist">
             <button id="ai-mode-api-button" class="ai-mode-tab active" type="button" role="tab" aria-selected="true" title="API深度问答模式">API对话</button>
             <button id="ai-mode-web-button" class="ai-mode-tab" type="button" role="tab" aria-selected="false" title="DeepSeek官方网页端免Key模式">DeepSeek网页</button>
@@ -561,30 +576,36 @@
       </header>
       <div class="storage-manager-body">
         <section class="storage-summary-board">
-          <div class="storage-summary-card primary">
-            <span class="storage-summary-label">插件总存储占用</span>
-            <strong id="storage-total-bytes" class="storage-summary-value">-</strong>
-            <span id="storage-root-path" class="storage-summary-path" title="">-</span>
+          <div id="storage-chart-card" class="storage-chart-card">
+            <div class="storage-chart-graphic" id="storage-donut-chart" aria-label="存储空间分布扇形图"></div>
+            <div class="storage-chart-legend" id="storage-chart-legend"></div>
           </div>
-          <div class="storage-summary-card">
-            <span class="storage-summary-label">已解析文献</span>
-            <strong id="storage-doc-count" class="storage-summary-value">-</strong>
-            <span id="storage-doc-bytes" class="storage-summary-sub">0 B</span>
-          </div>
-          <div class="storage-summary-card">
-            <span class="storage-summary-label">CAJ 转换缓存</span>
-            <strong id="storage-caj-bytes" class="storage-summary-value">-</strong>
-            <span id="storage-caj-count" class="storage-summary-sub">0 篇含 CAJ 缓存</span>
-          </div>
-          <div class="storage-summary-card">
-            <span class="storage-summary-label">临时与碎片缓存</span>
-            <strong id="storage-temp-bytes" class="storage-summary-value">-</strong>
-            <span id="storage-temp-count" class="storage-summary-sub">0 个文件</span>
-          </div>
-          <div class="storage-summary-card" id="storage-orphaned-card" hidden="hidden">
-            <span class="storage-summary-label">失效文献残留</span>
-            <strong id="storage-orphaned-bytes" class="storage-summary-value text-warning">-</strong>
-            <span id="storage-orphaned-count" class="storage-summary-sub">0 篇已删除</span>
+          <div class="storage-summary-cards-grid">
+            <div class="storage-summary-card primary">
+              <span class="storage-summary-label">插件总存储占用</span>
+              <strong id="storage-total-bytes" class="storage-summary-value">-</strong>
+              <span id="storage-root-path" class="storage-summary-path" title="">-</span>
+            </div>
+            <div class="storage-summary-card">
+              <span class="storage-summary-label">已解析文献</span>
+              <strong id="storage-doc-count" class="storage-summary-value">-</strong>
+              <span id="storage-doc-bytes" class="storage-summary-sub">0 B</span>
+            </div>
+            <div class="storage-summary-card">
+              <span class="storage-summary-label">CAJ 转换缓存</span>
+              <strong id="storage-caj-bytes" class="storage-summary-value">-</strong>
+              <span id="storage-caj-count" class="storage-summary-sub">0 篇含 CAJ 缓存</span>
+            </div>
+            <div class="storage-summary-card">
+              <span class="storage-summary-label">临时与碎片缓存</span>
+              <strong id="storage-temp-bytes" class="storage-summary-value">-</strong>
+              <span id="storage-temp-count" class="storage-summary-sub">0 个文件</span>
+            </div>
+            <div class="storage-summary-card" id="storage-orphaned-card" hidden="hidden">
+              <span class="storage-summary-label">失效文献残留</span>
+              <strong id="storage-orphaned-bytes" class="storage-summary-value text-warning">-</strong>
+              <span id="storage-orphaned-count" class="storage-summary-sub">0 篇已删除</span>
+            </div>
           </div>
         </section>
 
@@ -598,7 +619,7 @@
           </div>
           <div class="storage-toolbar-right">
             <button id="storage-open-root" class="button small" type="button" title="在系统文件资源管理器中打开存储根目录">打开存储目录</button>
-            <button id="storage-clean-temp" class="button small" type="button" title="清理临时生成的PDF和解压碎片">清空临时缓存</button>
+            <button id="storage-clean-temp" class="button small" type="button" title="清空临时生成的PDF、解压碎片及页面高清切图（可随时现场重新生成）">清空临时缓存</button>
             <button id="storage-clean-orphaned" class="button small button-warning-quiet" type="button" hidden="hidden" title="一键清理在Zotero中已删除文献的遗留数据">清理已失效文献</button>
             <button id="storage-refresh" class="button small" type="button" title="重新计算占用">刷新</button>
           </div>
