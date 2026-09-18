@@ -137,8 +137,12 @@
     }
 
     async snapshot(context) {
-      const parsed = await this.mineru.loadParsed(context.documentID);
-      const loadedStream = await this.translation.load(context.documentID);
+      const [parsed, loadedStream, layoutTranslations, sessionsBefore] = await Promise.all([
+        this.mineru.loadParsed(context.documentID),
+        this.translation.load(context.documentID),
+        this.layout.loadTranslations(context.documentID),
+        this.chat.listSessions(context.documentID)
+      ]);
       const sourceFingerprint = parsed.markdown ? U.hashString(parsed.markdown) : "";
       const streamStale = Boolean(
         loadedStream?.meta?.sourceFingerprint
@@ -153,13 +157,13 @@
             error: "解析正文已变化，旧流式译文已停用，请重新翻译"
           }
         : { ...loadedStream, stale: false, error: "" };
-      const layoutTranslations = await this.layout.loadTranslations(context.documentID);
-      const layout = await this.buildLayoutState(context.documentID, parsed, layoutTranslations);
+      const [layout, session] = await Promise.all([
+        this.buildLayoutState(context.documentID, parsed, layoutTranslations),
+        this.chat.loadSession(context.documentID, sessionsBefore[0]?.id || "")
+      ]);
       this.attachImageWidths(parsed, layout.model);
 
-      let sessions = await this.chat.listSessions(context.documentID);
-      const session = await this.chat.loadSession(context.documentID, sessions[0]?.id || "");
-      sessions = await this.chat.listSessions(context.documentID);
+      const sessions = await this.chat.listSessions(context.documentID);
 
       const canParse = LitMTrans.Constants.SUPPORTED_INPUT_EXTENSIONS.has(U.extension(context.filePath));
       const hasParsed = Boolean(parsed.markdown);
@@ -189,8 +193,10 @@
 
     async parse(context, payload = {}, emit = null, signal = null) {
       const settings = this.getSettings();
-      const beforeParsed = await this.mineru.loadParsed(context.documentID);
-      const beforeTranslation = await this.translation.load(context.documentID);
+      const [beforeParsed, beforeTranslation] = await Promise.all([
+        this.mineru.loadParsed(context.documentID),
+        this.translation.load(context.documentID)
+      ]);
       const previousFingerprint = beforeParsed.markdown ? U.hashString(beforeParsed.markdown) : "";
       const revisionCaptureRoot = this.storage.path(
         context.documentID,

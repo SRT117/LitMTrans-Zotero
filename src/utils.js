@@ -264,10 +264,19 @@
   function sleep(ms, signal) {
     throwIfAborted(signal);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, Math.max(0, Number(ms) || 0));
-      if (!signal) return;
-      const onAbort = () => {
+      let settled = false;
+      let onAbort = null;
+      const timer = setTimeout(() => {
+        settled = true;
+        if (onAbort) signal?.removeEventListener?.("abort", onAbort);
+        resolve();
+      }, Math.max(0, Number(ms) || 0));
+      if (!signal?.addEventListener) return;
+      onAbort = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        signal.removeEventListener?.("abort", onAbort);
         reject(new CancelledError(typeof signal.reason === "string" ? signal.reason : "操作已停止"));
       };
       signal.addEventListener("abort", onAbort, { once: true });

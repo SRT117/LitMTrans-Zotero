@@ -263,20 +263,35 @@
       const root = this.storage.path(documentID, "reference-context");
       const parsedRoot = PathUtils.join(root, "parsed");
       await this.storage.ensureDir(parsedRoot);
-      const fingerprints = [];
-      const documents = [];
-      for (let index = 0; index < paths.length; index++) {
-        U.throwIfAborted(signal);
+      const results = new Array(paths.length);
+      let nextIndex = 0;
+      let completedCount = 0;
+      let firstError = null;
+      const referenceController = U.newAbortController();
+      const referenceSignal = referenceController.signal;
+      const relayAbort = () => {
+        if (!referenceSignal.aborted) referenceController.abort(signal?.reason || "操作已停止");
+      };
+      if (signal?.aborted) relayAbort();
+      else signal?.addEventListener?.("abort", relayAbort, { once: true });
+      const prepareReference = async index => {
+        U.throwIfAborted(referenceSignal);
         const filePath = paths[index];
+        const fileName = PathUtils.filename(filePath) || filePath;
         const stat = await this.storage.stat(filePath);
-        if (!stat || stat.type === "directory") throw new Error(`参考文件不存在：${PathUtils.filename(filePath) || filePath}`);
+        if (!stat || stat.type === "directory") throw new Error(`参考文件不存在：${fileName}`);
         const extension = U.extension(filePath);
-        fingerprints.push([filePath, stat.size || 0, stat.lastModified || 0].join("|"));
-        emit?.({
+        const emitReference = event => {
+          if (!event) return;
+          const payload = { ...event };
+          if (payload.message) payload.message = `[参考 ${index + 1}/${paths.length}] ${payload.message}`;
+          emit?.(payload);
+        };
+        emitReference({
           type: "status",
           phase: "reference-context",
-          message: `正在准备参考文件 ${index + 1}/${paths.length}：${PathUtils.filename(filePath)}`,
-          progress: Math.round(index * 100 / Math.max(1, paths.length))
+          message: `正在准备：${fileName}`,
+          progress: Math.round(completedCount * 100 / Math.max(1, paths.length))
         });
         let markdown = "";
         if ([".md", ".markdown", ".txt"].includes(extension)) {
@@ -284,22 +299,56 @@
         }
         else if (C.SUPPORTED_INPUT_EXTENSIONS.has(extension)) {
           if (!this.mineru?.parseExternalReference) {
-            throw new Error(`参考文件解析服务未就绪，请重启LitMTrans后重试：${PathUtils.filename(filePath)}`);
+            throw new Error(`参考文件解析服务未就绪，请重启LitMTrans后重试：${fileName}`);
           }
           const parsed = await this.mineru.parseExternalReference(filePath, parsedRoot, {
             modelVersion: settings.mineruModel || "vlm",
             isOCR: false,
             enableFormula: true,
             enableTable: true
-          }, emit, signal);
+          }, emitReference, referenceSignal);
           markdown = parsed.markdown;
         }
         else {
           throw new Error(`暂不支持这种参考文件格式：${extension || "无扩展名"}`);
         }
         const compacted = compactReferenceMarkdown(markdown);
-        if (compacted) documents.push({ name: PathUtils.filename(filePath), markdown: compacted });
+        results[index] = {
+          fingerprint: [filePath, stat.size || 0, stat.lastModified || 0].join("|"),
+          document: compacted ? { name: fileName, markdown: compacted } : null
+        };
+        completedCount += 1;
+        emitReference({
+          type: "status",
+          phase: "reference-context",
+          message: `已准备：${fileName}`,
+          progress: Math.round(completedCount * 100 / Math.max(1, paths.length))
+        });
+      };
+      const runReferenceWorker = async () => {
+        while (!firstError) {
+          const index = nextIndex++;
+          if (index >= paths.length) return;
+          try {
+            await prepareReference(index);
+          }
+          catch (error) {
+            if (!firstError) {
+              firstError = error;
+              referenceController.abort(error?.message || "参考文件准备失败");
+            }
+          }
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: Math.min(2, Math.max(1, paths.length)) }, () => runReferenceWorker()));
       }
+      finally {
+        signal?.removeEventListener?.("abort", relayAbort);
+      }
+      if (firstError) throw firstError;
+      const fingerprints = results.map(result => result.fingerprint);
+      const documents = results.map(result => result.document).filter(Boolean);
       const identity = U.hashString([
         "v3_full_direct_corpus",
         settings.targetLanguage,
@@ -354,11 +403,12 @@
     async load(documentID, targetLanguage = null) {
       const settings = this.llm.getSettings();
       const paths = this.paths(documentID, targetLanguage || settings.targetLanguage);
-      return {
-        markdown: await this.storage.readText(paths.final, ""),
-        meta: await this.storage.readJSON(paths.meta, null),
-        live: await this.storage.readText(paths.live, "")
-      };
+      const [markdown, meta, live] = await Promise.all([
+        this.storage.readText(paths.final, ""),
+        this.storage.readJSON(paths.meta, null),
+        this.storage.readText(paths.live, "")
+      ]);
+      return { markdown, meta, live };
     }
 
     async audit(documentID, requestKind, settings, messages, timeout, promptCacheKey = "") {
@@ -493,8 +543,10 @@
         settings.targetLanguage,
         identity
       );
-      const meta = await this.storage.readJSON(paths.meta, null);
-      const cached = await this.storage.readText(paths.final, "");
+      const [meta, cached] = await Promise.all([
+        this.storage.readJSON(paths.meta, null),
+        this.storage.readText(paths.final, "")
+      ]);
       if (!options.force && cached && meta?.identity === identity && meta?.complete) {
         emit?.({ type: "translation", mode, markdown: cached, complete: true, cached: true });
         return { markdown: cached, meta, cached: true };
@@ -562,8 +614,10 @@
         model: edgeLocal ? `edge-on-device-v1-${sourceLanguage}` : "google-then-bing-web-v2-no-context",
         referenceIdentity: ""
       }, mode);
-      const cached = await this.storage.readText(paths.final, "");
-      const previous = await this.storage.readJSON(paths.meta, null);
+      const [cached, previous] = await Promise.all([
+        this.storage.readText(paths.final, ""),
+        this.storage.readJSON(paths.meta, null)
+      ]);
       if (!settings.force && cached && previous?.identity === identity && previous?.complete) {
         emit?.({ type: "translation", mode, markdown: cached, complete: true, cached: true });
         return { markdown: cached, meta: previous, cached: true };

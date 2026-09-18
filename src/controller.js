@@ -239,6 +239,8 @@
       this.windowBindings = new WeakMap();
       this.tabs = new Map();
       this.operations = new Map();
+      this.operationTasks = new Map();
+      this.operationStopping = new Map();
       this.diagramCacheLocks = new Map();
       this.readerHandlers = [];
       this.itemPaneSectionID = null;
@@ -310,7 +312,20 @@
       for (const operationMap of this.operations.values()) {
         for (const controller of operationMap.values()) controller.abort("插件已停止");
       }
+      const pendingOperations = [...this.operationTasks.values()]
+        .flatMap(tasks => [...tasks.values()]);
+      if (pendingOperations.length) {
+        const pending = Promise.allSettled(pendingOperations);
+        let timeout = null;
+        await Promise.race([
+          pending,
+          new Promise(resolve => { timeout = setTimeout(resolve, 5000); })
+        ]);
+        if (timeout) clearTimeout(timeout);
+      }
       this.operations.clear();
+      this.operationTasks.clear();
+      this.operationStopping.clear();
       if (this.diagnosticTimer) {
         clearInterval(this.diagnosticTimer);
         this.diagnosticTimer = null;
@@ -3469,9 +3484,11 @@
               try {
                 const attachment = await this.resolveAttachment(item);
                 const documentID = this.storage.documentID(attachment);
-                const parsed = await this.mineru.loadParsed(documentID);
-                const stream = await this.translation.load(documentID);
-                const layout = await this.layout.loadTranslations(documentID);
+                const [parsed, stream, layout] = await Promise.all([
+                  this.mineru.loadParsed(documentID),
+                  this.translation.load(documentID),
+                  this.layout.loadTranslations(documentID)
+                ]);
                 const states = [
                   parsed.markdown ? localize("已解析", "Parsed") : localize("未解析", "Not parsed"),
                   stream.markdown ? localize("有流式译文", "Streaming translation ready") : localize("无流式译文", "No streaming translation"),
@@ -3763,6 +3780,16 @@
       return this.operations.get(tabID) || new Map();
     }
 
+    operationTaskMap(tabID) {
+      if (!this.operationTasks.has(tabID)) this.operationTasks.set(tabID, new Map());
+      return this.operationTasks.get(tabID);
+    }
+
+    stoppingOperationSet(tabID) {
+      if (!this.operationStopping.has(tabID)) this.operationStopping.set(tabID, new Set());
+      return this.operationStopping.get(tabID);
+    }
+
     assertOperationAvailable(runtime, key) {
       const map = this.activeOperationMap(runtime.tabID);
       const activeKeys = [...map.keys()].filter(active => active !== key);
@@ -3779,7 +3806,7 @@
     beginOperation(runtime, key) {
       this.assertOperationAvailable(runtime, key);
       const map = this.operationMap(runtime.tabID);
-      map.get(key)?.abort("已由新的操作替代");
+      if (map.has(key)) throw new Error("上一项任务正在停止，请稍候再试");
       const controller = U.newAbortController(runtime.window);
       map.set(key, controller);
       this.emit(runtime, { type: "operation", operation: key, running: true });
@@ -3791,6 +3818,12 @@
       if (!map || map.get(key) !== controller) return;
       map.delete(key);
       if (!map.size) this.operations.delete(runtime.tabID);
+      const tasks = this.operationTasks.get(runtime.tabID);
+      tasks?.delete(key);
+      if (tasks && !tasks.size) this.operationTasks.delete(runtime.tabID);
+      const stopping = this.operationStopping.get(runtime.tabID);
+      stopping?.delete(key);
+      if (stopping && !stopping.size) this.operationStopping.delete(runtime.tabID);
       this.emit(runtime, { type: "operation", operation: key, running: false });
     }
 
@@ -3800,28 +3833,35 @@
       const runtime = this.tabs.get(tabID);
       if (key) {
         const controller = map.get(key);
-        if (controller) controller.abort("用户已停止操作");
-        map.delete(key);
-        if (runtime) this.emit(runtime, { type: "operation", operation: key, running: false });
+        if (controller) {
+          controller.abort("用户已停止操作");
+          this.stoppingOperationSet(tabID).add(key);
+          if (runtime) this.emit(runtime, { type: "operation", operation: key, running: true, stopping: true });
+        }
       }
       else {
         for (const [operation, controller] of map.entries()) {
           controller.abort("用户已停止操作");
-          if (runtime) this.emit(runtime, { type: "operation", operation, running: false });
+          this.stoppingOperationSet(tabID).add(operation);
+          if (runtime) this.emit(runtime, { type: "operation", operation, running: true, stopping: true });
         }
-        map.clear();
       }
-      if (!map.size) this.operations.delete(tabID);
     }
 
     async withOperation(runtime, key, task) {
       const controller = this.beginOperation(runtime, key);
-      try {
-        return await task(controller.signal, event => this.emit(runtime, event));
+      const operationTask = (async () => {
+        try {
+          return await task(controller.signal, event => this.emit(runtime, event));
+        }
+        finally {
+          this.finishOperation(runtime, key, controller);
+        }
+      })();
+      if (this.operations.get(runtime.tabID)?.get(key) === controller) {
+        this.operationTaskMap(runtime.tabID).set(key, operationTask);
       }
-      finally {
-        this.finishOperation(runtime, key, controller);
-      }
+      return operationTask;
     }
 
     async attachmentContext(attachmentID, prepareCAJ = true) {
@@ -3864,7 +3904,7 @@
       const context = await this.attachmentContext(attachmentID, prepareCAJ);
       const snapshot = await this.pipeline.snapshot(context);
       const contentType = U.extension(context.filePath) === ".pdf" ? "application/pdf" : String(context.attachment.attachmentContentType || "").toLowerCase();
-      const documentMeta = await this.storage.getDocumentMeta(context.documentID);
+      const documentMeta = snapshot?.parsed?.meta || await this.storage.getDocumentMeta(context.documentID);
       const readerMode = documentMeta?.readerMode === "stream" ? "stream" : "layout";
       const isCAJ = this.hasCAJAttachment(context.attachment);
       return {
@@ -3917,7 +3957,10 @@
         }
 
         case "operation-state":
-          return { operations: [...this.activeOperationMap(runtime.tabID).keys()] };
+          return {
+            operations: [...this.activeOperationMap(runtime.tabID).keys()],
+            stopping: [...(this.operationStopping.get(runtime.tabID) || [])]
+          };
 
         case "bridge-handshake":
           return { ready: true, pluginVersion: this.version, tabID: runtime.tabID };

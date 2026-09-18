@@ -9,6 +9,7 @@
   const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif", ".bmp", ".svg"]);
   const MINERU_UPLOAD_PAGE_LIMIT = 200;
   const MINERU_SPLIT_SEARCH_RADIUS = 20;
+  const MINERU_PART_CONCURRENCY = 2;
 
   function mineruBoundaryScore(previousText, nextText) {
     const previous = String(previousText || "").replace(/\s+/g, " ").trim();
@@ -731,6 +732,7 @@
       const parts = [];
       for (let index = 0; index < ranges.length; index++) {
         U.throwIfAborted(signal);
+        await U.sleep(0, signal);
         const range = ranges[index];
         const partPDF = await global.PDFLib.PDFDocument.create();
         const indices = Array.from({ length: range.pageCount }, (_, offset) => range.start + offset);
@@ -775,7 +777,7 @@
       return { part, submitted, resultItem, downloaded, extractDir, located };
     }
 
-    async mergeUploadPartResults(results, documentID, stagingDir) {
+    async mergeUploadPartResults(results, documentID, stagingDir, signal = null) {
       const rawParts = [];
       const cleanParts = [];
       const imageRecords = [];
@@ -785,6 +787,8 @@
       const contentPayloads = [];
       let nextImageIndex = 0;
       for (let index = 0; index < results.length; index++) {
+        U.throwIfAborted(signal);
+        if (index > 0) await U.sleep(0, signal);
         const result = results[index];
         const prefix = results.length > 1 ? `p${String(index + 1).padStart(3, "0")}-` : "";
         const rawMarkdown = await this.storage.readText(result.located.markdown, "");
@@ -883,35 +887,97 @@
       // All network and ZIP work happens in a staging directory. A failed
       // reparse therefore leaves the last readable document, images, and layout
       // intact instead of half-deleting the user's cache.
-      const oldClean = await this.storage.readText(cleanPath, "");
-      const oldLayout = await this.storage.readText(this.storage.path(documentID, "layout.json"), "");
+      const [oldClean, oldLayout] = await Promise.all([
+        this.storage.readText(cleanPath, ""),
+        this.storage.readText(this.storage.path(documentID, "layout.json"), "")
+      ]);
       const stagingDir = this.storage.temporaryDir("parse");
       await this.storage.remove(stagingDir, true);
       await this.storage.ensureDir(stagingDir);
-      emit?.({ type: "progress", phase: "mineru-prepare", progress: 3, message: "正在准备MinerU解析" });
+      let lastProgress = 3;
+      const reportProgress = event => {
+        if (!event) return;
+        const payload = { ...event };
+        const rawProgress = payload.progress;
+        const progress = Number(rawProgress);
+        if (rawProgress !== null && rawProgress !== undefined && Number.isFinite(progress)) {
+          lastProgress = Math.max(lastProgress, Math.min(100, progress));
+          payload.progress = lastProgress;
+        }
+        emit?.(payload);
+      };
+      reportProgress({ type: "progress", phase: "mineru-prepare", progress: 3, message: "正在准备MinerU解析" });
 
       try {
         // Keep this lightweight preflight request for service compatibility,
         // but quota is account metadata rather than document progress and
         // should not distract from the parsing messages shown to the reader.
-        await this.queryQuota(token, signal);
-        const uploadParts = await this.prepareUploadParts(filePath, stagingDir, options, emit, signal);
-        const partResults = [];
-        for (let index = 0; index < uploadParts.length; index++) {
-          U.throwIfAborted(signal);
-          partResults.push(await this.runUploadPart(
-            uploadParts[index],
-            index,
-            uploadParts.length,
-            options,
-            token,
-            stagingDir,
-            emit,
-            signal
-          ));
+        const quotaController = U.newAbortController();
+        const quotaSignal = quotaController.signal;
+        const relayQuotaAbort = () => {
+          if (!quotaSignal.aborted) quotaController.abort(signal?.reason || "操作已停止");
+        };
+        if (signal?.aborted) relayQuotaAbort();
+        else signal?.addEventListener?.("abort", relayQuotaAbort, { once: true });
+        const quotaTask = this.queryQuota(token, quotaSignal);
+        let uploadParts;
+        try {
+          uploadParts = await this.prepareUploadParts(filePath, stagingDir, options, reportProgress, signal);
+          await quotaTask;
         }
-        emit?.({ type: "progress", phase: "mineru-finish", progress: 90, message: "MinerU解析完成，正在合并结果" });
-        const merged = await this.mergeUploadPartResults(partResults, documentID, stagingDir);
+        catch (error) {
+          quotaController.abort(error?.message || "MinerU准备失败");
+          await quotaTask.catch(() => {});
+          throw error;
+        }
+        finally {
+          signal?.removeEventListener?.("abort", relayQuotaAbort);
+        }
+        const partResults = new Array(uploadParts.length);
+        let nextPartIndex = 0;
+        let firstPartError = null;
+        const partController = U.newAbortController();
+        const relayAbort = () => {
+          if (!partController.signal.aborted) partController.abort(signal?.reason || "操作已停止");
+        };
+        if (signal?.aborted) relayAbort();
+        else signal?.addEventListener?.("abort", relayAbort, { once: true });
+        const runPartWorker = async () => {
+          while (!firstPartError) {
+            try {
+              U.throwIfAborted(partController.signal);
+              const index = nextPartIndex++;
+              if (index >= uploadParts.length) return;
+              partResults[index] = await this.runUploadPart(
+                uploadParts[index],
+                index,
+                uploadParts.length,
+                options,
+                token,
+                stagingDir,
+                reportProgress,
+                partController.signal
+              );
+            }
+            catch (error) {
+              if (!firstPartError) {
+                firstPartError = error;
+                partController.abort(error?.message || "MinerU分片解析失败");
+              }
+            }
+          }
+        };
+        try {
+          await Promise.all(Array.from({
+            length: Math.min(MINERU_PART_CONCURRENCY, Math.max(1, uploadParts.length))
+          }, () => runPartWorker()));
+        }
+        finally {
+          signal?.removeEventListener?.("abort", relayAbort);
+        }
+        if (firstPartError) throw firstPartError;
+        reportProgress({ type: "progress", phase: "mineru-finish", progress: 90, message: "MinerU解析完成，正在合并结果" });
+        const merged = await this.mergeUploadPartResults(partResults, documentID, stagingDir, signal);
 
         const parsedAt = new Date().toISOString();
         await this.storage.writeJSON(PathUtils.join(stagingDir, "mineru-task.json"), {
@@ -957,8 +1023,10 @@
           partCount: uploadParts.length
         });
 
-        const newLayout = await this.storage.readText(PathUtils.join(stagingDir, "layout.json"), "");
-        const stagedAssetMap = await this.storage.readJSON(PathUtils.join(stagingDir, "asset-map.json"), {});
+        const [newLayout, stagedAssetMap] = await Promise.all([
+          this.storage.readText(PathUtils.join(stagingDir, "layout.json"), ""),
+          this.storage.readJSON(PathUtils.join(stagingDir, "asset-map.json"), {})
+        ]);
         if (newLayout) {
           await this.storage.writeJSON(PathUtils.join(stagingDir, "layout-revision.json"), {
             version: 1,
@@ -986,7 +1054,7 @@
         if (sourceChanged) await this.storage.clearTranslation(documentID, "stream");
         if (layoutChanged) await this.storage.clearTranslation(documentID, "layout");
 
-        emit?.({ type: "progress", phase: "done", progress: 100, message: "解析完成" });
+        reportProgress({ type: "progress", phase: "done", progress: 100, message: "解析完成" });
         return this.loadParsed(documentID);
       }
       finally {
@@ -996,17 +1064,22 @@
 
     async loadParsed(itemOrID) {
       const documentID = typeof itemOrID === "string" ? itemOrID : this.storage.documentID(itemOrID);
-      const markdown = await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
-      const meta = await this.storage.getDocumentMeta(documentID);
-      const hasLayout = await this.storage.exists(this.storage.path(documentID, "layout.json"));
+      const [markdown, meta, hasLayout, layoutRevision, imageMap, assetMap] = await Promise.all([
+        this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), ""),
+        this.storage.getDocumentMeta(documentID),
+        this.storage.exists(this.storage.path(documentID, "layout.json")),
+        this.storage.readJSON(this.storage.path(documentID, "layout-revision.json"), null),
+        this.storage.readJSON(this.storage.path(documentID, "image-map.json"), []),
+        this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
+      ]);
       return {
         documentID,
         markdown,
         meta,
         hasLayout,
-        layoutRevision: await this.storage.readJSON(this.storage.path(documentID, "layout-revision.json"), null),
-        imageMap: await this.storage.readJSON(this.storage.path(documentID, "image-map.json"), []),
-        assetMap: await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
+        layoutRevision,
+        imageMap,
+        assetMap
       };
     }
   }

@@ -2010,14 +2010,21 @@
 
     async loadLayout(documentID) {
       const path = this.storage.path(documentID, "layout.json");
-      const payload = await this.storage.readJSON(path, null);
+      const [rawText, modelPayload] = await Promise.all([
+        this.storage.readText(path, ""),
+        this.storage.readJSON(this.storage.path(documentID, "model.json"), [])
+      ]);
+      let payload = null;
+      try {
+        payload = rawText ? JSON.parse(rawText) : null;
+      }
+      catch (_) {}
       const pages = payload?.pdf_info;
       if (!Array.isArray(pages)) throw new Error("当前文献解析结果缺少页面布局，请重新解析");
-      const modelPayload = await this.storage.readJSON(this.storage.path(documentID, "model.json"), []);
       const modelPages = Array.isArray(modelPayload)
         ? modelPayload
         : (Array.isArray(modelPayload?.pages) ? modelPayload.pages : []);
-      return { payload, pages, modelPages, rawText: await this.storage.readText(path, "") };
+      return { payload, pages, modelPages, rawText };
     }
 
     async sourceFingerprint(documentID) {
@@ -2041,8 +2048,10 @@
     async ensureRevision(documentID) {
       const existing = await this.loadRevision(documentID);
       if (existing) return existing;
-      const layout = await this.loadLayout(documentID);
-      const assetMap = await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {});
+      const [layout, assetMap] = await Promise.all([
+        this.loadLayout(documentID),
+        this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
+      ]);
       const revision = {
         version: 1,
         sourceFingerprint: U.hashString(layout.rawText || ""),
@@ -2141,10 +2150,12 @@
     // A parsed layout revision is published atomically with layout.json and
     // asset-map.json. Translation metadata may intentionally describe an older
     // source after re-parsing, so it cannot validate this cache.
-    async buildModel(documentID, translations = null, formulaReplacements = null, knownRevision = null) {
-      const loaded = await this.loadTranslations(documentID);
-      const map = translations || loaded.translations || {};
-      const formulaMap = formulaReplacements || loaded.formulaReplacements || {};
+    async buildModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null) {
+      const loaded = translations === null || formulaReplacements === null
+        ? await this.loadTranslations(documentID)
+        : null;
+      const map = translations || loaded?.translations || {};
+      const formulaMap = formulaReplacements || loaded?.formulaReplacements || {};
       const translationsHash = U.hashString(JSON.stringify(map) + "|" + JSON.stringify(formulaMap));
       const currentFingerprint = String(
         typeof knownRevision === "object" ? knownRevision?.sourceFingerprint : knownRevision || ""
@@ -2170,6 +2181,7 @@
       } catch (_) {}
 
       const { pages, modelPages, rawText } = await this.loadLayout(documentID);
+      U.throwIfAborted(signal);
       const sourceFingerprint = U.hashString(rawText || "");
       const assetMap = await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {});
       const assetMapHash = U.hashString(JSON.stringify(assetMap));
@@ -2178,7 +2190,10 @@
         const stored = assetMap[key] || assetMap[Asset.normalizeAssetKey(Asset.basename(key))] || "";
         return stored ? this.storage.resourceURL(documentID, stored) : "";
       };
-      const flatPages = pages.map((page, index) => {
+      const flatPages = [];
+      for (let index = 0; index < pages.length; index++) {
+        U.throwIfAborted(signal);
+        const page = pages[index];
         const model = this.flattenPage(page, index, documentID, assetMap);
         model.blocks = model.blocks.map(block => {
           const formulaItems = (block.formulaItems || []).map(item => ({
@@ -2202,20 +2217,27 @@
             formulaItems
           };
         });
-        return model;
-      });
+        flatPages.push(model);
+        if (index % 4 === 3) await U.sleep(0, signal);
+      }
 
       // Body-column evidence is established across the document. A page with
       // mostly figures or equations may then borrow only the
       // geometry of its nearest proven neighbour, never its wording.
-      const provisional = pages.map((page, index) => {
+      const provisional = [];
+      for (let index = 0; index < pages.length; index++) {
+        U.throwIfAborted(signal);
+        const page = pages[index];
         page.page_idx = Number(page.page_idx ?? index);
         const flat = flatPages[index];
         const ocr = collectModelOCRBoxes(modelPages[index] || [], flat.width, flat.height);
         const prepared = prepareFlowItems(page, flat.blocks, ocr);
-        return { profiles: bodyColumnProfiles(prepared.items, flat.width, flat.height) };
-      });
-      const contexts = pages.map((_page, index) => {
+        provisional.push({ profiles: bodyColumnProfiles(prepared.items, flat.width, flat.height) });
+        if (index % 4 === 3) await U.sleep(0, signal);
+      }
+      const contexts = [];
+      for (let index = 0; index < pages.length; index++) {
+        U.throwIfAborted(signal);
         const previous = [];
         const following = [];
         for (let cursor = index - 1; cursor >= 0; cursor--) {
@@ -2236,22 +2258,28 @@
             (neighborColumnProfiles[column] ||= []).push(...profiles);
           }
         }
-        return { hasPreviousBody: Boolean(previous.length), neighborColumnProfiles };
-      });
+        contexts.push({ hasPreviousBody: Boolean(previous.length), neighborColumnProfiles });
+        if (index % 4 === 3) await U.sleep(0, signal);
+      }
       const singleColumnProfile = singleColumnBodyPromotionEnabled()
         ? inferSingleColumnProfile(pages)
         : null;
-      const restored = pages.map((page, index) =>
-        prepareRestoredPage(
-          page,
+      const restored = [];
+      for (let index = 0; index < pages.length; index++) {
+        U.throwIfAborted(signal);
+        restored.push(prepareRestoredPage(
+          pages[index],
           flatPages[index],
           modelPages[index] || [],
           resolveAsset,
           contexts[index],
           singleColumnProfile
         ));
+        if (index % 4 === 3) await U.sleep(0, signal);
+      }
       let mainTitleSeen = false;
       for (let index = 0; index < restored.length; index++) {
+        U.throwIfAborted(signal);
         const used = expandSpecialAbsoluteBlocks(
           restored[index].absoluteBlocks,
           restored[index].streams,
@@ -2260,6 +2288,7 @@
           !mainTitleSeen
         );
         if (used) mainTitleSeen = true;
+        if (index % 4 === 3) await U.sleep(0, signal);
       }
       const bodyStreams = restored.flatMap(page => page.streams.filter(stream =>
         ["body_candidate", "merged_body"].includes(stream.debugRole)));
@@ -2346,6 +2375,7 @@
       };
 
       try {
+        U.throwIfAborted(signal);
         await this.storage.writeJSON(compiledPath, {
           // Version 11 adds per-row paragraphs for nomenclature panels.
           version: 11,
@@ -2359,9 +2389,8 @@
       return model;
     }
 
-    async extractRecords(documentID) {
-      const { pages } = await this.loadLayout(documentID);
-      const assetMap = await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {});
+    extractRecordsFromLayout(layout, documentID, assetMap = {}) {
+      const pages = Array.isArray(layout?.pages) ? layout.pages : [];
       const records = [];
       for (let index = 0; index < pages.length; index++) {
         const model = this.flattenPage(pages[index], index, documentID, assetMap);
@@ -2385,6 +2414,20 @@
         }
       }
       return records;
+    }
+
+    async extractRecords(documentID, preloadedLayout = null, preloadedAssetMap = null) {
+      let layout = preloadedLayout;
+      let assetMap = preloadedAssetMap;
+      if (!layout || assetMap === null) {
+        [layout, assetMap] = await Promise.all([
+          layout || this.loadLayout(documentID),
+          assetMap === null
+            ? this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
+            : Promise.resolve(assetMap)
+        ]);
+      }
+      return this.extractRecordsFromLayout(layout, documentID, assetMap);
     }
 
     async extractFormulaContext(documentID) {
@@ -2531,11 +2574,12 @@
     async loadTranslations(documentID, targetLanguage = null) {
       const settings = this.llm.getSettings();
       const paths = this.paths(documentID, targetLanguage || settings.targetLanguage);
-      return {
-        translations: await this.storage.readJSON(paths.translations, {}),
-        formulaReplacements: await this.storage.readJSON(paths.formulaReplacements, {}),
-        meta: await this.storage.readJSON(paths.meta, null)
-      };
+      const [translations, formulaReplacements, meta] = await Promise.all([
+        this.storage.readJSON(paths.translations, {}),
+        this.storage.readJSON(paths.formulaReplacements, {}),
+        this.storage.readJSON(paths.meta, null)
+      ]);
+      return { translations, formulaReplacements, meta };
     }
 
     async importManualTranslation(documentID, responses, emit = null) {
@@ -3054,8 +3098,11 @@
       const sourceLanguage = edgeLocal ? settings.machineSourceLanguage : settings.sourceLanguage;
       const paths = this.paths(documentID, settings.targetLanguage);
       await this.storage.ensureDir(paths.root);
-      const layout = await this.loadLayout(documentID);
-      const records = await this.extractRecords(documentID);
+      const [layout, assetMap] = await Promise.all([
+        this.loadLayout(documentID),
+        this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
+      ]);
+      const records = await this.extractRecords(documentID, layout, assetMap);
       if (!records.length) throw new Error("当前文档没有可翻译的正文。");
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const identity = U.hashString([
@@ -3067,7 +3114,7 @@
       ].join("\u241f"));
       const current = await this.loadTranslations(documentID, settings.targetLanguage);
       if (!settings.force && current.meta?.identity === identity && current.meta?.complete) {
-        const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint });
+        const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal);
         emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true });
         return { ...current, model, cached: true };
       }
@@ -3147,7 +3194,7 @@
         await this.storage.writeJSON(paths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(paths.meta, meta);
       }
-      const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint });
+      const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint }, signal);
       emit?.({ type: "layout-translation", translations, model, complete: true });
       return { translations, formulaReplacements, model, meta, cached: false };
     }
@@ -3243,8 +3290,11 @@
         : 1);
       const paths = this.paths(documentID, settings.targetLanguage);
       await this.storage.ensureDir(paths.root);
-      const layout = await this.loadLayout(documentID);
-      const records = await this.extractRecords(documentID);
+      const [layout, assetMap] = await Promise.all([
+        this.loadLayout(documentID),
+        this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
+      ]);
+      const records = await this.extractRecords(documentID, layout, assetMap);
       if (!records.length) throw new Error("当前文档没有可翻译的正文。");
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const identity = U.hashString([
@@ -3277,7 +3327,7 @@
           settings.enableUntranslatedCheck
         );
         if (!cacheRetryRecords.length) {
-          const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint });
+          const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal);
           emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true });
           return {
             translations: current.translations,
@@ -3404,13 +3454,12 @@
             concurrency,
             updatedAt: new Date().toISOString()
           });
-          // Only this serialized coordinator writes checkpoints and constructs
-          // previews. Network workers never mutate shared publication state.
-          const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint });
+          // 只由这个串行协调器写检查点；整本文档模型留到最终结果再构建。
+          // 中间模型不会触发阅读器渲染，反复构建只会占用主线程和内存。
           emit?.({
             type: "layout-translation",
             translations,
-            model,
+            model: null,
             complete: false,
             translatedBlocks: Object.keys(translations).length,
             totalBlocks: records.length,
@@ -3626,8 +3675,7 @@
               concurrency,
               updatedAt: new Date().toISOString()
             });
-            const intermediateModel = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint });
-            emit?.({ type: "layout-translation", translations, model: intermediateModel, complete: false });
+            emit?.({ type: "layout-translation", translations, model: null, complete: false });
           });
           retryCommitTail = task.catch(() => {});
           return task;
@@ -3755,7 +3803,7 @@
         await this.storage.writeJSON(paths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(paths.meta, meta);
       }
-      const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint });
+      const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint }, signal);
       emit?.({ type: "layout-translation", translations, model, complete: true });
       return { translations, formulaReplacements, model, meta, cached: false };
     }

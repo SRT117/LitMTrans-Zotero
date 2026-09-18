@@ -26,13 +26,22 @@ namespace LitMTransPort {
   export async function cancellableSleep(ms: number, signal?: AbortLikeSignal | null): Promise<void> {
     throwIfAborted(signal);
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, Math.max(0, Number(ms) || 0));
+      let settled = false;
+      let abort: (() => void) | null = null;
+      const timer = setTimeout(() => {
+        settled = true;
+        if (abort) signal?.removeEventListener?.("abort", abort);
+        resolve();
+      }, Math.max(0, Number(ms) || 0));
       if (!signal?.addEventListener) return;
-      const abort = () => {
+      abort = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        signal.removeEventListener?.("abort", abort!);
         reject(new CancelledError(typeof signal.reason === "string" ? signal.reason : "操作已停止"));
       };
-      signal.addEventListener("abort", abort, { once: true });
+      signal.addEventListener("abort", abort!, { once: true });
     });
     throwIfAborted(signal);
   }

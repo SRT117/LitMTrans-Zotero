@@ -37,6 +37,7 @@
     currentSession: null,
     sessions: [],
     running: new Set(),
+    stopping: new Set(),
     progress: 0,
     streamingChatMessageID: "",
     streamingChatInsertIndex: -1,
@@ -219,8 +220,7 @@
       pending.delete(String(message.requestID || ""));
       if (waiter.timer) clearTimeout(waiter.timer);
       if (["chat-send", "chat-resend", "chat-edit-message"].includes(waiter.method)) {
-        state.running.delete("chat");
-        updateOperationUI();
+        void releaseChatLockAfterTerminalEvent();
       }
       if (message.ok) waiter.resolve(message.payload);
       else {
@@ -669,11 +669,27 @@
     }, 900);
   }
 
+  async function releaseChatLockAfterTerminalEvent() {
+    try {
+      const result = await hostCall("operation-state", {}, { timeout: 5000 });
+      const active = new Set(Array.isArray(result?.operations) ? result.operations.map(String) : []);
+      if (active.has("chat")) return;
+      state.running.delete("chat");
+      state.stopping.delete("chat");
+      updateOperationUI();
+      if (!state.running.size) restoreIdleStatus();
+    }
+    catch (_) {
+      // operation-state reconciliation will retry on the next focus tick.
+    }
+  }
+
   async function reconcileOperationState() {
     if (!hostFunction() || document.hidden) return;
     try {
       const result = await hostCall("operation-state", {}, { timeout: 5000 });
       const active = new Set(Array.isArray(result?.operations) ? result.operations.map(String) : []);
+      const stopping = new Set(Array.isArray(result?.stopping) ? result.stopping.map(String) : []);
       let changed = false;
       for (const operation of [...state.running]) {
         if (!active.has(operation)) {
@@ -687,9 +703,22 @@
           changed = true;
         }
       }
+      for (const operation of [...state.stopping]) {
+        if (!stopping.has(operation)) {
+          state.stopping.delete(operation);
+          changed = true;
+        }
+      }
+      for (const operation of stopping) {
+        if (!state.stopping.has(operation)) {
+          state.stopping.add(operation);
+          changed = true;
+        }
+      }
       if (changed) {
         updateOperationUI();
-        if (!state.running.size) restoreIdleStatus();
+        if (state.stopping.size) setStatus("正在停止…", null, "running");
+        else if (!state.running.size) restoreIdleStatus();
       }
     }
     catch (_) {
@@ -734,15 +763,21 @@
     if (type === "operation") {
       if (event.running) {
         state.running.add(event.operation);
-        if (event.operation === "layout") {
+        if (event.stopping) state.stopping.add(event.operation);
+        else state.stopping.delete(event.operation);
+        if (event.operation === "layout" && !event.stopping) {
           state.layoutLiveTranslationGroups.clear();
           flushLayoutLivePreview();
         }
-        if (shouldAutoOpenOperationLog(event.operation)) showOperationLog(true);
+        if (!event.stopping && shouldAutoOpenOperationLog(event.operation)) showOperationLog(true);
       }
-      else state.running.delete(event.operation);
+      else {
+        state.running.delete(event.operation);
+        state.stopping.delete(event.operation);
+      }
       updateOperationUI();
-      if (event.running) setStatus("正在处理…", null, "running");
+      if (event.running && event.stopping) setStatus("正在停止…", null, "running");
+      else if (event.running) setStatus("正在处理…", null, "running");
       else if (!state.running.size) {
         restoreIdleStatus();
         hideOperationLogAfterCompletion();
@@ -914,9 +949,8 @@
       return;
     }
     if (type === "chat-complete") {
-      state.running.delete("chat");
-      updateOperationUI();
       if (isWebChatSession(event)) return;
+      void releaseChatLockAfterTerminalEvent();
       state.expandedReasoningIDs.delete(String(event.messageID || state.streamingChatMessageID || ""));
       state.streamingChatMessageID = "";
       state.streamingChatInsertIndex = -1;
@@ -928,9 +962,8 @@
       return;
     }
     if (type === "chat-error") {
-      state.running.delete("chat");
-      updateOperationUI();
       if (isWebChatSession(event)) return;
+      void releaseChatLockAfterTerminalEvent();
       state.streamingChatMessageID = "";
       state.streamingChatInsertIndex = -1;
       state.streamingChatText = "";
@@ -7231,9 +7264,10 @@
     els["retry-source-pdf-button"].addEventListener("click", retrySourcePDF);
     els["stop-button"].addEventListener("click", async () => {
       await hostCall("stop");
-      state.running.clear();
-      updateOperationUI();
-      setStatus("已请求停止", null, "neutral");
+      await reconcileOperationState();
+      if (state.stopping.size) setStatus("正在停止…", null, "running");
+      else if (state.running.size) setStatus("正在处理…", null, "running");
+      else setStatus("已停止", 0, "neutral");
     });
     els["clean-reader-button"].addEventListener("click", () => {
       if (document.body.classList.contains("clean-reader-mode")) exitCleanReader();
