@@ -404,17 +404,25 @@
       }
 
       if (allCached && targetPaths.length) {
+        options.emit?.({ type: "progress", phase: "deepseek-pages", message: `已找到 ${targetPaths.length} 张页面图缓存`, progress: 70 });
         await this.removeObsoletePages(documentID, profile.cacheDir, options);
         return { images: targetPaths, downgraded: false, cached: true };
       }
 
       let newBytesWritten = 0;
       for (let i = 0; i < strategy.groups.length; i++) {
+        U.throwIfAborted(options.signal);
         const group = strategy.groups[i];
         const filePath = targetPaths[i];
         if (await IOUtils.exists(filePath)) continue;
 
         options.emit?.({ type: "log", message: `[探针5-Provider] 正在准备文献高清页面 (${i + 1}/${strategy.groups.length})...` });
+        options.emit?.({
+          type: "progress",
+          phase: "deepseek-pages",
+          message: `正在生成页面图像 ${i + 1}/${strategy.groups.length}…`,
+          progress: 10 + Math.round((i / Math.max(1, strategy.groups.length)) * 60)
+        });
 
         let dataUrl = null;
         try {
@@ -442,6 +450,7 @@
         const base64Data = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
         const bytes = base64ToUint8Array(base64Data);
         await IOUtils.write(filePath, bytes);
+        U.throwIfAborted(options.signal);
         newBytesWritten += Number(bytes.byteLength || bytes.length || 0);
       }
 

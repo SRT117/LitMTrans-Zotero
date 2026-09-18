@@ -49,6 +49,10 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(workbench.includes("summary.documentsPrimaryBytes ??") && workbench.includes("summary.orphanedCoreBytes ??"), "storage chart segments must use non-overlapping document totals");
   assert(deepSeekDriver.includes("if (options.throwOnTimeout !== false)"), "attachment readiness timeouts must fail by default so document chat can degrade safely");
   assert(deepSeekPages.includes("adjustDeepSeekWebPagesCacheBytes?.(-stats.bytes)"), "obsolete page-image profiles must be deducted from the cache ledger");
+  assert(controller.includes('this.withOperation(runtime, "deepseek-pages"')
+    && controller.includes('`页面图像生成完成，正在上传 ${imagePaths.length} 张图像…`')
+    && deepSeekPages.includes('message: `正在生成页面图像 ${i + 1}/${strategy.groups.length}…`'),
+  "manual page-image attachment must expose persistent generation and upload progress after cache cleanup");
   assert(controller.includes('pdf.getPageCount()'), "source PDF page count must come from the original PDF");
   assert(workbench.includes('recommendedTranslationModeForLongPDF'), "workbench must offer a long-PDF translation-mode recommendation");
   assert(xhtml.includes('当前所译文档超过150页'), "long-PDF recommendation text must be present in the workbench dialog");

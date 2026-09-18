@@ -745,22 +745,34 @@
     }
 
     // 图形式添加：与要点提炼同一管线，把PDF页面渲染为图片后上传到DeepSeek
-    async appendPaperPagesToDeepSeek(runtime) {
+    async appendPaperPagesToDeepSeek(runtime, options = {}) {
       const context = await this.attachmentContext(runtime.attachmentID);
       const webSettings = this.getSettings?.() || {};
       const rawQuality = String(webSettings.webPageImageQuality || "high").trim().toLowerCase();
       const quality = ["low", "medium", "high"].includes(rawQuality) ? rawQuality : "high";
+      options.emit?.({ type: "progress", phase: "deepseek-pages", message: "正在准备 DeepSeek 网页…", progress: 5 });
       await this.loadDeepSeekWeb(runtime, false);
+      U.throwIfAborted(options.signal);
       const driver = this.ensureDeepSeekDriver(runtime);
       if (!driver) throw new Error("DeepSeek网页尚未就绪，请稍后重试。");
       const pageResult = await this.deepSeekWebProvider.pageRenderer.renderAndCachePages(runtime, context.documentID, {
         maxImages: 49,
-        quality
+        quality,
+        signal: options.signal,
+        emit: options.emit
       });
       if (pageResult.error) throw new Error(pageResult.error);
       const imagePaths = pageResult.images || [];
       if (!imagePaths.length) throw new Error("未能生成页面图像，请确认文献已在预览中打开。");
-      await driver.attachFiles(imagePaths, null);
+      options.emit?.({
+        type: "progress",
+        phase: "deepseek-pages",
+        message: pageResult.cached
+          ? `已读取页面图缓存，正在上传 ${imagePaths.length} 张图像…`
+          : `页面图像生成完成，正在上传 ${imagePaths.length} 张图像…`,
+        progress: 80
+      });
+      await driver.attachFiles(imagePaths, options.signal);
       if (pageResult.downgraded && pageResult.message) {
         this.sendToPage(runtime, {
           type: "event",
@@ -786,7 +798,17 @@
 
     async addPaperPagesToAI(runtime) {
       try {
-        const result = await this.appendPaperPagesToDeepSeek(runtime);
+        const result = await this.withOperation(runtime, "deepseek-pages", async (signal, emit) => {
+          const attached = await this.appendPaperPagesToDeepSeek(runtime, { signal, emit });
+          emit({
+            type: "progress",
+            phase: "deepseek-pages",
+            message: `页面图像已添加至 DeepSeek（共 ${attached?.attached || 0} 张）`,
+            progress: 100
+          });
+          emit({ type: "toast", message: `页面图像已添加至 DeepSeek（共 ${attached?.attached || 0} 张）`, level: "success" });
+          return attached;
+        });
         return result;
       } catch (error) {
         this.log(`添加论文页面图像到DeepSeek失败: ${error?.message || error}`);
