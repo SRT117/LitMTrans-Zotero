@@ -748,10 +748,8 @@
     async appendPaperPagesToDeepSeek(runtime) {
       const context = await this.attachmentContext(runtime.attachmentID);
       const webSettings = this.getSettings?.() || {};
-      const quality = String(webSettings.webPageImageQuality || "medium").toLowerCase();
-      if (quality === "none") {
-        throw new Error("当前设置为不上传页面图像，请先在设置中调整页面图像清晰度。");
-      }
+      const rawQuality = String(webSettings.webPageImageQuality || "high").trim().toLowerCase();
+      const quality = ["low", "medium", "high"].includes(rawQuality) ? rawQuality : "high";
       await this.loadDeepSeekWeb(runtime, false);
       const driver = this.ensureDeepSeekDriver(runtime);
       if (!driver) throw new Error("DeepSeek网页尚未就绪，请稍后重试。");
@@ -3288,6 +3286,7 @@
       });
 
       register("renderTextSelectionPopup", event => {
+        if (!Boolean(U.getPref("showNativeReaderAskAI", true))) return;
         const text = String(event.params?.annotation?.text || event.params?.text || "").trim();
         if (!text) return;
         const { reader, doc, append } = event;
@@ -5025,6 +5024,7 @@
         chatAPIKey: this.secrets.getLLMKey(chat.provider),
         mineruToken: this.secrets.getMinerUToken(),
         cajDoubleClickAction: ["ask", "litmtrans"].includes(U.getPref("cajDoubleClickAction", "default")) ? U.getPref("cajDoubleClickAction", "default") : "default",
+        showNativeReaderAskAI: Boolean(U.getPref("showNativeReaderAskAI", true)),
         layoutReaderFonts,
         promptLibrary: this.promptLibrary(),
         hasChatAPIKey: chat.hasAPIKey,
@@ -5235,6 +5235,9 @@
       }
       if (Object.prototype.hasOwnProperty.call(values || {}, "cajDoubleClickAction")) {
         U.setPref("cajDoubleClickAction", ["ask", "litmtrans"].includes(values.cajDoubleClickAction) ? values.cajDoubleClickAction : "default");
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "showNativeReaderAskAI")) {
+        U.setPref("showNativeReaderAskAI", values.showNativeReaderAskAI === true);
       }
       if (values && values.layoutReaderFonts && typeof values.layoutReaderFonts === "object" && !Array.isArray(values.layoutReaderFonts)) {
         const fonts = {};

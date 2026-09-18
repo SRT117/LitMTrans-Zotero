@@ -525,13 +525,11 @@
             });
           }
 
-          const pageImageQuality = this.controller?.getSettings?.().webPageImageQuality || "medium";
+          const rawPageImageQuality = String(this.controller?.getSettings?.().webPageImageQuality || "high").trim().toLowerCase();
+          const pageImageQuality = ["low", "medium", "high"].includes(rawPageImageQuality) ? rawPageImageQuality : "high";
           let imagePaths = [];
           if (textOnlyDocumentTask) {
             options.emit?.({ type: "log", message: "[探针5-Provider] 当前任务仅注入文献文本，跳过论文页面图像" });
-          } else if (pageImageQuality === "none") {
-            await this.pageRenderer.clearPageCaches(documentID, { emit: options.emit });
-            options.emit?.({ type: "log", message: "[探针5-Provider] 已按设置跳过论文页面图上传" });
           } else {
             try {
               const maxImages = Math.max(0, (uploadFiles.length ? 48 : 49) - questionImages.length);
@@ -549,7 +547,7 @@
               imagePaths = pageResult.images || [];
               if (imagePaths.length) {
                 const labels = { low: "低清晰度", medium: "中等清晰度", high: "高清晰度" };
-                options.emit?.({ type: "log", message: `[探针5-Provider] 页面${labels[pageImageQuality] || "中等清晰度"}图像就绪 (共 ${imagePaths.length} 页)` });
+                options.emit?.({ type: "log", message: `[探针5-Provider] 页面${labels[pageImageQuality] || "高清晰度"}图像就绪 (共 ${imagePaths.length} 页)` });
               }
             } catch (err) {
               options.emit?.({ type: "warning", message: `[探针5-Provider] 页面图像准备遇到问题: ${err.message || err}，降级为纯文本模式` });

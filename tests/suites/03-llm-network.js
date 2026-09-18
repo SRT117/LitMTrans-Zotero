@@ -224,13 +224,16 @@ async function testIndependentTranslationAndChatSettings() {
   assert.equal(savedWebSettings.webPageImageQuality, "high", "web page image quality must persist independently of input mode");
   assert.equal(savedWebSettings.webInputMode, "clipboard", "web input mode must persist");
   assert.equal(savedWebSettings.deleteWebTranslationSessions, false, "web translation session cleanup preference must persist");
+  llm.saveSettings({ webPageImageQuality: "none" }, "translation");
+  const legacyNoneWebSettings = llm.getSettings("translation");
+  assert.equal(legacyNoneWebSettings.webPageImageQuality, "high", "legacy none page image quality must migrate to high");
   llm.saveSettings({
     webPageImageQuality: "invalid",
     webInputMode: "invalid",
     deleteWebTranslationSessions: "false"
   }, "translation");
   const normalizedWebSettings = llm.getSettings("translation");
-  assert.equal(normalizedWebSettings.webPageImageQuality, "medium", "invalid web page image quality must fall back to medium");
+  assert.equal(normalizedWebSettings.webPageImageQuality, "high", "invalid web page image quality must fall back to high");
   assert.equal(normalizedWebSettings.webInputMode, "auto", "invalid web input mode must fall back to auto");
   assert.equal(normalizedWebSettings.deleteWebTranslationSessions, false, "string false must remain false when restoring web settings");
   llm.saveSettings({ sourceLanguage: "日文", chunkChars: 20000, layoutChunkChars: 60000, layoutChunkBlocks: 20 }, "translation");

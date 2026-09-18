@@ -7,13 +7,14 @@
 
   const PAGE_IMAGE_PROFILES = Object.freeze({
     low: { cacheDir: "pages-v4-low", scale: 100 / 72, quality: 0.75 },
-    // 默认档沿用当前页面图规格，也兼容此前已生成的 pages-v3 缓存。
+    // 中等档沿用当前页面图规格，也兼容此前已生成的 pages-v3 缓存。
     medium: { cacheDir: "pages-v3", scale: 150 / 72, quality: 0.85 },
     high: { cacheDir: "pages-v4-high", scale: 220 / 72, quality: 0.92 }
   });
 
   function pageImageProfile(value) {
-    return PAGE_IMAGE_PROFILES[String(value || "medium").toLowerCase()] || PAGE_IMAGE_PROFILES.medium;
+    const quality = String(value || "high").trim().toLowerCase();
+    return PAGE_IMAGE_PROFILES[quality] || PAGE_IMAGE_PROFILES.high;
   }
 
   function base64ToUint8Array(base64) {

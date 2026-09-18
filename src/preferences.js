@@ -215,7 +215,8 @@ var LitMTransControllerPreferences = {
       this.setSelectValue(this.$("chat-reasoning-effort"), settings.chatReasoningEffort || "default");
       this.$("chat-api-key").value = settings.chatAPIKey || "";
       this.$("chat-engine-web").checked = settings.chatEngine === "deepseek_web";
-      this.$("web-page-image-quality").value = settings.webPageImageQuality || "medium";
+      const pageImageQuality = settings.webPageImageQuality;
+      this.$("web-page-image-quality").value = (pageImageQuality && pageImageQuality !== "none") ? pageImageQuality : "high";
       this.$("web-input-mode-auto").checked = (settings.webInputMode || "auto") === "auto";
       this.$("web-input-mode-clipboard").checked = settings.webInputMode === "clipboard";
       this.$("delete-web-translation-sessions").checked = settings.deleteWebTranslationSessions !== false;
@@ -230,6 +231,7 @@ var LitMTransControllerPreferences = {
       this.$("mineru-token").value = settings.mineruToken || "";
       this.$("mineru-model").value = "vlm";
       if (this.$("caj-double-click-action")) this.$("caj-double-click-action").value = settings.cajDoubleClickAction || "default";
+      this.$("show-native-reader-ask-ai").checked = settings.showNativeReaderAskAI !== false;
       this.$("key-points-prompt").value = settings.effectiveKeyPointsPrompt || settings.keyPointsDefaultPrompt || "";
       this.updateWebMachineTranslationSettings();
       this.updateDeepSeekFastLayoutControl();
@@ -299,6 +301,7 @@ var LitMTransControllerPreferences = {
       mineruModel: "vlm", targetLanguage: this.$("target-language").value.trim(), machineSourceLanguage: this.$("machine-source-language").value.trim(), translationMode: this.$("translation-mode").value,
       translationReferencePaths: [...this.referencePaths], customTranslationInstruction: this.$("custom-translation-instruction").value.trim(),
       cajDoubleClickAction: this.$("caj-double-click-action") ? this.$("caj-double-click-action").value : "default",
+      showNativeReaderAskAI: this.$("show-native-reader-ask-ai").checked,
       keyPointsPrompt: this.$("key-points-prompt").value.trim() === String(this.settings?.keyPointsDefaultPrompt || "").trim() ? "" : this.$("key-points-prompt").value
     };
   },

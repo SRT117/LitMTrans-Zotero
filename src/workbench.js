@@ -146,7 +146,7 @@
       "setting-target-language", "setting-target-language-picker", "setting-machine-source-language-group", "setting-machine-source-language", "setting-machine-source-language-picker", "setting-translation-mode",
       "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
-      "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
+      "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "open-storage-manager-button", "clear-document-button", "save-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
       "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
@@ -403,7 +403,8 @@
     const node = document.createElement("div");
     node.className = `toast ${kind}`.trim();
     node.textContent = normalizeUserMessage(message);
-    const activeDialog = document.querySelector("dialog[open]");
+    const activeDialog = [...document.querySelectorAll("dialog[open]")]
+      .find(dialog => dialog.id !== "diagram-viewer-dialog");
     let container = els["toast-region"];
     if (activeDialog) {
       container = activeDialog.querySelector(".dialog-toast-region");
@@ -5613,7 +5614,8 @@
     if (els["setting-chat-engine-web"]) {
       els["setting-chat-engine-web"].checked = settings.chatEngine === "deepseek_web";
     }
-    els["setting-web-page-image-quality"].value = settings.webPageImageQuality || "medium";
+    const pageImageQuality = settings.webPageImageQuality;
+    els["setting-web-page-image-quality"].value = (pageImageQuality && pageImageQuality !== "none") ? pageImageQuality : "high";
     els["setting-web-input-mode-auto"].checked = (settings.webInputMode || "auto") === "auto";
     els["setting-web-input-mode-clipboard"].checked = settings.webInputMode === "clipboard";
     els["setting-delete-web-translation-sessions"].checked = settings.deleteWebTranslationSessions !== false;
@@ -5634,6 +5636,7 @@
     els["setting-mineru-token"].value = settings.mineruToken || "";
     els["setting-mineru-model"].value = "vlm";
     if (els["setting-caj-double-click-action"]) els["setting-caj-double-click-action"].value = settings.cajDoubleClickAction || "default";
+    if (els["setting-show-native-reader-ask-ai"]) els["setting-show-native-reader-ask-ai"].checked = settings.showNativeReaderAskAI !== false;
     els["setting-target-language"].value = settings.targetLanguage || "简体中文";
     els["setting-machine-source-language"].value = settings.machineSourceLanguage || "英文";
     els["setting-translation-mode"].value = settings.translationMode || "full_context";
@@ -6239,6 +6242,7 @@
       machineSourceLanguage: U.normalizeLanguageName(els["setting-machine-source-language"].value, "英文"),
       translationMode: els["setting-translation-mode"].value,
       cajDoubleClickAction: els["setting-caj-double-click-action"] ? els["setting-caj-double-click-action"].value : "default",
+      showNativeReaderAskAI: els["setting-show-native-reader-ask-ai"]?.checked !== false,
       translationReferencePaths: [...state.referencePaths],
       customTranslationInstruction: els["custom-translation-instruction-input"].value.trim(),
       keyPointsPrompt: els["setting-key-points-prompt"].value.trim() === String(state.settings?.keyPointsDefaultPrompt || "").trim()

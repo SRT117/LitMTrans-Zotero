@@ -50,9 +50,9 @@
     return aliases[text] || text || "default";
   }
 
-  const WEB_PAGE_IMAGE_QUALITIES = Object.freeze(["none", "low", "medium", "high"]);
+  const WEB_PAGE_IMAGE_QUALITIES = Object.freeze(["low", "medium", "high"]);
 
-  function normalizeWebPageImageQuality(value, fallback = "medium") {
+  function normalizeWebPageImageQuality(value, fallback = "high") {
     const quality = String(value ?? "").trim().toLowerCase();
     return WEB_PAGE_IMAGE_QUALITIES.includes(quality) ? quality : fallback;
   }
@@ -792,7 +792,7 @@
         chatImageSize: String(U.getPref("chatImageSize", "auto") || "auto"),
         chatImageQuality: String(U.getPref("chatImageQuality", "auto") || "auto"),
         chatImageFormat: String(U.getPref("chatImageFormat", "png") || "png"),
-        webPageImageQuality: normalizeWebPageImageQuality(U.getPref("webPageImageQuality", "medium")),
+        webPageImageQuality: normalizeWebPageImageQuality(U.getPref("webPageImageQuality", "high")),
         webInputMode: normalizeWebInputMode(U.getPref("webInputMode", "auto")),
         deleteWebTranslationSessions: normalizeBooleanPreference(U.getPref("deleteWebTranslationSessions", true), true),
         targetLanguage: U.normalizeLanguageName(U.getPref("targetLanguage", "简体中文"), "简体中文"),

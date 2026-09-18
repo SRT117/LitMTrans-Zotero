@@ -594,7 +594,7 @@ body.layout-translated
 .diagram-viewer-header strong { font-size: 13px; }
 .diagram-viewer-stage { height: calc(100% - 96px); overflow: auto; overscroll-behavior: contain; cursor: grab; background: radial-gradient(ellipse at 50% 18%, color-mix(in srgb, var(--surface) 85%, #dceaf1), var(--surface) 68%); }
 .diagram-viewer-stage.dragging { cursor: grabbing; user-select: none; }
-.diagram-viewer-content { display: grid; place-items: center; width: max-content; min-width: 100%; min-height: 100%; padding: 36px; transform-origin: top center; }
+.diagram-viewer-content { display: grid; place-items: center; width: max-content; min-width: 100%; min-height: 100%; padding: 36px; transform-origin: top left; }
 .diagram-viewer-content .mindmap-v2-canvas { margin: 0; }
 .diagram-viewer-image { display: block; width: auto; max-width: none; height: auto; max-height: none; filter: drop-shadow(0 7px 14px rgba(22, 42, 62, .12)); }
 .flowchart-interactive-canvas { position: relative; width: max-content; filter: drop-shadow(0 10px 22px rgba(22, 42, 62, .1)); }
@@ -1074,7 +1074,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .button-warning-quiet:hover { background: color-mix(in srgb, #d35400 10%, var(--surface)); }
 .text-warning { color: #d35400 !important; }
 
-.toast-region { position: fixed; z-index: 9999; top: 50%; left: 50%; width: min(560px, calc(100vw - 40px)); display: grid; gap: 12px; pointer-events: none; transform: translate(-50%, -50%); }
+.toast-region { position: fixed; z-index: 9999; top: 50%; left: calc((100vw - var(--sidebar-width)) / 2); width: min(560px, calc(100vw - var(--sidebar-width) - 40px)); display: grid; gap: 12px; pointer-events: none; transform: translate(-50%, -50%); }
 .toast { box-sizing: border-box; width: 100%; padding: 16px 20px; border: 1px solid var(--line-strong); background: var(--surface); box-shadow: var(--shadow); color: var(--ink); font-size: 16px; line-height: 1.55; animation: toast-in .18s ease-out; }
 .toast.error { border-color: var(--danger); color: var(--danger); }
 .toast.warning { border-color: var(--warning); }
@@ -1110,6 +1110,8 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 @media (max-width: 860px) {
   .main-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(210px, 36vh); }
   .reader-workspace { border-right: 0; border-bottom: 1px solid var(--line); }
+  .diagram-viewer-dialog { left: 50%; width: min(1180px, calc(100vw - 48px)); }
+  .toast-region { left: 50%; width: min(560px, calc(100vw - 40px)); }
 }
 
 /* Retain both reading panes on small screens by stacking them. The separator

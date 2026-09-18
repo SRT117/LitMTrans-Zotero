@@ -12,7 +12,7 @@ pref("extensions.litmtrans.chatModel", "");
 pref("extensions.litmtrans.chatThinkingMode", "default");
 pref("extensions.litmtrans.chatReasoningEffort", "default");
 pref("extensions.litmtrans.chatEngine", "api");
-pref("extensions.litmtrans.webPageImageQuality", "medium");
+pref("extensions.litmtrans.webPageImageQuality", "high");
 pref("extensions.litmtrans.webInputMode", "auto");
 pref("extensions.litmtrans.deleteWebTranslationSessions", true);
 pref("extensions.litmtrans.chatRenderMarkdown", true);
@@ -39,6 +39,7 @@ pref("extensions.litmtrans.syncScroll", false);
 pref("extensions.litmtrans.streamSyncScroll", false);
 pref("extensions.litmtrans.layoutReadingMode", true);
 pref("extensions.litmtrans.showLayoutRestoration", true);
+pref("extensions.litmtrans.showNativeReaderAskAI", true);
 // Isolated geometry-only recovery for short text in proven single-column pages.
 // Keep it independently reversible while the feature is evaluated.
 pref("extensions.litmtrans.layoutSingleColumnBodyPromotion", true);

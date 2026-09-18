@@ -327,6 +327,7 @@ function testDeepSeekWebSidebarIntegration() {
   const workbenchJS = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   const workbenchCSS = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
   const chat = fs.readFileSync(path.join(root, "src", "chat.js"), "utf8");
+  const pdfPages = fs.readFileSync(path.join(root, "src", "deepseek-web", "pdf-pages.js"), "utf8");
   const deepSeekProvider = fs.readFileSync(path.join(root, "src", "deepseek-web", "provider.js"), "utf8");
 
   const host = new context.LitMTrans.Controller({ rootURI: "chrome://litmtrans/" });
@@ -355,10 +356,19 @@ function testDeepSeekWebSidebarIntegration() {
   assert.strictEqual(navigations, 2, "explicit reload must navigate again");
   assert.throws(() => host.loadDeepSeekWeb({}), /网页容器尚未就绪/);
   assert(prefs.includes('pref("extensions.litmtrans.chatEngine", "api");'), "prefs must define chatEngine with default api");
-  assert(prefs.includes('pref("extensions.litmtrans.webPageImageQuality", "medium");')
+  assert(prefs.includes('pref("extensions.litmtrans.webPageImageQuality", "high");')
     && prefs.includes('pref("extensions.litmtrans.webInputMode", "auto");')
     && prefs.includes('pref("extensions.litmtrans.deleteWebTranslationSessions", true);'),
   "web mode preferences must have stable defaults");
+  assert(!workbenchXHTML.includes('<option value="none">不发送</option>')
+    && !preferencesXHTML.includes('<html:option value="none">不发送</html:option>'),
+  "web mode image quality must not offer none option");
+  assert(pdfPages.includes('String(value || "high").trim().toLowerCase()')
+    && pdfPages.includes("PAGE_IMAGE_PROFILES[quality] || PAGE_IMAGE_PROFILES.high"),
+  "PDF page rendering must default and fall back to high quality");
+  assert(!deepSeekProvider.includes('pageImageQuality === "none"')
+    && deepSeekProvider.includes('["low", "medium", "high"].includes(rawPageImageQuality)'),
+  "web provider must normalize legacy or invalid page image quality instead of disabling uploads");
   assert(!controller.includes("setResponseHeader"), "web sidebar must not rewrite global response headers");
   assert(!workbenchCSS.includes(".embedded-ai-topbar:has(#chat-navigator-button[hidden])"), "mode tabs must remain visible without chat history");
   assert(controller.includes('case "save-chat-engine":'), "controller must handle save-chat-engine bridge action");

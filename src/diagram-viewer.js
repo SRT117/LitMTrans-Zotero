@@ -14,16 +14,22 @@
     if (output) output.value = `${Math.round(zoom * 100)}%`;
   }
   function setZoom(value, anchor = null) {
-    const viewport = stage(); const previous = zoom;
-    zoom = Math.max(.25, Math.min(3, value));
-    if (viewport && anchor) {
-      const rect = viewport.getBoundingClientRect();
-      const x = anchor.clientX - rect.left + viewport.scrollLeft;
-      const y = anchor.clientY - rect.top + viewport.scrollTop;
-      viewport.scrollLeft = x * zoom / previous - (anchor.clientX - rect.left);
-      viewport.scrollTop = y * zoom / previous - (anchor.clientY - rect.top);
+    const viewport = stage(); const content = world(); const previous = zoom;
+    const next = Math.max(.25, Math.min(3, value));
+    let anchorX = 0; let anchorY = 0;
+    if (viewport && content && anchor && next !== previous) {
+      const rect = content.getBoundingClientRect();
+      anchorX = anchor.clientX - rect.left;
+      anchorY = anchor.clientY - rect.top;
     }
+    zoom = next;
     applyZoom();
+    if (viewport && content && anchor && next !== previous) {
+      const ratio = next / previous;
+      // 按缩放前的鼠标落点修正滚动位置，让该点保持在鼠标下方。
+      viewport.scrollLeft += anchorX * (ratio - 1);
+      viewport.scrollTop += anchorY * (ratio - 1);
+    }
   }
   function askAboutNode(node) {
     active?.onAsk?.(node);
@@ -111,7 +117,11 @@
     });
     const finish = event => { if (!drag || drag.pointerID !== event.pointerId) return; viewport.releasePointerCapture?.(event.pointerId); drag = null; viewport.classList.remove("dragging"); };
     viewport.addEventListener("pointerup", finish); viewport.addEventListener("pointercancel", finish);
-    viewport.addEventListener("wheel", event => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); setZoom(zoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12), event); }, { passive: false });
+    viewport.addEventListener("wheel", event => {
+      if (!event.deltaY) return;
+      event.preventDefault();
+      setZoom(zoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12), event);
+    }, { passive: false });
   }
   function bindWindowDrag() {
     const dialog = $("diagram-viewer-dialog");
