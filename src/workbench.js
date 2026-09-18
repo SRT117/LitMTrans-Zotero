@@ -108,6 +108,7 @@
   let activeManualTranslationStep = 0;
   let lastActionError = "";
   let copySourceMarkdownBusy = false;
+  let exportBusy = false;
   let manualLayoutTranslations = {};
   let promptLibrarySaveTimer = 0;
   let promptLibrarySavePromise = null;
@@ -655,7 +656,8 @@
     els["stop-button"].hidden = !running;
     els["translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
     els["manual-translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
-    els["export-pdf-button"].disabled = running || !state.data?.parsed?.markdown;
+    els["export-pdf-button"].disabled = running || exportBusy
+      || !hasCurrentExportContent(state.mode === "layout", exportToolbarPane());
     els["chat-send-button"].disabled = state.running.has("chat") || state.running.has("document");
     els["chat-document-button"].disabled = state.running.has("chat") || state.running.has("document");
     if (els["copy-source-markdown-button"]) {
@@ -723,6 +725,10 @@
     }
     if (type === "toast") {
       toast(event.message || "操作失败", event.level || "error");
+      return;
+    }
+    if (type === "export-reader-pdf") {
+      void exportCurrentReaderPDF(event.pane);
       return;
     }
     if (type === "operation") {
@@ -1895,7 +1901,7 @@
   // width and body-font choice, so retain the solved inline styles instead of
   // repeating the measurement whenever the user switches reading modes.
   const layoutFitSnapshots = new Map();
-  function layoutFitSnapshotKey() {
+  function layoutFitSnapshotKey(pane = "translation") {
     const documentID = String(state.data?.item?.documentID || "");
     const model = state.data?.layout?.model || {};
     const identity = String(
@@ -1904,7 +1910,7 @@
         : (state.data?.layout?.meta?.identity || model.sourceFingerprint || "")
     );
     const bodyFont = Number(state.layoutFontPt || 0).toFixed(1);
-    return `${documentID}|${identity}|${bodyFont}`;
+    return `${documentID}|${identity}|${bodyFont}${pane === "source" ? "|source" : ""}`;
   }
 
   function layoutFitPageKey(page) {
@@ -1922,7 +1928,12 @@
       U.hashString(String(node.textContent || "").replace(/\s+/g, " ").trim())
     ].join(":")).join("|");
     const pageIndex = page.closest(".layout-page-wrap")?.dataset.page || "";
-    return `${layoutFitSnapshotKey()}|${pageIndex}|${Math.round(page.clientWidth || 0)}|${U.hashString(structure)}`;
+    const pane = page.closest("#source-layout") ? "source" : "translation";
+    return `${layoutFitSnapshotKey(pane)}|${pageIndex}|${Math.round(page.clientWidth || 0)}|${U.hashString(structure)}`;
+  }
+
+  function layoutFitPaneForPages(pages) {
+    return pages?.find(page => page?.closest?.("#source-layout")) ? "source" : "translation";
   }
 
   function layoutFitStorageKey(key) {
@@ -1969,7 +1980,9 @@
   }
 
   function restoreInjectedLayoutFitSnapshot(pages) {
-    const key = layoutFitSnapshotKey();
+    const pane = layoutFitPaneForPages(pages);
+    if (pane === "source") return new Set();
+    const key = layoutFitSnapshotKey(pane);
     const snapshot = state.data?.layout?.fitSnapshot;
     if (snapshot?.version !== 11 || !Array.isArray(snapshot.pages)) return new Set();
     layoutFitSnapshots.set(key, snapshot);
@@ -1977,7 +1990,7 @@
   }
 
   async function restoreLayoutFitSnapshot(pages) {
-    const key = layoutFitSnapshotKey();
+    const key = layoutFitSnapshotKey(layoutFitPaneForPages(pages));
     let snapshot = layoutFitSnapshots.get(key);
     if (!snapshot) {
       const restoredInjected = restoreInjectedLayoutFitSnapshot(pages);
@@ -1997,7 +2010,7 @@
   }
 
   function saveLayoutFitSnapshot(pages) {
-    const key = layoutFitSnapshotKey();
+    const key = layoutFitSnapshotKey(layoutFitPaneForPages(pages));
     const snapshot = {
       version: 11,
       pages: (pages || []).map(page => {
@@ -2722,9 +2735,12 @@
     els["source-pdf"].classList.toggle("is-initializing", preparingPDF);
     if (showPDF) scheduleSourcePDFFit();
     els["source-content"].hidden = !showParsedSource;
-    // This DOM target is used only for PDF print layout. Stream reading uses
-    // parsed Markdown, while layout reading uses Zotero Reader.
-    els["source-layout"].hidden = true;
+    // 排版阅读仍使用Zotero原生PDF选文；解析版原文只作为排版原文导出缓存，
+    // 避免把原始PDF阅读器的嵌入页面误当成可打印的工作台内容。
+    const sourceLayoutExportReady = layout && hasLayout
+      && Boolean(els["source-layout"].querySelector(".layout-page"));
+    els["source-layout"].classList.toggle("layout-export-cache", sourceLayoutExportReady);
+    els["source-layout"].hidden = !sourceLayoutExportReady;
     if (!showPDF && !showParsedSource) {
       const title = els["source-placeholder"].querySelector("h2");
       const text = els["source-placeholder"].querySelector("p");
@@ -2753,6 +2769,11 @@
 
   function renderReaderView() {
     const view = ["source", "translation"].includes(state.readerView) ? state.readerView : "both";
+    const toolbarPane = view === "source" ? "source" : "translation";
+    const toolbarLabel = exportActionLabel(toolbarPane);
+    els["export-pdf-button"].textContent = toolbarLabel;
+    els["export-pdf-button"].title = `${toolbarLabel}为PDF`;
+    els["export-pdf-button"].setAttribute("aria-label", `${toolbarLabel}为PDF`);
     els["reader-split"].dataset.readerView = view;
     els["both-panes-button"].classList.toggle("active", view === "both");
     els["source-only-button"].classList.toggle("active", view === "source");
@@ -2773,6 +2794,7 @@
         if (pages.length) ensureLayoutFit(pages);
       }
     }));
+    updateOperationUI();
   }
 
   function changeTranslationLayoutPageZoom(delta, event) {
@@ -3744,12 +3766,37 @@
     catch (error) { toast(`无法读取翻译日志：${error.message}`, "error"); }
   }
 
-  function hasCurrentTranslationForExport(layout) {
-    return layout
-      ? Boolean(state.data?.layout?.model?.pages?.some(page =>
+  function exportToolbarPane() {
+    // 两栏同时显示时，译文是工作台的主要产出；只有明确切到原文单栏
+    // 时，顶部按钮才跟随用户导出原文。
+    return state.readerView === "source" ? "source" : "translation";
+  }
+
+  function exportPaneLabel(pane) {
+    return pane === "source" ? "原文" : "译文";
+  }
+
+  function exportActionLabel(pane, layout = state.mode === "layout") {
+    return `导出${layout ? "排版" : ""}${exportPaneLabel(pane)}`;
+  }
+
+  function hasCurrentExportContent(layout, pane) {
+    const target = pane === "source" ? "source" : "translation";
+    if (layout) {
+      if (target === "source") {
+        return Boolean(state.data?.layout?.model?.pages?.length);
+      }
+      return Boolean(state.data?.layout?.model?.pages?.some(page =>
         (page.blocks || []).some(block => block.translatable && block.translatedText)
-      ))
+      ));
+    }
+    return target === "source"
+      ? Boolean(state.data?.parsed?.markdown)
       : Boolean(state.data?.translation?.markdown);
+  }
+
+  function hasCurrentTranslationForExport(layout) {
+    return hasCurrentExportContent(layout, "translation");
   }
 
   function layoutPDFExportIdentity() {
@@ -3757,17 +3804,42 @@
     return layoutIdentity ? `${layoutIdentity}:pdf-${LAYOUT_PDF_EXPORT_REVISION}` : "";
   }
 
-  async function waitForLayoutPDFReady() {
-    const container = els["translation-layout"];
+  async function waitForLayoutPanePDFReady(pane = "translation") {
+    const container = pane === "source" ? els["source-layout"] : els["translation-layout"];
     // Export is a consumer of the completed reader state, never a reason to
     // start another collision/size solve.  If a normal reader settle is
     // already running, wait for that exact promise; otherwise require its
     // completed result to still be visible and current.
-    const pending = container?._litmtransSettlePromise;
-    if (pending) await pending;
-    if (!container || container.classList.contains("layout-fit-pending") || !container.querySelector(".layout-page")) return false;
-    await nextLayoutPaint();
-    return true;
+    if (!container) return false;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const pending = container._litmtransSettlePromise;
+      if (pending) await pending;
+      if (!container.classList.contains("layout-fit-pending") && container.querySelector(".layout-page")) {
+        await nextLayoutPaint();
+        if (!container.classList.contains("layout-fit-pending") && container.querySelector(".layout-page")) return true;
+      }
+      await nextLayoutPaint();
+    }
+    return false;
+  }
+
+  async function waitForLayoutPDFReady() {
+    return waitForLayoutPanePDFReady("translation");
+  }
+
+  async function ensureSourceLayoutExportPane() {
+    const model = state.data?.layout?.model;
+    if (!model?.pages?.length) throw new Error("排版原文尚未准备好，请先完成文献解析");
+    const container = els["source-layout"];
+    container.classList.add("layout-export-cache");
+    container.hidden = false;
+    const identity = `${layoutFitSnapshotKey("source")}|${model.pages.length}`;
+    if (container.dataset.layoutExportIdentity !== identity || !container.querySelector(".layout-page")) {
+      renderLayoutPane(container, els["source-scroll"], model, false);
+      container.dataset.layoutExportIdentity = identity;
+    }
+    if (!await waitForLayoutPanePDFReady("source")) throw new Error("排版原文尚未完成排版，请稍后再试");
+    return container;
   }
 
   function frozenPrintStyle(pages, paper) {
@@ -4134,8 +4206,11 @@
   }
 
   async function withLayoutPaintPrintRoot(callback) {
-    if (!await waitForLayoutPDFReady()) throw new Error("排版尚未完成，无法生成文本PDF");
-    const source = els["translation-layout"];
+    const pane = arguments[1] === "source" ? "source" : "translation";
+    const source = pane === "source"
+      ? await ensureSourceLayoutExportPane()
+      : els["translation-layout"];
+    if (pane !== "source" && !await waitForLayoutPanePDFReady(pane)) throw new Error("排版尚未完成，无法生成文本PDF");
     const renderVersion = String(source?.dataset.layoutRenderVersion || "");
     const pages = [...source.querySelectorAll(".layout-page")];
     if (!pages.length) throw new Error("没有可导出的排版页面");
@@ -4200,38 +4275,139 @@
     }
   }
 
-  async function exportCurrentTranslationPDF() {
-    const pane = "translation";
-    const layout = state.mode === "layout";
-    if (!hasCurrentTranslationForExport(layout)) {
-      toast(layout ? "当前没有可导出的排版译文" : "当前没有可导出的流式译文", "warning");
-      return;
-    }
-    let pageStyle = null;
-    if (layout) {
-      // The fixed print root supplies its own per-page paper sizes.
-    }
-    else {
-      document.body.dataset.printPane = pane;
-      document.body.dataset.printLayout = "false";
-      pageStyle = document.createElement("style");
-      pageStyle.id = "litmtrans-pdf-page-style";
-      pageStyle.textContent = "@media print { @page { size: A4 portrait; margin: 20mm 18mm 20mm 22mm; } }";
-      document.head.appendChild(pageStyle);
-    }
-    try {
-      if (layout) {
-        const result = await withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>
-          hostCall("export-pdf", { pane, layout: true, expectedPages, layoutPaper })
-        );
-        if (!result?.cancelled) {
-          recordSystemMessage(`PDF已导出：${result.path}`);
-          toast("PDF已导出");
-        }
+  function streamPrintStyle() {
+    return `@media print {
+      @page { size: A4 portrait; margin: 20mm 18mm 20mm 22mm; }
+      html, body { width:auto !important; height:auto !important; overflow:visible !important; background:#fff !important; }
+      body[data-print-snapshot="stream"] > :not(#litmtrans-stream-print-root) { display:none !important; }
+      body[data-print-snapshot="stream"] > #litmtrans-stream-print-root {
+        display:block !important; position:static !important; left:auto !important; top:auto !important;
+        width:auto !important; min-height:0 !important; visibility:visible !important; overflow:visible !important;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body {
+        display:block !important; max-width:none !important; margin:0 !important; padding:0 !important;
+        color:#111 !important; background:#fff !important; font-size:var(--reader-font-size) !important; line-height:1.72 !important;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h1,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h2,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h3,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h4,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h5,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h6 {
+        break-after:avoid; page-break-after:avoid;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body p,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body li,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body blockquote {
+        orphans:3; widows:3;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body figure,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body table,
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body pre {
+        break-inside:avoid; page-break-inside:avoid;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body img {
+        max-width:100% !important; max-height:88vh !important; object-fit:contain;
+      }
+    }`;
+  }
+
+  function waitForPrintImages(root) {
+    const images = [...root.querySelectorAll("img")];
+    return Promise.all(images.map(image => new Promise(resolve => {
+      if (image.complete) {
+        resolve();
         return;
       }
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const result = await hostCall("export-pdf", { pane, layout });
+      let timer = 0;
+      const done = () => {
+        if (timer) clearTimeout(timer);
+        image.removeEventListener("load", done);
+        image.removeEventListener("error", done);
+        resolve();
+      };
+      image.addEventListener("load", done, { once: true });
+      image.addEventListener("error", done, { once: true });
+      timer = setTimeout(done, 5000);
+    })));
+  }
+
+  async function withStreamPrintRoot(pane, callback) {
+    const sourceMarkdown = Markdown.repairEquationReferenceTranslation(
+      "",
+      String(state.data?.parsed?.markdown || "")
+    );
+    const markdown = pane === "source"
+      ? sourceMarkdown
+      : String(state.data?.translation?.markdown || "");
+    if (!markdown.trim()) throw new Error(`当前没有可导出的${exportPaneLabel(pane)}`);
+
+    const root = document.createElement("main");
+    root.id = "litmtrans-stream-print-root";
+    root.style.cssText = "position:absolute;left:-100000px;top:0;width:920px;min-height:1px;visibility:hidden;pointer-events:none;";
+    const content = document.createElement("article");
+    content.className = "markdown-body";
+    root.appendChild(content);
+    renderMarkdownInto(content, markdown, { imageLoading: "eager" });
+    const style = document.createElement("style");
+    style.id = "litmtrans-stream-print-style";
+    style.textContent = streamPrintStyle();
+    document.head.appendChild(style);
+    document.body.appendChild(root);
+    document.body.dataset.printSnapshot = "stream";
+    document.body.dataset.printPane = pane;
+    document.body.dataset.printLayout = "false";
+    try {
+      if (document.fonts?.ready) await document.fonts.ready;
+      await waitForPrintImages(root);
+      await nextLayoutPaint();
+      await nextLayoutPaint();
+      return await callback();
+    }
+    finally {
+      delete document.body.dataset.printSnapshot;
+      delete document.body.dataset.printPane;
+      delete document.body.dataset.printLayout;
+      root.remove();
+      style.remove();
+    }
+  }
+
+  async function exportCurrentReaderPDF(pane = exportToolbarPane()) {
+    const target = pane === "source" ? "source" : "translation";
+    const layout = state.mode === "layout";
+    if (exportBusy) return;
+    if (state.running.size) {
+      toast("当前任务完成后才能导出", "warning");
+      return;
+    }
+    if (!hasCurrentExportContent(layout, target)) {
+      toast(layout
+        ? `当前没有可导出的${exportPaneLabel(target)}`
+        : `当前没有可导出的${exportPaneLabel(target)}`, "warning");
+      return;
+    }
+    exportBusy = true;
+    updateOperationUI();
+    try {
+      let result;
+      if (layout && target === "source") {
+        result = await withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>
+          hostCall("export-pdf", { pane: target, layout: true, expectedPages, layoutPaper }),
+          target
+        );
+      }
+      else if (layout) {
+        result = await withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>
+          hostCall("export-pdf", { pane, layout: true, expectedPages, layoutPaper })
+        );
+      }
+      else {
+        // 流式导出只使用完整持久化Markdown构造独立打印快照，不读取当前滚动区。
+        result = await withStreamPrintRoot(target, () =>
+          hostCall("export-pdf", { pane: target, layout: false })
+        );
+      }
       if (!result?.cancelled) {
         recordSystemMessage(`PDF已导出：${result.path}`);
         toast("PDF已导出");
@@ -4241,11 +4417,8 @@
       toast(error.message, "error");
     }
     finally {
-      if (!layout) {
-        delete document.body.dataset.printPane;
-        delete document.body.dataset.printLayout;
-      }
-      pageStyle?.remove();
+      exportBusy = false;
+      updateOperationUI();
     }
   }
 
@@ -4857,12 +5030,8 @@
     renderNativePDFSelectionToolbar();
   }
 
-  function exportReaderTranslationPDF(pane) {
-    if (pane !== "translation") {
-      toast("仅支持导出当前显示的译文", "warning");
-      return;
-    }
-    void exportCurrentTranslationPDF();
+  function exportReaderPDF(pane) {
+    void exportCurrentReaderPDF(pane);
   }
 
   function bindLayoutInteractions() {
@@ -4971,11 +5140,9 @@
       }
       addSeparator();
       addAction(
-        `导出${paneName === "translation" ? "译文" : "原文"}为PDF`,
-        () => exportReaderTranslationPDF(paneName),
-        paneName === "translation"
-          ? !(state.data?.translation?.markdown || Object.keys(state.data?.layout?.translations || {}).length)
-          : !state.data?.parsed?.markdown
+        `${exportActionLabel(paneName)}为PDF`,
+        () => exportReaderPDF(paneName),
+        state.running.size > 0 || exportBusy || !hasCurrentExportContent(state.mode === "layout", paneName)
       );
 
       document.body.appendChild(menu);
@@ -7093,7 +7260,7 @@
         toggleLayoutDebugMode();
       }
     });
-    els["export-pdf-button"].addEventListener("click", () => { void exportCurrentTranslationPDF(); });
+    els["export-pdf-button"].addEventListener("click", () => { void exportCurrentReaderPDF(); });
     els["settings-button"].addEventListener("click", async () => {
       try { await openSettingsDialog(); }
       catch (error) { toast(error.message, "error"); }
@@ -7321,7 +7488,10 @@
         void hostCall("save-settings", { layoutReaderFonts }).catch(error => toast(error.message, "error"));
         requestAnimationFrame(() => {
           const pages = [...els["translation-layout"].querySelectorAll(".layout-page")];
-          void ensureLayoutFit(pages).then(() => reflectAutomaticLayoutFont(els["translation-layout"]));
+          const sourcePages = [...els["source-layout"].querySelectorAll(".layout-page")];
+          void ensureLayoutFit(pages)
+            .then(() => sourcePages.length ? ensureLayoutFit(sourcePages) : null)
+            .then(() => reflectAutomaticLayoutFont(els["translation-layout"]));
         });
       }
       else {

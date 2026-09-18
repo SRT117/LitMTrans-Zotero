@@ -256,6 +256,16 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 
 /* Match the Zotero Reader preview's top inset so the facing pages share one baseline. */
 .layout-document { width: 100%; min-height: 100%; padding: 6px 12px 100px; }
+#source-layout.layout-export-cache {
+  position: fixed;
+  left: -100000px;
+  top: 0;
+  width: 920px;
+  height: auto;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
 .layout-fit-pending .layout-page-wrap {
   /* The fitter measures real Range glyph rectangles while this mask is
      active. visibility:hidden makes getComputedStyle(text).visibility hidden,

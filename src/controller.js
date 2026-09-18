@@ -4146,6 +4146,19 @@
                 ]);
               }
 
+              // 嵌入的原始PDF属于Zotero Reader子文档，右键事件不会冒泡到
+              // 工作台。把请求转回工作台，复用解析版排版原文的完整导出链路。
+              filteredGroups.push([{
+                label: "导出排版原文为PDF",
+                onCommand: () => {
+                  const sent = controller.sendToPage(runtime, {
+                    type: "event",
+                    payload: { type: "export-reader-pdf", pane: "source" }
+                  });
+                  if (!sent) controller.log("排版原文导出请求未送达工作台");
+                }
+              }]);
+
               for (const [groupIndex, group] of filteredGroups.entries()) {
                 for (const item of group || []) {
                   if (item.groups) {

@@ -299,6 +299,25 @@ function testPDFPreviewLifecycle() {
   assert(styles.includes(".source-pdf.is-initializing") && styles.includes("opacity: 0"), "initializing PDF preview must remain laid out behind the placeholder");
 }
 
+function testPDFExportUsesCompletePaneSources() {
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+
+  assert(workbench.includes("function hasCurrentExportContent(layout, pane)"), "export availability must be decided per pane and reading mode");
+  assert(workbench.includes("function withStreamPrintRoot(pane, callback)"), "stream exports must build an isolated print root");
+  assert(workbench.includes('String(state.data?.translation?.markdown || "")'), "stream translation export must use the persisted full Markdown");
+  assert(workbench.includes('String(state.data?.parsed?.markdown || "")'), "stream source export must use the parsed full Markdown");
+  assert(workbench.includes('document.body.dataset.printSnapshot = "stream"'), "stream export must mark its dedicated print snapshot");
+  assert(workbench.includes('hostCall("export-pdf", { pane, layout: true, expectedPages, layoutPaper })'), "layout translation export must retain the complete fitted-page path");
+  assert(workbench.includes('return state.readerView === "source" ? "source" : "translation";'), "the toolbar must follow the explicitly selected pane");
+  assert(workbench.includes('state.running.size > 0 || exportBusy || !hasCurrentExportContent(state.mode === "layout", paneName)'), "context-menu export must disable unavailable or busy pane targets");
+  assert(workbench.includes("async function ensureSourceLayoutExportPane()"), "layout source export must prepare the parsed source layout");
+  assert(workbench.includes("renderLayoutPane(container, els[\"source-scroll\"], model, false)"), "layout source export must render source blocks instead of copying the PDF");
+  assert(workbench.includes("withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>"), "layout source export must use the complete fitted-page print path");
+  assert(!controller.includes("copiedSource"), "layout source export must not silently copy the original PDF");
+  assert(controller.includes('label: "导出排版原文为PDF"') && controller.includes('type: "export-reader-pdf"'), "embedded Zotero Reader must route parsed-layout export back to the workbench");
+}
+
 function testDeepSeekWebSidebarIntegration() {
   const prefs = fs.readFileSync(path.join(root, "src", "prefs.js"), "utf8");
   const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
@@ -456,6 +475,7 @@ function testDiagramCacheAndPromptModeContracts() {
     testConciseStructuredOperationMessages,
     testDirectExternalLinkOpening,
     testPDFPreviewLifecycle,
+    testPDFExportUsesCompletePaneSources,
     testDeepSeekWebSidebarIntegration,
     testPromptLibraryPresetAndReordering,
     testDiagramCacheAndPromptModeContracts,
