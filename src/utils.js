@@ -787,12 +787,46 @@
     return source.filter(key => sourceCounts.get(key) === 1 && targetCounts.get(key) === 1);
   }
 
+  const DEFAULT_PROMPT_LIBRARY = Object.freeze([
+    {
+      id: "prompt-chatpaper-core-triage",
+      title: "ChatPaper 经典研读四问",
+      content: "请针对当前论文，按照成熟学术研读规范回答以下问题（请用严谨的学术语言，涉及专有名词保留英文）：\n1. 【研究背景与动机】：过去的方法是什么？存在哪些未解决的核心缺陷？本文的研究动机是否充分？\n2. 【方法论具体步骤】：详细描述本文提出的技术路线，拆解为清晰的步骤 (1)... (2)... (3)...；\n3. 【实验任务与支撑力】：在哪些数据集或基准上进行了评估？实验结果是否真正足以支撑作者声称的核心论点？\n4. 【三维综合评价】：请分别从「创新点纯度 (Innovation)」、「性能真实度 (Performance)」、「工作量充实度 (Workload)」三个维度给出中肯评价。"
+    },
+    {
+      id: "prompt-fabric-rigor-audit",
+      title: "Fabric 严谨度与局限性审查",
+      content: "请参考顶刊审稿人标准，对这篇论文的科学严谨性与可靠性进行深度审计：\n1. 【核心发现】：剔除作者的主观修辞，列出文中经实验严格证实的核心结论；\n2. 【潜在混杂因素与漏洞】：控制变量是否严谨？对比基线（Baselines）是否选用了该领域最新的代表性方法？是否存在选择性报告结果的倾向？\n3. 【假设前提与失效模式】：该方法有效依赖于哪些前置假设？在什么场景、数据分布或边界条件下可能失效？\n4. 【未解决的研究缺口】：作者自述或文中回避的明显局限性（Limitations）是什么？"
+    },
+    {
+      id: "prompt-gpt-academic-method-breakdown",
+      title: "算法机制与数学推导拆解",
+      content: "请帮我深入剖析本文的方法（Methodology）章节与核心推导：\n1. 【符号与变量体系】：整理关键公式中的数学符号，逐一说明其代表的物理含义与张量/向量维度；\n2. 【公式直觉与设计意图】：核心损失函数或运算结构为什么这样设计？其直觉（Intuition）与优化目标是什么？\n3. 【执行逻辑伪代码】：将该方法的核心前向推理或计算流程，整理为结构紧凑、带有维度注释的 Python/PyTorch 风格伪代码。"
+    },
+    {
+      id: "prompt-scispace-practical-implications",
+      title: "落地复现与工程避坑清单",
+      content: "我计划在实验中复现这篇论文或将其作为 Baseline。请通读正文与附录（Appendix），提取关键实现细节：\n1. 【核心超参数与环境】：整理学习率、Batch Size、优化器、迭代步数及硬件要求；\n2. 【数据预处理细节】：数据划分方式（是否有潜在泄露）、预处理流程与数据增强策略；\n3. 【工程隐蔽陷阱】：有哪些正文中一笔带过、但实际工程复现极容易踩坑的关键细节或非标准操作？"
+    },
+    {
+      id: "prompt-academic-writing-inspiration",
+      title: "学术论证与写作句式借鉴",
+      content: "请从学术论文写作与论证逻辑的角度分析当前文献：\n1. 【动机叙述架构】：作者如何从已有研究的不足自然过渡到本文工作的？提取 2~3 个具有代表性的高阶论证句式；\n2. 【贡献陈述规范】：分析作者在引言末尾总结 Contributions 时的用词与叙事层次；\n3. 【潜在审稿质询防守】：如果审稿人质疑该方法的计算复杂度或泛化性，作者在文中做了哪些防守性论述？我能如何借鉴这种反驳逻辑？"
+    },
+    {
+      id: "prompt-research-transfer-ideas",
+      title: "课题迁移与改进方向推演",
+      content: "基于本文的核心机制与遗留局限，请推演 3 个具备学术可行性的后续改进或迁移方向：\n1. 【机制缺陷改进】：针对文中最明显的计算瓶颈或假设限制，有哪些可行的优化方案？\n2. 【跨领域迁移】：该方法的核心思想若迁移到相关研究方向，需要克服哪些特有挑战？\n3. 【轻量化/实用化演进】：如果将该方法部署于资源受限或实时场景，可以从哪些环节进行简化或剪枝？"
+    }
+  ]);
+
   LitMTrans.Constants = {
     PREF_BRANCH,
     LEGACY_PREF_BRANCH,
     PROVIDERS,
     LANGUAGE_SUGGESTIONS,
     SUPPORTED_INPUT_EXTENSIONS,
+    DEFAULT_PROMPT_LIBRARY,
     MINERU_API_BASE: "https://mineru.net/api/v4",
     USER_AGENT: "LitMTrans/2.0.0",
     TRANSLATABLE_LAYOUT_TYPES: new Set([

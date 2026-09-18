@@ -483,6 +483,7 @@
           const selected = await driver.selectSession("", documentID, this.establishedSessions.get(sessionKey));
           if (!selected) {
             this.establishedSessions.delete(sessionKey);
+            await this.storage.removeFile(sessionPath).catch(() => {});
             isFirstRound = true;
           }
         }

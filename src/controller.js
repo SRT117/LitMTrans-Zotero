@@ -4,7 +4,50 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
   const CAJ_CACHE_VERSION = 5;
+  const DIAGRAM_CACHE_TASK_TYPES = new Set(["key_points", "paper_mindmap", "paper_logic_flow"]);
+  const DIAGRAM_CACHE_MAX_CHARS = 2 * 1024 * 1024;
   LitMTrans.FEEDBACK_FORM_URL = "https://acnndsd03tis.feishu.cn/share/base/form/shrcn3I4qD4YIyhM6H1KAEQ59zb";
+
+  function diagramCacheTaskType(value) {
+    const taskType = String(value || "").trim();
+    return DIAGRAM_CACHE_TASK_TYPES.has(taskType) ? taskType : "";
+  }
+
+  function diagramCacheMode(value, taskType) {
+    const mode = String(value || "").trim();
+    const expected = taskType === "paper_logic_flow" ? "flowchart" : "mindmap";
+    if (!mode) return expected;
+    return mode === expected ? mode : "";
+  }
+
+  function isDiagramCacheShape(diagram, mode) {
+    if (!diagram || typeof diagram !== "object" || Array.isArray(diagram)) return false;
+    if (!Array.isArray(diagram.nodes) || diagram.nodes.length < 1 || diagram.nodes.length > 64) return false;
+    if (mode === "mindmap") {
+      if (!diagram.root || typeof diagram.root !== "object" || !Array.isArray(diagram.root.children)) return false;
+      const seenIDs = new Set();
+      for (const node of diagram.nodes) {
+        const id = String(node?.id || "");
+        if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id) || seenIDs.has(id) || !String(node?.label || "").trim()) return false;
+        if (!Array.isArray(node?.evidence) || node.evidence.length > 6) return false;
+        seenIDs.add(id);
+      }
+      const seenNodes = new Set();
+      const visit = (node, depth) => {
+        if (!node || typeof node !== "object" || seenNodes.has(node) || depth > 5) return false;
+        if (!seenIDs.has(String(node.id || "")) || !String(node.label || "").trim()) return false;
+        if (!Array.isArray(node.children) || node.children.length > 64) return false;
+        seenNodes.add(node);
+        return node.children.every(child => visit(child, depth + 1));
+      };
+      return diagram.root.parentId == null && visit(diagram.root, 0) && seenNodes.size === diagram.nodes.length;
+    }
+    if (!Array.isArray(diagram.edges) || diagram.edges.length > 112) return false;
+    const nodeIDs = new Set(diagram.nodes.map(node => String(node?.id || "")));
+    if ([...nodeIDs].some(id => !/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id)) || nodeIDs.size !== diagram.nodes.length) return false;
+    if (diagram.nodes.some(node => !String(node?.label || "").trim())) return false;
+    return diagram.edges.every(edge => nodeIDs.has(String(edge?.from || "")) && nodeIDs.has(String(edge?.to || "")));
+  }
 
   function localize(zh, en) {
     const locale = String(Zotero.locale || "").toLowerCase();
@@ -196,6 +239,7 @@
       this.windowBindings = new WeakMap();
       this.tabs = new Map();
       this.operations = new Map();
+      this.diagramCacheLocks = new Map();
       this.readerHandlers = [];
       this.itemPaneSectionID = null;
       this.itemNotifierID = null;
@@ -206,6 +250,29 @@
 
     log(message) {
       if (U.getPref("debug", false)) Zotero.debug(`[LitMTrans] ${message}`);
+    }
+
+    async diagramDocumentID(attachmentID) {
+      const attachment = await this.resolveAttachment(attachmentID);
+      return this.storage.documentID(attachment);
+    }
+
+    async diagramSourceFingerprint(documentID) {
+      let markdown = await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
+      if (!markdown) markdown = await this.storage.readText(this.storage.path(documentID, "full.md"), "");
+      return markdown ? U.hashString(markdown) : "";
+    }
+
+    async withDiagramCacheLock(filePath, operation) {
+      const previous = this.diagramCacheLocks.get(filePath) || Promise.resolve();
+      const current = previous.catch(() => {}).then(operation);
+      this.diagramCacheLocks.set(filePath, current);
+      try {
+        return await current;
+      }
+      finally {
+        if (this.diagramCacheLocks.get(filePath) === current) this.diagramCacheLocks.delete(filePath);
+      }
     }
 
     async init() {
@@ -4547,6 +4614,63 @@
           return match ? { resolved: true, ...match } : { resolved: false };
         }
 
+        case "diagram-get-cached": {
+          const documentID = await this.diagramDocumentID(attachmentID);
+          const taskType = diagramCacheTaskType(payload.taskType);
+          if (!taskType) return { cached: false };
+          const filePath = this.storage.path(documentID, "diagrams", `${taskType}.json`);
+          return this.withDiagramCacheLock(filePath, async () => {
+            const data = await this.storage.readJSON(filePath, null);
+            const mode = String(data?.mode || "");
+            const sourceFingerprint = await this.diagramSourceFingerprint(documentID);
+            const serialized = data?.diagram ? JSON.stringify(data.diagram) : "";
+            if (
+              !data
+              || data.taskType !== taskType
+              || !sourceFingerprint
+              || data.sourceFingerprint !== sourceFingerprint
+              || diagramCacheMode(mode, taskType) !== mode
+              || !isDiagramCacheShape(data.diagram, mode)
+              || serialized.length > DIAGRAM_CACHE_MAX_CHARS
+            ) return { cached: false };
+            return { cached: true, data };
+          });
+        }
+
+        case "diagram-save-cached": {
+          const documentID = await this.diagramDocumentID(attachmentID);
+          const taskType = diagramCacheTaskType(payload.taskType);
+          const mode = diagramCacheMode(payload.mode, taskType);
+          if (!taskType || !mode || !isDiagramCacheShape(payload.diagram, mode)) return { saved: false };
+          const serialized = JSON.stringify(payload.diagram);
+          if (serialized.length > DIAGRAM_CACHE_MAX_CHARS) return { saved: false };
+          const filePath = this.storage.path(documentID, "diagrams", `${taskType}.json`);
+          return this.withDiagramCacheLock(filePath, async () => {
+            const sourceFingerprint = await this.diagramSourceFingerprint(documentID);
+            if (!sourceFingerprint) return { saved: false };
+            await this.storage.writeJSON(filePath, {
+              version: 1,
+              taskType,
+              mode,
+              title: String(payload.title || "图形").trim().slice(0, 120) || "图形",
+              sourceFingerprint,
+              diagram: payload.diagram,
+              updatedAt: new Date().toISOString()
+            });
+            return { saved: true };
+          });
+        }
+
+        case "diagram-clear-cached": {
+          const documentID = await this.diagramDocumentID(attachmentID);
+          const taskType = diagramCacheTaskType(payload.taskType);
+          if (!taskType) return { cleared: false };
+          const filePath = this.storage.path(documentID, "diagrams", `${taskType}.json`);
+          return this.withDiagramCacheLock(filePath, async () => ({
+            cleared: await this.storage.removeFile(filePath)
+          }));
+        }
+
         case "chat-send":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
@@ -4867,10 +4991,22 @@
         content: String(item?.content || "")
       })).filter(item => item.id && (item.title || item.content));
       U.setPref("promptLibrary", JSON.stringify(rows));
+      U.setPref("promptLibraryInitialized", true);
       return this.promptLibrary();
     }
 
     promptLibrary() {
+      const isInitialized = Boolean(U.getPref("promptLibraryInitialized", false));
+      if (!isInitialized) {
+        const rawExisting = U.getPref("promptLibrary", null);
+        if (rawExisting === null) {
+          const defaults = (LitMTrans.Constants.DEFAULT_PROMPT_LIBRARY || []).map(item => ({ ...item }));
+          U.setPref("promptLibrary", JSON.stringify(defaults));
+          U.setPref("promptLibraryInitialized", true);
+          return defaults;
+        }
+        U.setPref("promptLibraryInitialized", true);
+      }
       let rows = [];
       try {
         const raw = U.getPref("promptLibrary", "[]");
@@ -5188,6 +5324,7 @@
           mineruResult: "mineru-result",
           chat: "chat",
           deepseekWeb: "deepseek-web",
+          diagrams: "diagrams",
           logs: "logs"
         };
         const sub = subMap[payload?.subcategory];

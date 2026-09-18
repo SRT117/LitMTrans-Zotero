@@ -54,6 +54,20 @@ async function testChat() {
   assert(keyPoints.session.messages.at(-2).taskInstruction.endsWith(ChatInternals.DIAGRAM_CHINESE_INSTRUCTION), "key-points language rule must remain after any task preference so it cannot be overridden accidentally");
   assert(ChatInternals.PAPER_MINDMAP_TASK_INSTRUCTION.includes("原文语言"), "paper mind-map prompts must request exact source-language evidence for reliable PDF jumps");
   assert(ChatInternals.PAPER_LOGIC_FLOW_TASK_INSTRUCTION.includes("数值指标") && ChatInternals.PAPER_LOGIC_FLOW_TASK_INSTRUCTION.includes("不能翻译、改写、拼接或编造"), "paper logic-flow prompts must require substantive details and exact evidence quotes");
+  const webAutoTask = ChatInternals.taskFor({ taskType: "paper_mindmap", aiMode: "web" }, {});
+  assert.equal(webAutoTask.diagramMode, "mindmap", "diagram tasks must persist their renderer mode");
+  assert.equal(webAutoTask.formatInstruction, ChatInternals.WEB_MINDMAP_FORMAT_INSTRUCTION, "web auto-injection must request readable Markdown instead of the internal JSON protocol");
+  assert(webAutoTask.formatInstruction.includes("[^quote:") && !webAutoTask.formatInstruction.includes("mindmap-v2"), "web Markdown output must carry parseable evidence guidance without exposing the API protocol");
+  assert(webAutoTask.taskInstruction.includes("网页模式覆盖") && webAutoTask.taskInstruction.includes("不要输出 evidence JSON"), "web task content rules must override the API evidence representation");
+  const webFlowTask = ChatInternals.taskFor({ taskType: "paper_logic_flow", aiMode: "web" }, {});
+  assert(webFlowTask.formatInstruction.includes("###")
+    && webFlowTask.formatInstruction.includes("并行分支")
+    && webFlowTask.formatInstruction.includes("汇合"),
+  "web logic-flow prompts must encode parallel branches and convergence instead of a mandatory single chain");
+  const explicitAPITask = ChatInternals.taskFor({ taskType: "paper_mindmap", engine: "api", aiMode: "api" }, { chatEngine: "deepseek_web" });
+  assert.equal(explicitAPITask.formatInstruction, ChatInternals.MINDMAP_V2_FORMAT_INSTRUCTION, "an explicit API transport must not inherit the web Markdown protocol from preferences");
+  const copiedMindmapPrompt = ChatInternals.clipboardTaskPrompt("paper_mindmap", {});
+  assert(copiedMindmapPrompt.includes("```mermaid\nflowchart LR") && copiedMindmapPrompt.includes("classDef"), "clipboard mode must use a styled horizontal Mermaid architecture code-block example");
   const sessions = await chat.listSessions("doc");
   assert.deepEqual(sessions.map(row => row.id), ["document-chat"], "each literature attachment must expose one durable conversation");
   const cleared = await chat.clearSession("doc", session.id);

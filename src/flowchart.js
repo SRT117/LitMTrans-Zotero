@@ -21,33 +21,171 @@
     return String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
   }
 
+  function cleanEvidenceQuote(value, limit = 500) {
+    return String(value ?? "").replace(/\u0000/g, "").trim().slice(0, limit);
+  }
+
   function comparableID(value) {
     return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   }
 
   function mermaidNodeID(value) { return `lm_${String(value || "")}`; }
 
-  function parseFlowchart(value) {
+  function markdownEvidenceQuote(line) {
+    const marked = String(line || "").match(/^>\s*\[\^(?:quote|evidence):\s*([\s\S]*?)\]\s*$/i);
+    if (marked) return marked[1].trim();
+    const labelled = String(line || "").match(/^>\s*(?:quote|evidence):\s*(.+?)\s*$/i);
+    if (labelled) return labelled[1].trim().replace(/^(?:["“])([\s\S]*?)(?:["”])$/, "$1");
+    const quoted = String(line || "").match(/^>\s*["“]([\s\S]*?)["”]\s*$/);
+    return quoted ? quoted[1].trim() : "";
+  }
+
+  function parseMarkdownFlowchart(source) {
+    const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    const rawNodes = [];
+    const rawEdges = [];
+    let counter = 1;
+    const addEdge = (from, to, relation = "next") => {
+      if (!from || !to || from === to) return;
+      if (rawEdges.some(edge => edge.from === from && edge.to === to)) return;
+      rawEdges.push({ from, to, relation });
+    };
+    const createNode = rawText => {
+      let label = String(rawText || "").trim();
+      let detail = "";
+      const splitMatch = label.match(/^\*\*([^*]+)\*\*[：:\s-]*(.+)$/);
+      if (splitMatch) {
+        label = splitMatch[1].trim();
+        detail = splitMatch[2].trim();
+      }
+      const node = {
+        id: `step_${counter++}`,
+        label: cleanLabel(label, 80),
+        detail: cleanLabel(detail, 300),
+        type: "process",
+        role: "process",
+        importance: 2,
+        evidence: []
+      };
+      rawNodes.push(node);
+      return node;
+    };
+    let title = "";
+    let lastNode = null;
+    let inFence = false;
+    let hasRootHeading = false;
+    let hasBranchHeading = false;
+    let hasListItem = false;
+    let currentStage = null;
+    let currentStageGroup = [];
+    let headingStack = [];
+    let bulletStack = [];
+
+    const startStage = rawText => {
+      const node = createNode(rawText);
+      if (currentStageGroup.length) {
+        const groupIDs = new Set(currentStageGroup.map(item => item.id));
+        const outgoing = new Set(rawEdges.filter(edge => groupIDs.has(edge.from)).map(edge => edge.from));
+        const terminals = currentStageGroup.filter(item => !outgoing.has(item.id));
+        for (const terminal of (terminals.length ? terminals : [currentStageGroup[0]])) {
+          addEdge(terminal.id, node.id, "next");
+        }
+      }
+      currentStage = node;
+      currentStageGroup = [node];
+      headingStack = [{ level: 2, node }];
+      bulletStack = [];
+      lastNode = node;
+      return node;
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (/^(?:```|~~~)/.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      const h1 = line.match(/^#\s+(.+)$/);
+      if (h1 && !title) {
+        title = cleanLabel(h1[1], 80);
+        hasRootHeading = Boolean(title);
+        continue;
+      }
+      const quote = markdownEvidenceQuote(line);
+      if (quote && lastNode) {
+        const q = cleanEvidenceQuote(quote);
+        if (q) lastNode.evidence.push({ type: "quote", quote: q });
+        continue;
+      }
+      const heading = line.match(/^(#{2,})\s+(.+)$/);
+      if (heading) {
+        hasBranchHeading = true;
+        const level = heading[1].length;
+        const rawText = heading[2].trim();
+        if (level === 2) {
+          startStage(rawText);
+          continue;
+        }
+        if (!currentStage) continue;
+        while (headingStack.length && headingStack.at(-1).level >= level) headingStack.pop();
+        const parent = headingStack.at(-1)?.node || currentStage;
+        const node = createNode(rawText);
+        addEdge(parent.id, node.id, "parallel");
+        headingStack.push({ level, node });
+        currentStageGroup.push(node);
+        bulletStack = [];
+        lastNode = node;
+        continue;
+      }
+      const itemMatch = rawLine.match(/^(\s*)[-*+]\s+(.+)$/);
+      if (itemMatch) {
+        hasListItem = true;
+        const indentation = itemMatch[1].replace(/\t/g, "  ").length;
+        while (bulletStack.length && bulletStack.at(-1).indent >= indentation) bulletStack.pop();
+        const parent = bulletStack.at(-1)?.node || headingStack.at(-1)?.node || currentStage;
+        const node = createNode(itemMatch[2].trim());
+        if (parent) addEdge(parent.id, node.id, bulletStack.length ? "detail" : "parallel");
+        currentStageGroup.push(node);
+        bulletStack.push({ indent: indentation, node });
+        lastNode = node;
+      }
+    }
+    if (!hasRootHeading || !hasBranchHeading || !hasListItem || rawNodes.length < 2) return null;
+    rawNodes[0].type = "terminator";
+    rawNodes[rawNodes.length - 1].type = "terminator";
+    return {
+      version: 2,
+      mode: "paper-evidence-chain",
+      title: title || "研究逻辑推导流程",
+      layout: "layered",
+      nodes: rawNodes,
+      edges: rawEdges
+    };
+  }
+
+  function parseFlowchart(value, options = {}) {
     const source = String(value || "").replace(/\r\n?/g, "\n");
     const isV2 = source.toLowerCase().indexOf(V2_MARKER) >= 0;
     const marker = isV2 ? V2_MARKER : MARKER;
     const markerAt = source.toLowerCase().indexOf(marker);
-    if (markerAt < 0) return null;
-    const raw = source.slice(markerAt + marker.length).trim();
-    const fenced = raw.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
     let data;
-    try {
-      const payload = fenced ? fenced[1] : raw;
-      // Evidence copied verbatim from papers often contains LaTeX commands.
-      // Models occasionally emit their single backslashes directly, which is
-      // invalid JSON (for example `\circ` or `\mathrm`).  Reuse the guarded
-      // model-JSON reader so one malformed evidence quote cannot discard an
-      // otherwise valid diagram.
-      data = LitMTrans.Utils?.extractJSONObject
-        ? LitMTrans.Utils.extractJSONObject(payload)
-        : JSON.parse(payload);
+    if (markerAt < 0) {
+      if (options?.allowMarkdown !== true) return null;
+      data = parseMarkdownFlowchart(source);
+      if (!data) return null;
+    } else {
+      const raw = source.slice(markerAt + marker.length).trim();
+      const fenced = raw.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
+      try {
+        const payload = fenced ? fenced[1] : raw;
+        data = LitMTrans.Utils?.extractJSONObject
+          ? LitMTrans.Utils.extractJSONObject(payload)
+          : JSON.parse(payload);
+      }
+      catch (_) { return { error: "流程图数据不是有效 JSON。" }; }
     }
-    catch (_) { return { error: "流程图数据不是有效 JSON。" }; }
     if (!data || typeof data !== "object" || Array.isArray(data)) return { error: "流程图必须是一个 JSON 对象。" };
     if (isV2 && Number(data.version) !== 2) return { error: "流程图 V2 缺少 version: 2。" };
     const requestedDirection = String(data.direction || data.layout || "").toUpperCase();

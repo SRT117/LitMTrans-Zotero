@@ -110,6 +110,9 @@
   let copySourceMarkdownBusy = false;
   let manualLayoutTranslations = {};
   let promptLibrarySaveTimer = 0;
+  let promptLibrarySavePromise = null;
+  let promptLibrarySaveRevision = 0;
+  let promptLibrarySavedRevision = 0;
 
   const $ = id => document.getElementById(id);
   const els = {};
@@ -936,7 +939,7 @@
     state.chatFollowLatest = true;
     renderedTranslationMarkdown = null;
     renderedSourceMarkdown = null;
-    state.settings = data?.settings || state.settings;
+    state.settings = mergePromptLibraryDraft(data?.settings || state.settings);
     if (!state.aiModeInitialized) {
       state.aiModeInitialized = true;
       const preferredMode = state.settings?.chatEngine === "deepseek_web" ? "web" : "api";
@@ -3376,6 +3379,49 @@
 
 
 
+  const askDiagramNode = node => {
+    prepareReaderAsk({ type: "text", text: `${node.label || ""}${node.detail ? `：${node.detail}` : ""}`, title: "图形节点" });
+  };
+  const saveDiagramImage = async image => {
+    try {
+      const result = await hostCall("save-image", { name: image.name || "图形.svg", dataURL: image.dataURL });
+      if (!result?.cancelled) toast("图形已保存", "success");
+    }
+    catch (error) { toast(error.message || "保存图形失败", "error"); }
+  };
+  const resolveEvidence = evidence => hostCall("diagram-resolve-evidence", { evidence });
+  const locateEvidence = resolved => void hostCall("reader-preview-jump", {
+    page: resolved.page,
+    highlightRects: resolved.highlightRects || [],
+    highlightText: resolved.highlightText || ""
+  }).catch(error => toast(error.message || "无法定位原文", "error"));
+
+  function openDiagramViewerForTask(taskType, cachedData) {
+    const taskNameMap = { key_points: "要点提炼", paper_mindmap: "论文思维导图", paper_logic_flow: "论文思路流程" };
+    const taskName = taskNameMap[taskType] || "图形";
+    const mode = cachedData?.mode || (taskType === "paper_logic_flow" ? "flowchart" : "mindmap");
+    const diagram = cachedData?.diagram;
+    if (!diagram) return;
+    LitMTrans.DiagramViewer?.open?.({
+      title: cachedData.title || taskName,
+      mode,
+      diagram,
+      onAsk: askDiagramNode,
+      onExport: saveDiagramImage,
+      resolveEvidence,
+      onLocate: locateEvidence,
+      onClear: async () => {
+        const result = await hostCall("diagram-clear-cached", { taskType }, { timeout: 5000 }).catch(() => null);
+        if (!result?.cleared) {
+          toast(`清空[${taskName}]数据失败，请稍后重试`, "error");
+          return;
+        }
+        LitMTrans.DiagramViewer?.close?.();
+        toast(`已清空当前[${taskName}]数据，再次点击顶栏按钮将重新生成`, "info");
+      }
+    });
+  }
+
   function messageNode(message, streaming = false, quoteStartIndex = 0) {
     const wrap = document.createElement("article");
     wrap.className = `chat-message ${message.role}`;
@@ -3456,22 +3502,6 @@
       collapsed = false;
       displayContent = displaySource;
     }
-    const askDiagramNode = node => {
-      prepareReaderAsk({ type: "text", text: `${node.label || ""}${node.detail ? `：${node.detail}` : ""}`, title: "图形节点" });
-    };
-    const saveDiagramImage = async image => {
-      try {
-        const result = await hostCall("save-image", { name: image.name || "图形.svg", dataURL: image.dataURL });
-        if (!result?.cancelled) toast("图形已保存", "success");
-      }
-      catch (error) { toast(error.message || "保存图形失败", "error"); }
-    };
-    const resolveEvidence = evidence => hostCall("diagram-resolve-evidence", { evidence });
-    const locateEvidence = resolved => void hostCall("reader-preview-jump", {
-      page: resolved.page,
-      highlightRects: resolved.highlightRects || [],
-      highlightText: resolved.highlightText || ""
-    }).catch(error => toast(error.message || "无法定位原文", "error"));
     if (flowchart && !flowchart.error) {
       body.className = "markdown-body chat-mindmap-body";
       Flowchart.renderFlowchart(body, flowchart, image => LitMTrans.DiagramViewer?.open?.({
@@ -5745,7 +5775,7 @@
       cardID: state.editingProviderCardID,
       purpose: state.providerCardPurpose
     });
-    state.settings = applied.settings;
+    state.settings = mergePromptLibraryDraft(applied.settings);
     populateSettings(state.settings);
     renderChat();
     els["provider-cards-dialog"].close();
@@ -5757,6 +5787,13 @@
     if (!state.settings) state.settings = {};
     if (!Array.isArray(state.settings.promptLibrary)) state.settings.promptLibrary = [];
     return state.settings.promptLibrary;
+  }
+
+  function mergePromptLibraryDraft(settings) {
+    const hasPendingChanges = Boolean(promptLibrarySaveTimer || promptLibrarySavePromise)
+      || promptLibrarySavedRevision < promptLibrarySaveRevision;
+    if (!hasPendingChanges) return settings;
+    return { ...(settings || {}), promptLibrary: promptLibraryRows() };
   }
 
   function selectedPrompt() {
@@ -5780,6 +5817,8 @@
     if (!item) setPromptLibrarySaveState("", "");
   }
 
+  let draggedPromptID = null;
+
   function renderPromptLibrary(selectID = state.editingPromptID) {
     const rows = promptLibraryRows();
     const target = rows.some(item => item.id === selectID) ? selectID : (rows[0]?.id || "");
@@ -5798,8 +5837,10 @@
         button.className = "prompt-library-item";
         button.dataset.id = item.id;
         button.textContent = item.title.trim() || "未命名条目";
-        button.title = item.title.trim() || "未命名条目";
+        button.title = `${item.title.trim() || "未命名条目"} (可拖动调整排序)`;
         button.classList.toggle("active", item.id === target);
+        button.draggable = true;
+
         button.addEventListener("click", () => {
           if (item.id === state.editingPromptID) return;
           void flushPromptLibrarySave();
@@ -5809,6 +5850,64 @@
             node.classList.toggle("active", node.dataset?.id === item.id);
           }
         });
+
+        button.addEventListener("dragstart", (e) => {
+          draggedPromptID = item.id;
+          button.classList.add("dragging");
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", item.id);
+          }
+        });
+
+        button.addEventListener("dragend", () => {
+          draggedPromptID = null;
+          button.classList.remove("dragging");
+          for (const node of list.children) {
+            node.classList.remove("drag-over-before", "drag-over-after");
+          }
+        });
+
+        button.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          if (!draggedPromptID || draggedPromptID === item.id) return;
+          const rect = button.getBoundingClientRect();
+          const isBefore = e.clientY < rect.top + rect.height / 2;
+          button.classList.toggle("drag-over-before", isBefore);
+          button.classList.toggle("drag-over-after", !isBefore);
+        });
+
+        button.addEventListener("dragleave", (e) => {
+          if (!button.contains(e.relatedTarget)) {
+            button.classList.remove("drag-over-before", "drag-over-after");
+          }
+        });
+
+        button.addEventListener("drop", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          button.classList.remove("drag-over-before", "drag-over-after");
+          const sourceID = draggedPromptID || e.dataTransfer?.getData("text/plain");
+          if (!sourceID || sourceID === item.id) return;
+
+          const currentRows = promptLibraryRows();
+          const fromIndex = currentRows.findIndex(r => r.id === sourceID);
+          const toIndex = currentRows.findIndex(r => r.id === item.id);
+          if (fromIndex === -1 || toIndex === -1) return;
+
+          const rect = button.getBoundingClientRect();
+          const insertBefore = e.clientY < rect.top + rect.height / 2;
+
+          const [movedItem] = currentRows.splice(fromIndex, 1);
+          let newTargetIndex = currentRows.findIndex(r => r.id === item.id);
+          if (!insertBefore) newTargetIndex += 1;
+          currentRows.splice(newTargetIndex, 0, movedItem);
+
+          renderPromptLibrary(state.editingPromptID);
+          schedulePromptLibrarySave();
+        });
+
         return button;
       }));
     }
@@ -5824,11 +5923,13 @@
       content: ""
     };
     rows.push(item);
+    promptLibrarySaveRevision += 1;
     renderPromptLibrary(item.id);
     els["prompt-library-title"].focus();
   }
 
   function schedulePromptLibrarySave() {
+    promptLibrarySaveRevision += 1;
     setPromptLibrarySaveState("saving", "正在保存…");
     clearTimeout(promptLibrarySaveTimer);
     promptLibrarySaveTimer = setTimeout(() => { void persistPromptLibrary(); }, 500);
@@ -5837,24 +5938,55 @@
   async function persistPromptLibrary() {
     clearTimeout(promptLibrarySaveTimer);
     promptLibrarySaveTimer = 0;
-    const cleaned = promptLibraryRows()
-      .map(item => ({ id: item.id, title: String(item.title || "").trim(), content: String(item.content || "") }))
-      .filter(item => item.title || item.content);
-    const selectionSurvives = cleaned.some(item => item.id === state.editingPromptID);
-    try {
-      const saved = await hostCall("save-prompt-library", { library: cleaned });
+    while (true) {
+      if (promptLibrarySavePromise) {
+        try { await promptLibrarySavePromise; }
+        catch (_) {}
+        if (promptLibrarySavedRevision >= promptLibrarySaveRevision) return;
+        if (promptLibrarySaveTimer) return;
+      }
+
+      const revision = promptLibrarySaveRevision;
+      const cleaned = promptLibraryRows()
+        .map(item => ({ id: item.id, title: String(item.title || "").trim(), content: String(item.content || "") }))
+        .filter(item => item.title || item.content);
+      const selectionSurvives = cleaned.some(item => item.id === state.editingPromptID);
+      const request = hostCall("save-prompt-library", { library: cleaned });
+      promptLibrarySavePromise = request;
+      let saved;
+      try {
+        saved = await request;
+      }
+      catch (error) {
+        if (revision !== promptLibrarySaveRevision) {
+          if (promptLibrarySaveTimer) return;
+          continue;
+        }
+        setPromptLibrarySaveState("error", "保存失败");
+        toast(error.message, "error");
+        return;
+      }
+      finally {
+        if (promptLibrarySavePromise === request) promptLibrarySavePromise = null;
+      }
+
+      if (revision !== promptLibrarySaveRevision) {
+        if (promptLibrarySaveTimer) return;
+        continue;
+      }
+
       state.settings = { ...(state.settings || {}), promptLibrary: saved };
+      promptLibrarySavedRevision = revision;
       if (!selectionSurvives) renderPromptLibrary("");
       setPromptLibrarySaveState("", "已自动保存");
-    }
-    catch (error) {
-      setPromptLibrarySaveState("error", "保存失败");
-      toast(error.message, "error");
+      return;
     }
   }
 
   function flushPromptLibrarySave() {
-    if (!promptLibrarySaveTimer) return Promise.resolve();
+    if (!promptLibrarySaveTimer
+        && !promptLibrarySavePromise
+        && promptLibrarySavedRevision >= promptLibrarySaveRevision) return Promise.resolve();
     return persistPromptLibrary();
   }
 
@@ -5988,7 +6120,7 @@
     // Always fetch the canonical settings snapshot when this entry opens.
     // The Zotero preference pane and this workbench must never render two
     // independently cached versions of the configuration.
-    state.settings = await hostCall("get-settings");
+    state.settings = mergePromptLibraryDraft(await hostCall("get-settings"));
     populateSettings(state.settings);
     els["settings-advanced"].open = false;
     els["settings-dialog"].style.height = "auto";
@@ -6005,7 +6137,7 @@
 
   async function ensureMinerUTokenForParse(options = {}) {
     const settings = await hostCall("get-settings");
-    state.settings = settings;
+    state.settings = mergePromptLibraryDraft(settings);
     const expired = options.reason === "expired";
     if (!options.force && String(settings?.mineruToken || "").trim()) return true;
 
@@ -6810,7 +6942,7 @@
       });
       if (choice !== "yes") return state.settings?.translationMode || "full_context";
       const settings = await hostCall("save-settings", { translationMode: "chunked" });
-      state.settings = settings;
+      state.settings = mergePromptLibraryDraft(settings);
       return "chunked";
     };
     const startTranslation = async () => {
@@ -7022,7 +7154,7 @@
     els["save-embedded-chat-settings"].addEventListener("click", async () => {
       try {
         const settings = await hostCall("save-settings", embeddedChatSettingsPayload());
-        state.settings = settings;
+        state.settings = mergePromptLibraryDraft(settings);
         state.chatRenderMarkdown = settings.chatRenderMarkdown !== false;
         populateSettings(settings);
         populateEmbeddedChatSettings(settings);
@@ -7084,6 +7216,7 @@
       const index = rows.indexOf(item);
       rows.splice(index, 1);
       const next = rows[index] || rows[index - 1] || null;
+      promptLibrarySaveRevision += 1;
       renderPromptLibrary(next ? next.id : "");
       void persistPromptLibrary();
     });
@@ -7234,18 +7367,30 @@
     });
     const submitPaperAITask = async taskType => {
       const labels = { key_points: "请提炼当前论文的核心要点。", paper_mindmap: "请建立当前论文的完整知识结构图。", paper_logic_flow: "请重建当前论文的研究逻辑与证据链。" };
+      const taskNameMap = { key_points: "要点提炼", paper_mindmap: "论文思维导图", paper_logic_flow: "论文思路流程" };
+      const taskName = taskNameMap[taskType] || "提示词";
       const isWebEngine = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web";
       const isClipboardMode = isWebEngine && (state.settings?.webInputMode || "auto") === "clipboard";
       if (isClipboardMode) {
+        const freshSettings = await hostCall("get-settings").catch(() => null);
+        if (freshSettings?.clipboardTaskPrompts) state.settings = mergePromptLibraryDraft(freshSettings);
         const prompt = state.settings?.clipboardTaskPrompts?.[taskType];
         if (!prompt) {
           toast("未能加载功能提示词，请重新打开工作台后重试", "error");
           return;
         }
-        if (!await copyText(prompt, "当前处于仅复制模式，已复制提示词到剪贴板")) return;
+        if (!await copyText(prompt, `当前处于仅复制模式，已复制[${taskName}]提示词，提示词不包含原文，请右键手动注入原文`)) return;
         if (document.body.classList.contains("clean-reader-mode")) exitCleanReader();
         setAIMode("web");
         return;
+      }
+      // 只有 DeepSeek 自动注入模式读取图谱快照；API 模式仍按原有流程重新请求。
+      if (isWebEngine) {
+        const cached = await hostCall("diagram-get-cached", { taskType }, { timeout: 5000 }).catch(() => null);
+        if (cached?.cached && cached.data?.diagram) {
+          openDiagramViewerForTask(taskType, cached.data);
+          return;
+        }
       }
       if (!await ensureParsedBeforeChatSend()) return;
       if (state.running.has("chat")) {
@@ -7600,6 +7745,8 @@
         }).filter(Boolean).join("\n\n");
         let promptToCopy = [text, quoteText].filter(Boolean).join("\n\n");
         if (taskType && taskType !== "chat") {
+          const freshSettings = await hostCall("get-settings").catch(() => null);
+          if (freshSettings?.clipboardTaskPrompts) state.settings = mergePromptLibraryDraft(freshSettings);
           const taskPrompt = state.settings?.clipboardTaskPrompts?.[taskType];
           if (!taskPrompt) {
             toast("未能加载功能提示词，请重新打开工作台后重试", "error");
@@ -7614,9 +7761,13 @@
         const omitted = [];
         if (images.length) omitted.push("图片");
         if (documents.length) omitted.push("文档");
-        const copiedMessage = omitted.length
-          ? `当前处于仅复制模式，已复制提示词到剪贴板（${omitted.join("与")}需在网页中手动添加）`
-          : "当前处于仅复制模式，已复制提示词到剪贴板";
+        const taskNameMap = { key_points: "要点提炼", paper_mindmap: "论文思维导图", paper_logic_flow: "论文思路流程", generic_mindmap: "思维导图", generic_flowchart: "流程图" };
+        const taskName = taskNameMap[taskType] || "";
+        const copiedMessage = taskName
+          ? `当前处于仅复制模式，已复制[${taskName}]提示词，提示词不包含原文，请右键手动注入原文`
+          : (omitted.length
+            ? `当前处于仅复制模式，已复制提示词到剪贴板（${omitted.join("与")}需在网页中手动添加）`
+            : "当前处于仅复制模式，已复制提示词到剪贴板");
         const draft = els["chat-input"].value;
         const pendingTaskType = state.pendingTaskType;
         if (!await copyText(promptToCopy, copiedMessage)) return;
@@ -7662,6 +7813,31 @@
         state.selectedText = "";
         state.referenceQuotes = [];
         renderSelection();
+        if (taskType && ["key_points", "paper_mindmap", "paper_logic_flow"].includes(taskType)) {
+          const content = String(result?.message?.content || "");
+          const allowMarkdown = isWeb;
+          const flowchart = taskType === "paper_logic_flow"
+            ? Flowchart?.parseFlowchart?.(content, { allowMarkdown })
+            : null;
+          const mapV2 = taskType !== "paper_logic_flow"
+            ? LitMTrans.MindmapV2?.parse?.(content, { allowMarkdown })
+            : null;
+          if ((mapV2 && !mapV2.error) || (flowchart && !flowchart.error)) {
+            const diagram = mapV2 || flowchart;
+            const mode = mapV2 ? "mindmap" : "flowchart";
+            const title = diagram.title || (taskType === "key_points" ? "论文核心要点" : "知识结构图");
+            void hostCall("diagram-save-cached", { taskType, mode, title, diagram }, { timeout: 5000 })
+              .then(result => {
+                if (isWeb && !result?.saved) toast("图谱已生成，但未能保存本地快照", "warning");
+              })
+              .catch(() => {
+                if (isWeb) toast("图谱已生成，但本地快照保存失败，请稍后重试", "warning");
+              });
+            if (isWeb) {
+              openDiagramViewerForTask(taskType, { title, mode, diagram });
+            }
+          }
+        }
         if (!isWeb) {
           await refreshChatSessions(false);
           renderChat();
@@ -7864,7 +8040,7 @@
     els["save-settings-button"].addEventListener("click", async () => {
       try {
         const settings = await hostCall("save-settings", settingsPayload());
-        state.settings = settings;
+        state.settings = mergePromptLibraryDraft(settings);
         document.body.classList.toggle("layout-debug", false);
         state.chatRenderMarkdown = settings.chatRenderMarkdown !== false;
         state.syncScroll = state.mode === "layout"
@@ -7968,6 +8144,7 @@
       mineruResult: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-archive" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`,
       chat: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-chat" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
       deepseekWeb: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-layers" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
+      diagrams: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-diagrams" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M10 5.5h2a4 4 0 0 1 4 4v6.5"/><path d="m14 13 2 3 2-3"/></svg>`,
       logs: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-logs" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
       other: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-other" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
     };
@@ -7982,6 +8159,7 @@
     mineruResult: "原始解析包 (MinerU)",
     chat: "文献对话与附件",
     deepseekWeb: "页面转图缓存",
+    diagrams: "图谱快照",
     logs: "运行日志与审计",
     other: "其他辅助文件"
   };
@@ -8195,7 +8373,7 @@
           subRow.className = "tree-sub-row";
           subRow.title = `${cat.label}（${cat.formatted}，${cat.files} 个文件）\n\n${cat.desc || ""}\n\n💡 提示：双击可直接在系统文件管理器中打开对应文件夹`;
 
-          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult")
+          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult" || cat.key === "diagrams")
             ? `<button class="tree-action-link danger" type="button" data-action="clear-sub" data-id="${escapeHTML(doc.id)}" data-sub="${cat.key}" title="清空此单项缓存">清空</button>`
             : "";
 

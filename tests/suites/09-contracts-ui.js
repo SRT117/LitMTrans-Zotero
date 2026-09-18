@@ -372,6 +372,82 @@ function testDeepSeekWebSidebarIntegration() {
   assert(workbenchCSS.includes(".deepseek-web-container") && workbenchCSS.includes(".deepseek-web-frame"), "workbench.css must style the web container");
 }
 
+function testPromptLibraryPresetAndReordering() {
+  const workbenchJS = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const workbenchCSS = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+
+  // 1. Constants 契约
+  const defaults = context.LitMTrans?.Constants?.DEFAULT_PROMPT_LIBRARY;
+  assert(Array.isArray(defaults), "DEFAULT_PROMPT_LIBRARY must be an array");
+  assert.equal(defaults.length, 6, "Must provide exactly 6 mature academic preset prompts");
+  for (const item of defaults) {
+    assert(item.id && item.title && item.content, "Each preset prompt must have id, title, and content");
+  }
+
+  // 2. 旧数据迁移、首次预设与删除不恢复测试
+  const controller = new context.LitMTrans.Controller({ rootURI: "chrome://litmtrans/" });
+  const legacyLibrary = [{ id: "legacy-prompt", title: "旧提示词", content: "保留这条" }];
+  prefValues.set("extensions.litmtrans.promptLibrary", JSON.stringify(legacyLibrary));
+  prefValues.delete("extensions.litmtrans.promptLibraryInitialized");
+  assert.deepEqual(controller.promptLibrary(), legacyLibrary, "Existing prompt library must survive first-run migration");
+  assert.equal(prefValues.get("extensions.litmtrans.promptLibraryInitialized"), true, "Migration must mark the prompt library initialized");
+
+  prefValues.delete("extensions.litmtrans.promptLibrary");
+  prefValues.delete("extensions.litmtrans.promptLibraryInitialized");
+
+  // 首次读取：自动填充默认预设
+  const firstLoad = controller.promptLibrary();
+  assert.equal(firstLoad.length, 6, "First-run promptLibrary() must return the 6 default preset prompts");
+  assert.equal(prefValues.get("extensions.litmtrans.promptLibraryInitialized"), true, "promptLibraryInitialized flag must be set");
+
+  // 用户调整顺序并保存
+  const reordered = [firstLoad[1], firstLoad[0], ...firstLoad.slice(2)];
+  controller.savePromptLibrary(reordered);
+  const loadedReordered = controller.promptLibrary();
+  assert.equal(loadedReordered[0].id, firstLoad[1].id, "First item should now be previous second item");
+  assert.equal(loadedReordered[1].id, firstLoad[0].id, "Second item should now be previous first item");
+
+  // 用户将所有条目清空：绝不自动恢复默认
+  controller.savePromptLibrary([]);
+  const cleared = controller.promptLibrary();
+  assert.deepEqual(cleared, [], "Empty library must be preserved and not restored when user deleted all items");
+
+  // 3. UI 交互契约
+  assert(workbenchJS.includes("button.draggable = true"), "workbench prompt-library-item must be draggable");
+  assert(workbenchJS.includes('button.addEventListener("dragstart"'), "workbench must bind dragstart event");
+  assert(workbenchJS.includes('button.addEventListener("dragover"'), "workbench must bind dragover event");
+  assert(workbenchJS.includes('button.addEventListener("drop"'), "workbench must bind drop event");
+  assert(workbenchJS.includes("currentRows.splice"), "drop event must reorder rows using splice");
+  assert(workbenchJS.includes("schedulePromptLibrarySave()"), "drop event must schedule automatic persistence");
+  assert(workbenchJS.includes("promptLibrarySavePromise"), "prompt-library saves must serialize in-flight requests");
+  assert(workbenchJS.includes("promptLibrarySaveRevision"), "prompt-library saves must track local revisions");
+  assert(workbenchJS.includes("revision !== promptLibrarySaveRevision"), "stale prompt-library responses must not overwrite newer edits");
+  assert(workbenchJS.includes("function mergePromptLibraryDraft"), "settings snapshots must preserve pending prompt-library edits");
+
+  assert(workbenchCSS.includes("cursor: grab"), "prompt-library-item must have grab cursor");
+  assert(workbenchCSS.includes(".prompt-library-item.dragging"), "prompt-library-item must have dragging style");
+  assert(workbenchCSS.includes(".prompt-library-item.drag-over-before"), "prompt-library-item must have drag-over-before indicator");
+  assert(workbenchCSS.includes(".prompt-library-item.drag-over-after"), "prompt-library-item must have drag-over-after indicator");
+}
+
+function testDiagramCacheAndPromptModeContracts() {
+  const chat = fs.readFileSync(path.join(root, "src", "chat.js"), "utf8");
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+
+  assert(chat.includes("MINDMAP_V2_FORMAT_INSTRUCTION") && chat.includes("FLOWCHART_V2_FORMAT_INSTRUCTION")
+    && chat.includes("WEB_MINDMAP_FORMAT_INSTRUCTION") && chat.includes("WEB_FLOWCHART_FORMAT_INSTRUCTION"), "API and web diagram protocols must remain separate");
+  assert(chat.includes("MERMAID_MINDMAP_INSTRUCTION") && chat.includes("clipboardTaskPrompt"), "clipboard mode must have a separate Mermaid prompt path");
+  assert(chat.includes("Research Gap") && chat.includes("vs. Baseline/SOTA") && chat.includes("核心机理，禁止单纯堆砌组件或模块名称"),
+    "DEFAULT_KEY_POINTS_PROMPT must incorporate research gap, baseline comparison, and mechanism rules");
+  assert(controller.includes("DIAGRAM_CACHE_TASK_TYPES")
+    && controller.includes("sourceFingerprint")
+    && controller.includes("withDiagramCacheLock"), "diagram cache commands must be scoped, source-bound, and serialized");
+  assert(workbench.includes('hostCall("diagram-get-cached", { taskType }, { timeout: 5000 })')
+    && workbench.includes("清空[${taskName}]数据失败"), "diagram cache UI must have bounded reads and visible clear failures");
+  assert(!workbench.includes('if (renderAssistantMarkdown && message.taskType) {\n      if (flowchart'), "rendering historical chat messages must not rewrite diagram caches with unknown provenance");
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -381,5 +457,7 @@ function testDeepSeekWebSidebarIntegration() {
     testDirectExternalLinkOpening,
     testPDFPreviewLifecycle,
     testDeepSeekWebSidebarIntegration,
+    testPromptLibraryPresetAndReordering,
+    testDiagramCacheAndPromptModeContracts,
   };
 };

@@ -141,6 +141,16 @@
       return this.writeText(path, JSON.stringify(value, null, 2));
     }
 
+    async removeFile(path) {
+      try {
+        await IOUtils.remove(path, { ignoreAbsent: true });
+        return true;
+      }
+      catch (_) {
+        return false;
+      }
+    }
+
     async readBytes(path) {
       return IOUtils.read(path);
     }
@@ -613,6 +623,13 @@
               key: "deepseekWeb",
               desc: "用于 DeepSeek 网页端视觉多模态交互时切分的页面高清截图缓存。"
             },
+            diagrams: {
+              bytes: 0,
+              files: 0,
+              label: "图谱快照",
+              key: "diagrams",
+              desc: "DeepSeek 网页模式生成的思维导图与研究流程快照，可清空后重新生成。"
+            },
             logs: {
               bytes: 0,
               files: 0,
@@ -665,6 +682,9 @@
               } else if (name === "deepseek-web") {
                 categories.deepseekWeb.bytes += subStats.bytes;
                 categories.deepseekWeb.files += subStats.files;
+              } else if (name === "diagrams") {
+                categories.diagrams.bytes += subStats.bytes;
+                categories.diagrams.files += subStats.files;
               } else if (name === "logs" || name === "AI请求审计") {
                 categories.logs.bytes += subStats.bytes;
                 categories.logs.files += subStats.files;
@@ -949,6 +969,8 @@
         targets = [PathUtils.join(docDir, "chat")];
       } else if (subcategory === "deepseekWeb") {
         targets = [PathUtils.join(docDir, "deepseek-web")];
+      } else if (subcategory === "diagrams") {
+        targets = [PathUtils.join(docDir, "diagrams")];
       } else if (subcategory === "logs") {
         targets = [PathUtils.join(docDir, "logs"), PathUtils.join(docDir, "AI请求审计")];
       } else if (subcategory === "model" || subcategory === "other") {
@@ -987,6 +1009,8 @@
         await this.remove(PathUtils.join(docDir, "chat"), true);
       } else if (subcategory === "deepseekWeb") {
         await this.remove(PathUtils.join(docDir, "deepseek-web"), true);
+      } else if (subcategory === "diagrams") {
+        await this.remove(PathUtils.join(docDir, "diagrams"), true);
       } else if (subcategory === "logs") {
         await this.remove(PathUtils.join(docDir, "logs"), true);
         await this.remove(PathUtils.join(docDir, "AI请求审计"), true);

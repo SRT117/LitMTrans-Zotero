@@ -965,9 +965,13 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .prompt-library-grid { min-height: 0; display: grid; grid-template-columns: 215px minmax(0, 1fr); gap: 10px; padding: 12px 14px; overflow: hidden; }
 .prompt-library-list-panel { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 6px; padding: 8px; border: 1px solid var(--line); background: var(--surface-2); }
 .prompt-library-list { min-height: 0; overflow: auto; display: grid; gap: 3px; align-content: start; }
-.prompt-library-item { width: 100%; min-height: 28px; padding: 4px 8px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink-2); font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.prompt-library-item { width: 100%; min-height: 28px; padding: 4px 8px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink-2); font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: grab; user-select: none; transition: border-color .15s ease, background-color .15s ease, opacity .15s ease; }
+.prompt-library-item:active { cursor: grabbing; }
 .prompt-library-item:hover { background: var(--surface-3); color: var(--ink); }
 .prompt-library-item.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--ink); }
+.prompt-library-item.dragging { opacity: .4; background: var(--surface-3); }
+.prompt-library-item.drag-over-before { border-top: 2px solid var(--accent); }
+.prompt-library-item.drag-over-after { border-bottom: 2px solid var(--accent); }
 .prompt-library-empty { padding: 10px 8px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .prompt-library-editor { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; padding: 10px; border: 1px solid var(--line); background: var(--surface-2); }
 .prompt-library-editor label { display: grid; gap: 4px; color: var(--ink-2); font-size: 11px; }

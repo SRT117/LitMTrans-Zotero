@@ -10,10 +10,10 @@
 
   const DEFAULT_KEY_POINTS_PROMPT = `你是一名科研文献要点提炼助手。你的任务是以尽可能少的信息，帮助科研读者快速判断：
 
-* 这篇论文研究什么问题；
-* 作者如何获得证据；
-* 得到了什么核心结果；
-* 这些结论在什么范围和条件下成立。
+* 这篇论文研究什么问题，前人方案卡在何处（Research Gap）；
+* 作者提出了什么核心机制，如何解决该矛盾；
+* 取得了什么经严格验证的关键结果，对比基线提升幅度如何；
+* 这些结论在什么适用范围和条件下成立。
 
 仅使用所提供文档中的信息。
 
@@ -23,19 +23,19 @@
 
 中心主题固定为“论文核心”，并使用以下四个主分支：
 
-* 问题：研究对象、核心问题或假设，以及论文试图解决的关键缺口。
-* 方法：作者用什么设计、数据、材料、模型、理论、实验或分析过程获得核心证据。只保留理解结果可信度或贡献所必需的方法信息。
-* 结果：论文最重要的发现或结论，以及理解这些发现所必需的效应方向、大小、指标、比较对象、条件和不确定性。
-* 边界：研究实际覆盖的人群、数据、材料、场景、条件或理论假设，以及作者明确指出的重要局限或证据不足之处。
+* 问题：研究对象与核心假设。重点提炼前人代表性方案的缺陷或现有范式未解决的具体矛盾（Research Gap），避免泛泛罗列宏观大背景。
+* 方法：作者获得核心证据的关键设计、模型、算法、材料或实验路线。重点说明克服上述瓶颈的核心机理，禁止单纯堆砌组件或模块名称。
+* 结果：论文最重要的发现或经严格验证的结论。量化指标优先给出相对于主要基线（vs. Baseline/SOTA）的增益幅度或对照差异，避免缺乏参照系的孤立绝对值。
+* 边界：研究实际覆盖的人群、数据分布、工况、场景、条件或理论假设，以及作者明确披露的重要局限、失效边界或证据不足之处。
 
 不同研究类型按其实际内容理解上述分支：
 
 * 实验或观察研究：重点关注研究设计、样本/对象、干预或比较、主要结局及不确定性。
-* 方法、模型或工具论文：重点关注核心创新、与什么基线比较、在哪些任务或数据上验证，以及性能成立的条件。
-* 理论研究：方法可包括关键假设、推导、证明或模拟；结果可包括主要定理、理论结论及成立条件。
-* 系统综述或 Meta 分析：方法重点关注检索、纳入和综合方式；结果重点关注综合结论、效应及异质性。
-* 定性研究：方法重点关注研究对象、资料收集和分析方式；结果重点关注核心主题、模式或机制。
-* 数据、材料或资源论文：方法重点关注资源如何构建和验证；结果重点关注资源规模、质量、覆盖范围和验证结果。
+* 方法、模型或工具论文：重点关注核心机制创新、与什么基线比较、在哪些任务或数据上验证，以及性能成立的前提条件。
+* 理论研究：方法包括核心公理与假设、推导或证明思路；结果包括主要定理、理论推论及成立条件。
+* 系统综述或 Meta 分析：方法重点关注检索、纳入和综合方式；结果重点关注综合效应量、异质性及证据确定性。
+* 定性研究：方法重点关注研究对象、资料收集和分析方式；结果重点关注核心主题、模式或解释机制。
+* 数据、材料或资源论文：方法重点关注资源如何构建和清洗验证；结果重点关注资源规模、质量、覆盖范围和验证结果。
 
 内容规则：
 
@@ -44,27 +44,60 @@
 3. 总节点通常控制在八至十四个，最多十六个。不得为了达到节点数量而补充次要信息。
 4. 优先保留最能体现论文新增贡献的内容。独立贡献通常保留最重要的两项；只有第三项同样属于论文核心时才保留。
 5. 数字只有在影响效应大小、比较判断、可信程度或适用条件时优先保留。
-6. 保留关键数字时，应尽可能同时保留其指标、单位、比较对象、样本量或实验条件，避免孤立数字。
+6. 保留关键数字时，必须指明指标、单位、比较对象（如对比基线名称）或实验条件，杜绝无参照系孤立数字。
 7. 优先保留会改变结果解释的信息，例如样本或数据范围、主要基线、评价条件、效应大小、不确定性、置信区间或统计显著性。
-8. 不得把相关性表述为因果关系，不得扩大作者结论的适用范围，不得删除会实质改变结论含义的限定词。
-9. 公式、模型名称、参数、材料、设备、数据集或软件名称，仅在理解核心贡献、证据或复现条件所必需时保留。
-10. “边界”可以根据研究设计直接说明研究实际覆盖的对象和条件，但不得自行推导作者未提出的缺陷、风险或批评。
-11. 作者明确说明的局限可以直接提炼；未明确说明的局限不得自行补充。
-12. 仅使用文档明确支持的信息，不使用外部知识，不猜测作者意图。
-13. 对于本应与理解论文核心有关、但文档确实未提供的信息，使用“文档未明确”；对于该研究类型本身不适用的事项，不要使用“文档未明确”强行填充。
-14. 如果 PDF/OCR/公式/表格/图注等解析异常导致某项内容无法可靠确认，在受影响节点末尾添加“[解析存疑]”。不要用该标记表示论文自身的不确定性。
-15. 不提供一般背景综述、逐章节复述、扩展教学解释、建议、未来工作、引言或结语。
-16. 不以不同措辞重复同一信息。
-17. 在最终输出前检查每个节点：必须能在文档中找到直接支持；若无法找到，删除或改为“文档未明确”。
-18. 输出格式严格遵循系统附加的思维导图格式要求。
+8. 痛点对齐与机制对应：方法分支提炼的核心机制，必须与问题分支指出的前人缺陷形成逻辑呼应，点明其为何能突破瓶颈。
+9. 剔除宣传修辞：删除“开创性的”、“卓越的”、“前所未有的”等主观宣传用词，仅保留客观机理、对比幅度与可信证据。
+10. 不得把相关性表述为因果关系，不得扩大作者结论的适用范围，不得删除会实质改变结论含义的限定词。
+11. 公式、模型名称、参数、材料、设备、数据集或软件名称，仅在理解核心贡献、证据或复现条件所必需时保留。
+12. “边界”可以根据研究设计直接说明研究实际覆盖的对象和条件，但不得自行推导作者未提出的缺陷、风险或批评。
+13. 作者明确说明的局限可以直接提炼；未明确说明的局限不得自行补充。
+14. 仅使用文档明确支持的信息，不使用外部知识，不猜测作者意图。
+15. 对于本应与理解论文核心有关、但文档确实未提供的信息，使用“文档未明确”；对于该研究类型本身不适用的事项，不要使用“文档未明确”强行填充。
+16. 如果 PDF/OCR/公式/表格/图注等解析异常导致某项内容无法可靠确认，在受影响节点末尾添加“[解析存疑]”。不要用该标记表示论文自身的不确定性。
+17. 不提供一般背景综述、逐章节复述、扩展教学解释、建议、未来工作、引言或结语。
+18. 不以不同措辞重复同一信息。
+19. 在最终输出前检查每个节点：必须能在文档中找到直接支持；若无法找到，删除或改为“文档未明确”。
+20. 输出格式严格遵循系统附加的思维导图格式要求。
 
 信息取舍的优先级依次为：
 
-核心贡献与主要结论 ＞ 影响结论解释的证据与条件 ＞ 核心方法 ＞ 适用范围与重要局限 ＞ 次要实验和实现细节。`;
+核心贡献与主要结论 ＞ 影响结论解释的证据与条件 ＞ 核心方法机理 ＞ 适用范围与重要局限 ＞ 次要实验和实现细节。`;
   const DIAGRAM_CHINESE_INSTRUCTION = "语言要求：除 evidence 中逐字引用的 quote 必须保持论文原文外，title、所有节点的 label/detail、以及边的可见 label 必须使用简体中文。专业名词可在中文后保留必要的英文名称或缩写，但不得因为论文或上下文原文是英文而输出整句英文。协议字段 id、kind、type、role、relation 仍按协议使用英文值。";
   const EVIDENCE_JSON_ESCAPE_INSTRUCTION = "evidence quote 必须逐字保留原文；如果原文包含反斜杠，必须按照 JSON 字符串规则写成两个反斜杠，解析后仍还原为一个原文反斜杠。";
   const MINDMAP_V2_FORMAT_INSTRUCTION = `只输出图形协议：第一行必须是 <!-- litmtrans-mindmap-v2 -->，随后只输出一个 JSON 对象。对象必须包含 version:2、mode、title、nodes。nodes 只有一个 parentId 为 null 的 root；每个节点必须有唯一 ASCII id、parentId、包含完整表达语义的 label、可选 detail、kind、importance(1-3)、可选 evidence(必须是对象数组)。注意：图表引擎不支持渲染 LaTeX，请绝对不要在 label 和 detail 中使用任何 LaTeX 公式或反斜杠转义符号，必须全部使用纯文本或 Unicode 字符替代（例如用 H₂O 代替公式写法，用 cm⁻¹ 代替复杂的物理单位公式）。${EVIDENCE_JSON_ESCAPE_INSTRUCTION}不得输出 Markdown、代码围栏、颜色、SVG 或任何额外文字。${DIAGRAM_CHINESE_INSTRUCTION}`;
   const FLOWCHART_V2_FORMAT_INSTRUCTION = `只输出图形协议：第一行必须是 <!-- litmtrans-flowchart-v2 -->，随后只输出一个 JSON 对象。对象必须包含 version:2、mode、title、layout、nodes、edges。节点有唯一 ASCII id、type、role、包含完整表达语义的 label (必须且只能叫 label，不能用其他字段名)、可选 detail、importance(1-3)、可选 evidence(必须是对象数组)。注意：图表引擎不支持渲染 LaTeX，请绝对不要在节点 label/detail 或边的可见 label 中使用任何 LaTeX 公式或反斜杠转义符号，必须全部使用纯文本或 Unicode 字符替代（例如用 H₂O 代替公式写法，用 cm⁻¹ 代替复杂的物理单位公式）。${EVIDENCE_JSON_ESCAPE_INSTRUCTION}type 只可为 terminator/process/decision/io/subprocess/database/document，role 只表达科研角色。边必须有 from/to/relation 和可选短 label。不得输出 Markdown、代码围栏、颜色、SVG 或任何额外文字。${DIAGRAM_CHINESE_INSTRUCTION}`;
+  const WEB_MINDMAP_FORMAT_INSTRUCTION = `网页自动注入模式只输出可读的 Markdown 结构化笔记，不输出 JSON、Mermaid、代码围栏或解释性前后文。使用一个一级标题作为中心主题、二级标题作为主分支、无序列表作为节点；列表项使用“**节点标题**：具体事实”格式，关键节点下一行可附一条逐字原文证据，格式为“> [^quote: 原文]”。节点应保留关键数字、条件、比较对象和结论边界，不要把论文目录直接当作分支。示例：
+# 论文核心
+## 研究问题
+- **研究缺口**：论文明确指出的待解决问题
+> [^quote: The exact source sentence.]
+## 核心结果
+- **主要发现**：结果、指标及成立条件。`;
+  const WEB_FLOWCHART_FORMAT_INSTRUCTION = `网页自动注入模式只输出可读的 Markdown 研究逻辑大纲，不输出 JSON、Mermaid、代码围栏或解释性前后文。请把论文画成“阶段—并行路径—汇合判断”的有向论证图，而不是一条从上到下的线：
+1. 使用一个一级标题作为流程主题；每个二级标题（##）表示一个按论证推进的阶段或汇合点，例如问题与缺口、核心设计、并行证据、结论与边界。
+2. 同一个二级阶段下，如果论文存在不同实验、对照组、消融、参数条件、机制解释或相互独立的证据，必须为每条真实路径使用一个三级标题（###）。同级三级标题是并行分支，不能写成连续的“然后……再……”；下一个二级标题才表示这些分支汇合后的判断。
+3. 事实写在标题下的无序列表中，使用“**节点标题**：具体对象、条件、数值、比较和结论”格式。三级分支下至少保留一个有实际信息的列表节点；不要为了好看凭空制造分支。若论文确实只有单一路径，才使用单线结构。
+4. 关键节点下一行可附一条逐字原文证据，格式为“> [^quote: 原文]”。证据必须紧跟它支持的节点，不能翻译、改写或编造。
+
+示例（三级标题表示并行，最后一个二级标题表示汇合）：
+# 研究逻辑与证据链
+## 1. 问题与缺口
+- **研究问题**：论文要解决的具体问题与现有方法缺口
+## 2. 核心设计
+### 路径 A：核心方法
+- **机制**：方法如何处理关键瓶颈
+> [^quote: The exact source sentence.]
+### 路径 B：对照或替代方案
+- **比较对象**：与基线/替代设计的差异
+## 3. 并行证据与验证
+### 实验结果
+- **结果**：在具体数据和条件下得到的指标
+### 消融或稳健性
+- **边界证据**：去除组件或改变条件后的变化
+## 4. 汇合结论与边界
+- **结论**：哪些证据共同支持结论，以及结论的适用条件。`;
+  const WEB_DIAGRAM_CONTENT_INSTRUCTION = "网页模式覆盖：上文的内容取舍要求仍然有效，但不要输出 evidence JSON、LitMTrans 内部标记、Mermaid 或其他协议字段；所有节点和逐字证据必须改用下方 Markdown 格式表达。";
   const PAPER_MINDMAP_TASK_INSTRUCTION = "为当前论文建立完整科研认知地图。先判断论文类型，再围绕核心问题或贡献组织树：研究背景/缺口、问题或假设、设计与关键方法、数据或证据、主要结果、机制或推理、验证与比较、贡献、适用边界。不要把目录或 Introduction/Methods/Results/Discussion 当作分支；用 25–55 个有价值节点（短文可更少），3–4 层为主，label 应包含完整的知识认知要点，无需刻意简短或拆分；原始证据放入 evidence。为最重要的结果、方法、结论或边界节点补充 evidence：使用 {type:\"quote\",quote:\"…\"}，quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写或编造；没有可靠短句时留空。只使用文献直接支持的信息。";
   const PAPER_LOGIC_FLOW_TASK_INSTRUCTION = "重建当前论文的研究逻辑与证据链，而不是章节目录、摘要路线图或只有‘方法—验证—结论’的空泛框架。根据论文类型组织从背景/痛点、缺口、研究问题或假设、核心设计、关键证据、结果、推理/机制、结论到边界的有向关系；边优先表达 motivates/tests/produces/supports/explains/validates/limits。通常保留 10–24 个有实际信息的节点，必要时把并行实验、对照组、消融、参数变化和相互矛盾的证据拆成独立分支后汇合。每个节点都必须回答一个具体问题：做了什么、在什么条件下、得到什么结果、支持或限制什么判断；除纯背景/问题节点外必须填写 detail，用一至三句保留关键对象、方法配置、样本或工况、数值指标、比较基线、方向与幅度、失败条件或适用阈值。禁止使用‘开展实验’‘验证与对比’‘获得结果’‘得出结论’等没有对象和结果的空洞节点；label 可以简洁，但 detail 必须直接呈现实际干货，不能把节点信息藏进点击展开区。每个包含论文事实的节点都必须补充至少一条原文逐字 evidence quote，格式为 {type:\"quote\",quote:\"…\"}；只有纯粹用于组织关系、且论文中没有对应原句的节点可以没有 evidence。不要把多个不同结果压缩成一个总结节点。只有真实条件判断才使用 decision，绝不为了装饰滥用菱形或数据库。quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写、拼接或编造，不能可靠逐字引用时不要编造。只使用文献直接支持的信息。";
   const GENERIC_MINDMAP_TASK_INSTRUCTION = "把用户明确要求整理的内容转换成一张层级清晰的语义思维导图。保留用户指定的范围，不套用论文目录。label 应直接包含完整的知识描述，无需拆分到 detail。";
@@ -86,8 +119,20 @@
     };
     const diagramMode = ["key_points", "paper_mindmap", "generic_mindmap"].includes(taskType) ? "mindmap" : (["paper_logic_flow", "generic_flowchart"].includes(taskType) ? "flowchart" : "none");
     const frame = frames[taskType] || "";
-    const taskInstruction = diagramMode === "none" || !frame ? frame : `${frame}\n\n${DIAGRAM_CHINESE_INSTRUCTION}`;
-    return { taskType, taskInstruction, diagramMode, formatInstruction: diagramMode === "mindmap" ? MINDMAP_V2_FORMAT_INSTRUCTION : (diagramMode === "flowchart" ? FLOWCHART_V2_FORMAT_INSTRUCTION : "") };
+    const hasExplicitTransport = Boolean(options?.engine || options?.aiMode || options?.provider);
+    const isWeb = options?.aiMode === "web"
+      || options?.engine === "deepseek_web"
+      || options?.provider === "deepseek_web"
+      || (!hasExplicitTransport && settings?.chatEngine === "deepseek_web");
+    const taskInstruction = diagramMode === "none" || !frame
+      ? frame
+      : `${frame}\n\n${DIAGRAM_CHINESE_INSTRUCTION}${isWeb ? `\n\n${WEB_DIAGRAM_CONTENT_INSTRUCTION}` : ""}`;
+    const formatInstruction = diagramMode === "mindmap"
+      ? (isWeb ? WEB_MINDMAP_FORMAT_INSTRUCTION : MINDMAP_V2_FORMAT_INSTRUCTION)
+      : (diagramMode === "flowchart"
+        ? (isWeb ? WEB_FLOWCHART_FORMAT_INSTRUCTION : FLOWCHART_V2_FORMAT_INSTRUCTION)
+        : "");
+    return { taskType, taskInstruction, diagramMode, formatInstruction };
   }
 
   const IMAGE_MIME_EXTENSIONS = Object.freeze({
@@ -248,7 +293,59 @@
     return formatInstruction ? `${answer}${task}\n\n输出格式要求：\n${formatInstruction}` : `${answer}${task}`;
   }
 
+  const MERMAID_MINDMAP_INSTRUCTION = `请将分析结果输出为标准 Mermaid 横向全景架构图代码块：
+\`\`\`mermaid
+flowchart LR
+  root[论文核心] --> gap[研究问题与缺口]
+  gap --> method[核心方法与机制]
+  method --> evidence[关键证据与结果]
+  evidence --> boundary[结论与适用边界]
+  classDef root fill:#304956,stroke:#1c303d,color:#ffffff,stroke-width:1.4px
+  classDef stage fill:#f3f7f8,stroke:#758e9b,color:#183246,stroke-width:1.1px
+  classDef result fill:#f0f6f3,stroke:#668777,color:#1e4030,stroke-width:1.2px
+  class root root
+  class gap,method stage
+  class evidence,boundary result
+\`\`\`。
+要求：
+1. 只输出 Mermaid 代码块，不输出解释、JSON、LitMTrans 内部标记或其他格式；
+2. 使用 flowchart LR 的横向关系表达全景结构，节点使用精炼短语表达事实，重要数值和核心发现直接写入节点；
+3. 保持低饱和学术配色，不要使用荧光色、HTML 标签、复杂样式或未声明的节点引用。`;
+
+  const MERMAID_FLOWCHART_INSTRUCTION = `请将分析对象的研究逻辑与证据链条输出为标准 Mermaid 流程图代码块：
+\`\`\`mermaid
+flowchart LR
+  problem[研究问题] --> method[核心方法]
+  method --> evidence[关键证据]
+  evidence --> conclusion[结论与边界]
+  classDef stage fill:#f3f7f8,stroke:#758e9b,color:#183246,stroke-width:1.1px
+  classDef result fill:#f0f6f3,stroke:#668777,color:#1e4030,stroke-width:1.2px
+  class problem,method stage
+  class evidence,conclusion result
+\`\`\`。
+要求：
+1. 只输出 Mermaid 代码块，不输出解释、JSON、LitMTrans 内部标记或其他格式；
+2. 使用 flowchart LR 的横向关系，真实反映从痛点/假设、方法验证、实验结果到结论边界的关系，边上使用简短动词标注；
+3. 保持低饱和学术配色，不要使用荧光色、HTML 标签、复杂样式或未声明的节点引用。`;
+
   function clipboardTaskPrompt(taskType, settings) {
+    // 仅复制模式：供用户复制到外部网页使用。为了在外部网页原生直接渲染出美观的图形，优先采用标准的 Mermaid 协议，杜绝内部代码或 JSON 裸奔。
+    if (taskType === "key_points") {
+      const keyPointsPrompt = String(settings?.keyPointsPrompt || DEFAULT_KEY_POINTS_PROMPT).trim();
+      return `${keyPointsPrompt}\n\n${MERMAID_MINDMAP_INSTRUCTION}\n\n仅复制模式覆盖规则：不要输出 LitMTrans 内部标记、JSON 或其他格式；最终只输出上面的 Mermaid 代码块。`;
+    }
+    if (taskType === "paper_mindmap") {
+      return `请基于当前论文内容，建立完整的科研全景认知地图。\n\n${MERMAID_MINDMAP_INSTRUCTION}`;
+    }
+    if (taskType === "paper_logic_flow") {
+      return `请重建当前论文的研究逻辑与证据链条。\n\n${MERMAID_FLOWCHART_INSTRUCTION}`;
+    }
+    if (taskType === "generic_mindmap") {
+      return `请根据用户当前输入的主题或内容，建立层级清晰的 Mermaid 思维导图。\n\n${MERMAID_MINDMAP_INSTRUCTION}`;
+    }
+    if (taskType === "generic_flowchart") {
+      return `请根据用户当前输入的过程、算法或逻辑，建立真实反映关系的 Mermaid 流程图。\n\n${MERMAID_FLOWCHART_INSTRUCTION}`;
+    }
     const task = taskFor({ taskType }, settings);
     return messageTextForAPI({
       role: "user",
@@ -2417,6 +2514,15 @@
           ? options
           : { ...options, engine: storedEngine === "deepseek_web" ? "deepseek_web" : "api", aiMode: storedEngine === "deepseek_web" ? "web" : "api" });
       this.updateSessionModel(session, emit, transport);
+      if (isWeb && ["key_points", "paper_mindmap", "paper_logic_flow"].includes(session.messages[range.start]?.taskType)) {
+        const task = taskFor({ taskType: session.messages[range.start].taskType, aiMode: "web" }, this.llm.getSettings("chat"));
+        session.messages[range.start] = {
+          ...session.messages[range.start],
+          taskInstruction: task.taskInstruction,
+          diagramMode: task.diagramMode,
+          formatInstruction: task.formatInstruction
+        };
+      }
       if (editedText !== undefined) {
         const content = String(editedText || "").trim();
         if (!content) throw new Error("消息内容不能为空");
@@ -2525,6 +2631,8 @@
     FLOWCHART_FORMAT_INSTRUCTION,
     MINDMAP_V2_FORMAT_INSTRUCTION,
     FLOWCHART_V2_FORMAT_INSTRUCTION,
+    WEB_MINDMAP_FORMAT_INSTRUCTION,
+    WEB_FLOWCHART_FORMAT_INSTRUCTION,
     PAPER_MINDMAP_TASK_INSTRUCTION,
     PAPER_LOGIC_FLOW_TASK_INSTRUCTION,
     taskFor,

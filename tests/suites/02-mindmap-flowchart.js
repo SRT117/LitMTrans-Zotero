@@ -34,6 +34,18 @@ function testMindmap() {
   assert(!v2.error && v2.root.children[0].id === "result", "semantic Mindmap V2 must build a validated tree");
   const invalidV2 = MindmapV2.parse(`${MindmapV2.MARKER}\n{"version":2,"nodes":[{"id":"a","parentId":"b","label":"A"},{"id":"b","parentId":"a","label":"B"}]}`);
   assert(invalidV2.error, "cyclic V2 mind maps must fail gracefully");
+  const webMarkdown = MindmapV2.parse(`# 论文核心
+## 研究问题
+- **研究缺口**：待解决的问题
+  - **具体表现**：可核对的细节
+> [^quote: The  exact source sentence.]
+## 结果
+- **主要发现**：关键结果`, { allowMarkdown: true });
+  assert(!webMarkdown.error
+    && webMarkdown.root.children[0].children[0].children[0].label === "具体表现"
+    && webMarkdown.root.children[0].children[0].children[0].evidence[0].quote === "The  exact source sentence.",
+  "web Markdown mind maps must retain nested nodes and verbatim evidence quotes");
+  assert.equal(MindmapV2.parse("# 普通回答\n## 一般说明\n- 项目一\n- 项目二"), null, "ordinary Markdown must not become a V2 mind map");
   const latexEvidence = MindmapV2.parse(`${MindmapV2.MARKER}\n{"version":2,"nodes":[{"id":"root","parentId":null,"label":"结果","kind":"root","evidence":[{"type":"quote","quote":"The value is $T_{\\mathrm{b}}$."}]}]}`);
   assert(!latexEvidence.error, "bare LaTeX backslashes in model-provided mind-map evidence must be repaired");
   assert.equal(latexEvidence.root.evidence[0].quote, "The value is $T_{\\mathrm{b}}$.", "repairing model JSON must preserve the evidence quote");
@@ -52,6 +64,35 @@ function testFlowchart() {
     edges: []
   })}`);
   assert(!researchScale.error, "a 44-node research workflow must not be rejected by the safety limit");
+  const webMarkdown = Flowchart.parseFlowchart(`# 研究逻辑与证据链
+## 研究问题
+- **问题**：待解决的问题
+> [^evidence: The  exact source sentence.]
+## 结论
+- **结论**：适用边界`, { allowMarkdown: true });
+  assert(!webMarkdown.error && webMarkdown.nodes.find(node => node.evidence?.[0])?.evidence[0].quote === "The  exact source sentence.", "web Markdown flowcharts must parse evidence quotes verbatim");
+  const branchedMarkdown = Flowchart.parseFlowchart(`# 研究逻辑与证据链
+## 问题与缺口
+- **问题**：待解决的问题
+## 核心设计
+### 路径 A：核心方法
+- **机制**：处理关键瓶颈的方法
+### 路径 B：对照实验
+- **比较**：与基线方法的差异
+## 汇合结论
+- **结论**：两条证据共同支持的判断`, { allowMarkdown: true });
+  const design = branchedMarkdown?.nodes.find(node => node.label === "核心设计");
+  const pathA = branchedMarkdown?.nodes.find(node => node.label === "路径 A：核心方法");
+  const pathB = branchedMarkdown?.nodes.find(node => node.label === "路径 B：对照实验");
+  const resultA = branchedMarkdown?.nodes.find(node => node.label === "机制");
+  const resultB = branchedMarkdown?.nodes.find(node => node.label === "比较");
+  const convergence = branchedMarkdown?.nodes.find(node => node.label === "汇合结论");
+  const hasEdge = (from, to) => branchedMarkdown?.edges.some(edge => edge.from === from?.id && edge.to === to?.id);
+  assert(!branchedMarkdown?.error && design && pathA && pathB && resultA && resultB && convergence
+    && hasEdge(design, pathA) && hasEdge(design, pathB)
+    && hasEdge(resultA, convergence) && hasEdge(resultB, convergence),
+  "web Markdown flowcharts must preserve parallel branches and converge at the next stage");
+  assert.equal(Flowchart.parseFlowchart("# 普通回答\n## 一般说明\n- 项目一\n- 项目二"), null, "ordinary Markdown must not become a flowchart");
   assert(Flowchart.parseFlowchart(`${Flowchart.MARKER}\n{"nodes":[{"id":"ok","type":"process","label":"步骤"}],"edges":[{"from":"ok","to":"missing"}]}`).error, "unknown edge endpoints must be rejected");
   const v2 = Flowchart.parseFlowchart(`${Flowchart.V2_MARKER}\n${JSON.stringify({ version: 2, mode: "paper_logic_flow", title: "研究逻辑", layout: "LR", nodes: [{ id: "gap", type: "process", role: "gap", label: "研究缺口" }, { id: "evidence", type: "io", role: "evidence", label: "关键证据", detail: "准确率相对基线提高 12%", evidence: [{ type: "quote", quote: "Accuracy increased by 12%." }] }], edges: [{ from: "gap", to: "evidence", relation: "motivates", label: "驱动" }] })}`);
   assert(!v2.error && v2.version === 2 && v2.nodes[1].type === "io", "flowchart V2 must retain distinct process and research semantics");

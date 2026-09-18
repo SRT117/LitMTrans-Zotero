@@ -79,6 +79,10 @@
     else {
       const notice = document.createElement("div"); notice.className = "chat-diagram-pending"; notice.textContent = "流程图尚未准备好。"; frame.appendChild(notice);
     }
+    const clearBtn = $("diagram-viewer-clear");
+    if (clearBtn) {
+      clearBtn.style.display = typeof payload.onClear === "function" ? "" : "none";
+    }
     // This viewer must remain modeless: evidence jumps target the reader
     // behind it, and users need to inspect/scroll that source without first
     // closing the diagram that supplied the evidence.
@@ -145,6 +149,11 @@
     $("diagram-viewer-zoom-in")?.addEventListener("click", () => setZoom(zoom * 1.2));
     $("diagram-viewer-zoom-out")?.addEventListener("click", () => setZoom(zoom / 1.2));
     $("diagram-viewer-fit")?.addEventListener("click", fit);
+    $("diagram-viewer-clear")?.addEventListener("click", async () => {
+      if (typeof active?.onClear === "function") {
+        await active.onClear();
+      }
+    });
     $("diagram-viewer-export")?.addEventListener("click", () => void exportDiagram());
     $("diagram-viewer-dialog")?.addEventListener("close", () => { active = null; });
     bindPan();

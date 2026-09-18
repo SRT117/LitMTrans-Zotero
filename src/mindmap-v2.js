@@ -9,6 +9,15 @@
   const KIND = new Set(["root", "background", "problem", "gap", "hypothesis", "method", "data", "result", "mechanism", "comparison", "validation", "contribution", "limitation", "implication", "other"]);
 
   const clean = (value, limit) => String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
+  const cleanEvidenceQuote = (value, limit = 500) => String(value ?? "").replace(/\u0000/g, "").trim().slice(0, limit);
+  function markdownEvidenceQuote(line) {
+    const marked = String(line || "").match(/^>\s*\[\^(?:quote|evidence):\s*([\s\S]*?)\]\s*$/i);
+    if (marked) return marked[1].trim();
+    const labelled = String(line || "").match(/^>\s*(?:quote|evidence):\s*(.+?)\s*$/i);
+    if (labelled) return labelled[1].trim().replace(/^(?:["“])([\s\S]*?)(?:["”])$/, "$1");
+    const quoted = String(line || "").match(/^>\s*["“]([\s\S]*?)["”]\s*$/);
+    return quoted ? quoted[1].trim() : "";
+  }
   const safeJSON = source => {
     const fenced = String(source || "").trim().match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i);
     try {
@@ -20,12 +29,109 @@
     catch (_) { return null; }
   };
 
-  function parse(value) {
+  function parseMarkdownOutline(source) {
+    const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    const rawNodes = [];
+    let rootLabel = "";
+    let currentParentId = "root";
+    let counter = 1;
+    let lastNode = null;
+    const listStack = [];
+    let inFence = false;
+    let hasRootHeading = false;
+    let hasBranchHeading = false;
+    let hasListItem = false;
+
+    for (const rawLine of lines) {
+      const sourceLine = rawLine.replace(/\t/g, "  ");
+      const line = sourceLine.trim();
+      if (!line) continue;
+      if (/^(?:```|~~~)/.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      const h1 = line.match(/^#\s+(.+)$/);
+      if (h1 && !rootLabel) {
+        rootLabel = clean(h1[1], 120);
+        hasRootHeading = Boolean(rootLabel);
+        continue;
+      }
+      const h2 = line.match(/^##+\s+(.+)$/);
+      if (h2) {
+        hasBranchHeading = true;
+        listStack.length = 0;
+        const branchId = `branch_${counter++}`;
+        const branch = {
+          id: branchId,
+          parentId: "root",
+          label: clean(h2[1], 300),
+          kind: "branch",
+          importance: 3,
+          evidence: []
+        };
+        rawNodes.push(branch);
+        currentParentId = branchId;
+        lastNode = branch;
+        continue;
+      }
+      const quote = markdownEvidenceQuote(line);
+      if (quote && lastNode) {
+        const q = cleanEvidenceQuote(quote);
+        if (q) lastNode.evidence.push({ type: "quote", quote: q });
+        continue;
+      }
+      const itemMatch = sourceLine.match(/^(\s*)[-*+]\s+(.+)$/);
+      if (itemMatch) {
+        hasListItem = true;
+        const indent = itemMatch[1].length;
+        while (listStack.length && listStack.at(-1).indent >= indent) listStack.pop();
+        const rawText = itemMatch[2].trim();
+        let label = rawText;
+        let detail = "";
+        const splitMatch = rawText.match(/^\*\*([^*]+)\*\*[：:\s-]*(.+)$/);
+        if (splitMatch) {
+          label = splitMatch[1].trim();
+          detail = splitMatch[2].trim();
+        }
+        const leafId = `node_${counter++}`;
+        const leaf = {
+          id: leafId,
+          parentId: listStack.at(-1)?.node.id || currentParentId,
+          label: clean(label, 300),
+          detail: clean(detail, 420),
+          kind: "leaf",
+          importance: 2,
+          evidence: []
+        };
+        rawNodes.push(leaf);
+        listStack.push({ indent, node: leaf });
+        lastNode = leaf;
+      }
+    }
+    if (!hasRootHeading || !hasBranchHeading || !hasListItem || rawNodes.length < 2) return null;
+    const rootNode = { id: "root", parentId: null, label: rootLabel || "论文核心", kind: "root", importance: 3, evidence: [] };
+    return {
+      version: 2,
+      mode: "summary",
+      title: rootNode.label,
+      nodes: [rootNode, ...rawNodes]
+    };
+  }
+
+  function parse(value, options = {}) {
     const source = String(value || "").replace(/\r\n?/g, "\n");
     const at = source.toLowerCase().indexOf(MARKER);
-    if (at < 0) return null;
-    const data = safeJSON(source.slice(at + MARKER.length).trim());
-    if (!data || typeof data !== "object" || Array.isArray(data) || Number(data.version) !== 2) return { error: "思维导图数据不是有效的 V2 JSON。" };
+    let data = null;
+    if (at >= 0) {
+      data = safeJSON(source.slice(at + MARKER.length).trim());
+    } else {
+      if (options?.allowMarkdown !== true) return null;
+      data = parseMarkdownOutline(source);
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data) || Number(data.version) !== 2) {
+      return at >= 0 ? { error: "思维导图数据不是有效的 V2 JSON。" } : null;
+    }
     if (!Array.isArray(data.nodes) || !data.nodes.length || data.nodes.length > MAX_NODES) return { error: `思维导图节点数量必须在 1 到 ${MAX_NODES} 之间。` };
     const ids = new Set();
     const nodes = [];

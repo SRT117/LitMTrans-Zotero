@@ -163,6 +163,9 @@ console.log("[7/8] Security and source-package hygiene");
 const allProjectFiles = walk(root);
 const forbiddenFiles = allProjectFiles.filter(file => {
   const rel = path.relative(root, file).replace(/\\/g, "/");
+  // 根目录这些本地配置已由 .gitignore 和构建脚本排除。
+  // 子目录中的同名文件仍然禁止进入源树，避免遗漏敏感文件。
+  if (rel === ".env" || rel === ".env.local" || /^\.env\..+\.local$/i.test(rel)) return false;
   const forbiddenArchive = /\.(?:pdf|xpi|zip)$/i.test(rel) && rel !== "assets/docs/token-guide.pdf";
   return /(^|\/)\.env(?:\.|$)/i.test(rel) || forbiddenArchive || /(^|\/)(?:cookies?|tokens?|profile)(?:\/|$)/i.test(rel);
 });
