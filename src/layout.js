@@ -153,6 +153,12 @@
     return output;
   }
 
+  function acceptedModelText(value, sanitizeUnsafe = false) {
+    const raw = String(value || "");
+    if (hasUnsafeControlCharacters(raw)) return null;
+    return sanitizeUnsafe ? sanitizeModelText(raw) : raw;
+  }
+
   function validBBox(value) {
     if (!Array.isArray(value) || value.length < 4) return null;
     const numbers = value.slice(0, 4).map(Number);
@@ -2679,8 +2685,8 @@
             const id = String(row?.id || "");
             const record = expected.get(id);
             if (!record) continue;
-            const rawText = options.sanitizeUnsafe ? sanitizeModelText(row?.text) : String(row?.text || "");
-            if (hasUnsafeControlCharacters(rawText)) continue;
+            const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe);
+            if (rawText === null) continue;
             const translated = restoreSymbolGlossaryRowBreaks(
               record,
               repairEquationReferenceTranslation(record?.text, M.normalizeTranslatedInlineHTML(rawText).trim())
@@ -2701,8 +2707,8 @@
       for (const row of rows) {
         const id = String(row?.id || "");
         const record = expected.get(id);
-        const rawText = options.sanitizeUnsafe ? sanitizeModelText(row?.text) : String(row?.text || "");
-        if (hasUnsafeControlCharacters(rawText)) continue;
+        const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe);
+        if (rawText === null) continue;
         const translated = restoreSymbolGlossaryRowBreaks(
           record,
           repairEquationReferenceTranslation(record?.text, M.normalizeTranslatedInlineHTML(rawText).trim())
@@ -2741,8 +2747,8 @@
           const id = String(row?.id || "");
           const record = expected.get(id);
           if (!record) continue;
-          const rawText = sanitizeModelText(row?.text);
-          if (hasUnsafeControlCharacters(rawText)) continue;
+          const rawText = acceptedModelText(row?.text, true);
+          if (rawText === null) continue;
           const translated = restoreSymbolGlossaryRowBreaks(
             record,
             repairEquationReferenceTranslation(record.text, M.normalizeTranslatedInlineHTML(rawText).trim())
@@ -2891,10 +2897,10 @@
         if (signal?.aborted || completeError?.name === "AbortError") {
           throw completeError;
         }
-        if (streamed && streamed.length > 50) {
+        if (streamed && typeof streamed === "string" && streamed.includes("{")) {
           try {
             const partial = this.parseTranslationResponse(streamed, group, { sanitizeUnsafe: true });
-            if (Object.keys(partial.translations).length > 0) {
+            if (partial?.translations && Object.keys(partial.translations).length > 0) {
               result = { text: streamed, usage: latestUsage };
             }
           } catch (_) {}

@@ -23,6 +23,26 @@
     return clean || "Doc";
   }
 
+  function extractTrailingLayoutJson(text) {
+    const value = String(text || "");
+    let start = value.lastIndexOf("\n{");
+    if (start < 0 && value.trimStart().startsWith("{")) start = value.indexOf("{");
+    while (start >= 0) {
+      const jsonStart = start + (value[start] === "\n" ? 1 : 0);
+      const source = value.slice(jsonStart).trim();
+      try {
+        const payload = JSON.parse(source);
+        if (payload && typeof payload === "object"
+          && (Object.prototype.hasOwnProperty.call(payload, "blocks")
+            || Object.prototype.hasOwnProperty.call(payload, "blocks_to_correct"))) {
+          return { source, start: jsonStart };
+        }
+      } catch (_) {}
+      start = value.lastIndexOf("\n{", start - 1);
+    }
+    return null;
+  }
+
   function extractUserPrompt(messages = []) {
     if (!Array.isArray(messages) || !messages.length) return "";
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -216,7 +236,10 @@
 
       const runtime = this.resolveRuntime(options);
       const webSettings = this.controller?.getSettings?.() || {};
-      if (webSettings.webInputMode === "clipboard") {
+      const isTranslationTask = options.purpose === "translation"
+        || options.purpose === "guide"
+        || options.purpose === "layout";
+      if (webSettings.webInputMode === "clipboard" && !isTranslationTask) {
         // 仅接受调用方独立提供的提示词，不能从已混入全文的消息反推。
         const prompt = String(options.clipboardPrompt || "").trim();
         if (!prompt) throw new Error("当前处于仅复制模式，此任务未提供独立提示词，请切换为自动注入模式后重试。");
@@ -314,6 +337,51 @@
       let prompt = isFollowUp ? (extractUserPrompt(messages) || formatFullPrompt(messages)) : formatFullPrompt(messages);
       if (options.targetLanguage && !prompt.includes(options.targetLanguage)) {
         prompt = `[Target Language: ${options.targetLanguage}]\n${prompt}`;
+      }
+
+      let attachment = null;
+      if (options.purpose === "translation") {
+        const sourceMatch = prompt.match(/===== BEGIN SOURCE (MARKDOWN|CHUNK) TO TRANSLATE =====\r?\n([\s\S]*?)\r?\n===== END SOURCE \1 TO TRANSLATE =====/);
+        if (sourceMatch && sourceMatch[2]) {
+          attachment = {
+            source: sourceMatch[2],
+            name: `${sanitizePrefix(options.itemTitle || "Doc")}-source-${U.hashString(sourceMatch[2]).slice(0, 8)}.md`,
+            type: "text/markdown",
+            prompt: prompt.replace(sourceMatch[0], "The source to translate is in the uploaded Markdown attachment.")
+          };
+        }
+      } else if (options.purpose === "layout") {
+        const layoutJson = extractTrailingLayoutJson(prompt);
+        if (layoutJson) {
+          attachment = {
+            source: layoutJson.source,
+            name: `${sanitizePrefix(options.itemTitle || "Doc")}-layout-${U.hashString(layoutJson.source).slice(0, 8)}.json`,
+            type: "application/json",
+            prompt: `${prompt.slice(0, layoutJson.start)}The layout translation input is in the uploaded JSON attachment.`
+          };
+        }
+      }
+
+      if (attachment) {
+        options.emit?.({
+          type: "log",
+          message: `[探针5-Provider] 正在上传网页翻译源文附件 (${attachment.source.length} 字)...`
+        });
+        try {
+          await driver.attachFiles([{
+            name: attachment.name,
+            type: attachment.type,
+            base64: uint8ArrayToBase64(new TextEncoder().encode(attachment.source))
+          }], signal, { settleMs: 1000 });
+          prompt = attachment.prompt;
+          options.emit?.({ type: "log", message: "[探针5-Provider] 网页翻译源文附件已就绪，输入框仅提交翻译指令" });
+        } catch (error) {
+          U.throwIfAborted(signal);
+          options.emit?.({
+            type: "warning",
+            message: `[探针5-Provider] 网页翻译源文附件上传失败，降级为文字输入: ${error?.message || error}`
+          });
+        }
       }
 
       const p2 = `[探针5-Provider] completeTranslationTask: 会话就绪，准备提交消息 (字数=${prompt.length}, 追问=${isFollowUp})`;

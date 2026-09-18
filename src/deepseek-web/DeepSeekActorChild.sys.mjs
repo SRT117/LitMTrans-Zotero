@@ -494,7 +494,8 @@ async function sessionAPI(doc, action, payload = {}) {
         if (raw) {
           try {
             const parsed = JSON.parse(raw);
-            token = parsed?.value || parsed?.token || (typeof parsed === "string" ? parsed : "");
+            token = parsed?.value || parsed?.token || parsed?.access_token || parsed?.accessToken
+              || parsed?.data?.token || (typeof parsed === "string" ? parsed : "");
           } catch (_) {
             token = raw;
           }
@@ -504,10 +505,24 @@ async function sessionAPI(doc, action, payload = {}) {
     }
   } catch (_) {}
 
-  const headers = { "content-type": "application/json" };
-  if (token) {
-    headers["authorization"] = "Bearer " + token;
+  if (!token) {
+    try {
+      const cookie = String(pageWindow.document?.cookie || "");
+      const match = /(?:^|;\s*)ds_token=([^;]+)/.exec(cookie);
+      if (match?.[1]) token = decodeURIComponent(match[1]);
+    } catch (_) {}
   }
+
+  token = String(token || "").replace(/^Bearer\s+/i, "").trim();
+  const headers = {
+    accept: "*/*",
+    "content-type": "application/json",
+    "x-client-bundle-id": "com.deepseek.chat",
+    "x-client-locale": "zh_CN",
+    "x-client-platform": "web",
+    "x-client-version": "1.7.0"
+  };
+  if (token) headers.authorization = "Bearer " + token;
 
   const response = await pageWindow.fetch(endpoint, {
     method: "POST",
@@ -516,9 +531,21 @@ async function sessionAPI(doc, action, payload = {}) {
     body: JSON.stringify(body)
   });
   let result = null;
-  try { result = await response.json(); } catch (_) {}
-  if (!response.ok || (result && result.code && result.code !== 0)) {
-    throw new Error(`DeepSeek会话${action === "rename" ? "重命名" : "删除"}接口失败（HTTP ${response.status}${result?.msg ? `: ${result.msg}` : ""}）`);
+  let responseText = "";
+  try {
+    responseText = await response.text();
+    result = JSON.parse(responseText);
+  } catch (_) {}
+  const responseCode = result?.code;
+  const bizCode = result?.data?.biz_code;
+  const isFailureCode = value => value !== undefined && value !== null
+    && String(value) !== "0" && Number(value) !== 200;
+  if (!response.ok || isFailureCode(responseCode) || isFailureCode(bizCode)) {
+    const detail = result?.msg || result?.message
+      || [responseCode !== undefined ? `code=${responseCode}` : "", bizCode !== undefined ? `biz_code=${bizCode}` : ""]
+        .filter(Boolean).join(", ")
+      || responseText.trim().replace(/\s+/g, " ").slice(0, 200);
+    throw new Error(`DeepSeek会话${action === "rename" ? "重命名" : "删除"}接口失败（HTTP ${response.status}${detail ? `: ${detail}` : ""}）`);
   }
   if (action === "rename") {
     try {
@@ -987,7 +1014,7 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
           return await sessionAPI(doc, subAction, payload);
         } catch (apiError) {
           // 接口是首选；接口失败或特殊场景再退回 DOM 菜单操作
-          if (subAction === "rename" && !payload.expectedURL) throw apiError;
+          if (payload.forceAPI || (subAction === "rename" && !payload.expectedURL)) throw apiError;
         }
       }
       if (subAction === "rename" && sessionRows(doc).some(row =>

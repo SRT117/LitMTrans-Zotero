@@ -431,10 +431,33 @@ function testLayoutTranslationValidation() {
   assert.deepEqual(
     parser.parseTranslationResponse(
       JSON.stringify({ translations: [{ id: "transport", text: "译文\b" }], formula_replacements: [] }),
-      [transportRecord]
+      [transportRecord],
+      { sanitizeUnsafe: true }
     ).translations,
     {},
     "JSON escape artefacts from model TeX must be retried instead of reaching the renderer"
+  );
+  const rawFormulaResponse = '{"translations":[{"id":"transport","text":"$\\frac{1}{2}$、$\\tfrac{a}{b}$、$\\textbf{测试}$、$\\not y$、$\\rangle$"}]}';
+  const parsedFormulaResponse = parser.parseTranslationResponse(
+    rawFormulaResponse,
+    [transportRecord],
+    { sanitizeUnsafe: true }
+  ).translations;
+  assert(parsedFormulaResponse.transport.includes("\\frac{1}{2}"),
+    "production parser must preserve \\frac");
+  assert(parsedFormulaResponse.transport.includes("\\tfrac{a}{b}"),
+    "production parser must preserve \\tfrac");
+  assert(parsedFormulaResponse.transport.includes("\\textbf{测试}"),
+    "production parser must preserve \\textbf");
+  assert(parsedFormulaResponse.transport.includes("\\not y"),
+    "production parser must preserve \\not");
+  assert(parsedFormulaResponse.transport.includes("\\rangle"),
+    "production parser must preserve \\rangle");
+  const shortDamagedResponse = '{"translations":[{"id":"transport","text":"引言"}';
+  assert.equal(
+    parser.parseTranslationResponse(shortDamagedResponse, [transportRecord]).translations.transport,
+    "引言",
+    "short damaged transport responses must salvage a complete block"
   );
   assert.equal(
     LayoutHelpers.plainBlockText({

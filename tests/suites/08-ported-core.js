@@ -112,6 +112,13 @@ async function testPortedCore() {
   const accepted = P.acceptStreamChunk(`译文 $x+y$\n${chunks[0].marker}`, chunks[0]);
   assert(!accepted.includes(chunks[0].marker));
   assert.throws(() => P.acceptStreamChunk("没有结束标记", chunks[0]), /结束标记/);
+  const rawFormulaJson = '{"translations":[{"id":"a","text":"$\\frac{1}{2}$、$\\tfrac{a}{b}$、$\\textbf{x}$、$\\not y$、$\\rangle$"}]}';
+  const parsedFormulaJson = P.extractJsonObject(rawFormulaJson);
+  assert(parsedFormulaJson.translations[0].text.includes("\\frac{1}{2}"));
+  assert(parsedFormulaJson.translations[0].text.includes("\\tfrac{a}{b}"));
+  assert(parsedFormulaJson.translations[0].text.includes("\\textbf{x}"));
+  assert(parsedFormulaJson.translations[0].text.includes("\\not y"));
+  assert(parsedFormulaJson.translations[0].text.includes("\\rangle"));
   const merged = P.mergeTranslatedChunks(chunks.slice(0, 2).map((chunk, index) => ({ chunk, text: `part-${index}` })));
   assert(merged.includes("part-0") && merged.includes("part-1"));
 

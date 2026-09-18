@@ -1117,8 +1117,50 @@ var LitMTransPort;
         });
     }
     LitMTransPort.iterFormulaContext = iterFormulaContext;
+    const LATEX_SIMPLE_ESCAPE_COMMANDS = new Set([
+        "nu", "nabla", "neq", "neg", "not", "notag", "notin", "nexists", "natural", "nobreakspace", "nobreakdash", "noalign", "nonumber", "nonumberline", "norm", "normalfont", "newcommand", "newenvironment", "newtheorem", "nocite", "numberwithin", "ne", "ncong", "ngeq", "ngeqq", "ngeqslant", "ngtr", "nleq", "nleqq", "nleqslant", "nless", "nmid", "nparallel", "nprec", "npreceq", "nrightarrow", "nRightarrow", "nsubset", "nsubseteq", "nsucc", "nsucceq", "nsupset", "nsupseteq", "ntriangleleft", "ntrianglelefteq", "ntriangleright", "ntrianglerighteq",
+        "rho", "right", "rangle", "rbrace", "rceil", "rfloor", "rvert", "rVert", "ref", "relax", "renewcommand", "renewenvironment", "renewtheorem", "raisebox", "raggedleft", "raggedright", "roman", "rm", "rmfamily", "rule", "root", "rotatebox", "resizebox", "rightarrow", "rightharpoonup", "rightharpoondown", "rightleftarrows", "rightleftharpoons",
+        "text", "textbf", "textit", "textrm", "textsf", "texttt", "textsl", "textsc", "textmd", "textup", "textnormal", "textstyle", "textcolor", "textwidth", "textheight", "textsuperscript", "textsubscript", "theoremstyle", "thispagestyle", "thanks", "title", "tableofcontents",
+        "tau", "theta", "tilde", "times", "top", "to", "tfrac", "tbinom", "tag", "tan", "tanh", "tiny", "thinspace", "thickspace", "today", "triangle", "triangledown", "triangleleft", "triangleright", "tt", "ttfamily", "twocolumn", "typeout", "toprule", "midrule", "bottomrule"
+    ]);
+    function isLatexSimpleEscape(text, index) {
+        const next = text[index + 1];
+        if (next === "b" || next === "f")
+            return /[a-zA-Z]/.test(text[index + 2] || "");
+        if (!["n", "r", "t"].includes(next))
+            return false;
+        const command = text.slice(index + 1).match(/^([a-zA-Z]+)/)?.[1] || "";
+        return LATEX_SIMPLE_ESCAPE_COMMANDS.has(command);
+    }
     function repairInvalidJsonEscapes(value) {
-        return String(value || "").replace(/\\(?=[bf][a-zA-Z])|\\(?!["\\/bfnrtu])/g, "\\\\");
+        const text = String(value || "");
+        const validSimple = new Set(["\"", "\\", "/", "b", "f", "n", "r", "t"]);
+        let output = "";
+        for (let index = 0; index < text.length; index++) {
+            const character = text[index];
+            if (character !== "\\") {
+                output += character;
+                continue;
+            }
+            const next = text[index + 1];
+            if (next && validSimple.has(next)) {
+                if (isLatexSimpleEscape(text, index)) {
+                    output += "\\\\";
+                }
+                else {
+                    output += character + next;
+                    index++;
+                }
+            }
+            else if (next === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(index + 2, index + 6))) {
+                output += text.slice(index, index + 6);
+                index += 5;
+            }
+            else {
+                output += "\\\\";
+            }
+        }
+        return output;
     }
     LitMTransPort.repairInvalidJsonEscapes = repairInvalidJsonEscapes;
     function extractJsonObject(value) {
@@ -1129,8 +1171,10 @@ var LitMTransPort;
         if (start >= 0 && end > start)
             candidates.push(text.slice(start, end + 1));
         let last = null;
-        for (const candidate of candidates)
-            for (const variant of [candidate, repairInvalidJsonEscapes(candidate)]) {
+        for (const candidate of candidates) {
+            const repaired = repairInvalidJsonEscapes(candidate);
+            const variants = repaired !== candidate ? [repaired, candidate] : [candidate];
+            for (const variant of variants) {
                 try {
                     return JSON.parse(variant);
                 }
@@ -1138,6 +1182,7 @@ var LitMTransPort;
                     last = error;
                 }
             }
+        }
         throw new LitMTransPort.PortError("MODEL_PROTOCOL", "模型返回内容无法解析，请稍后重试", { retryable: true, detail: { cause: String(last?.message || last || "") } });
     }
     LitMTransPort.extractJsonObject = extractJsonObject;
