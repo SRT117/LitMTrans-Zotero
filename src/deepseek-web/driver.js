@@ -362,7 +362,7 @@
 
         attachmentObserved ||= Boolean(ready?.attachmentObserved);
         if (ready?.ready) break;
-        if (!attachmentObserved) {
+        if (!attachmentObserved && !options.waitIndefinitely) {
           const error = new Error("DeepSeek网页当前未接受附件上传。");
           error.code = "DEEPSEEK_ATTACHMENT_REJECTED";
           throw error;
@@ -375,7 +375,9 @@
         options.emit?.({
           type: "progress",
           phase: "deepseek-attachments",
-          message: "网络较慢，DeepSeek仍在上传或解析附件，请继续等待…"
+          message: attachmentObserved
+            ? "网络较慢，DeepSeek仍在上传或解析附件，请继续等待…"
+            : "正在等待 DeepSeek 接收页面图像，请继续等待…"
         });
         try {
           Zotero.debug(`[DeepSeekWeb] 附件仍在上传或解析（已继续等待 ${waitTimeout}ms）`);

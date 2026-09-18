@@ -57,6 +57,7 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(deepSeekPages.includes("adjustDeepSeekWebPagesCacheBytes?.(-stats.bytes)"), "obsolete page-image profiles must be deducted from the cache ledger");
   assert(controller.includes('this.withOperation(runtime, "deepseek-pages"')
     && controller.includes('`页面图像生成完成，正在上传 ${imagePaths.length} 张图像…`')
+    && controller.includes("waitIndefinitely: true")
     && deepSeekPages.includes('message: `正在生成页面图像 ${i + 1}/${strategy.groups.length}…`'),
   "manual page-image attachment must expose persistent generation and upload progress after cache cleanup");
   assert(controller.includes('pdf.getPageCount()'), "source PDF page count must come from the original PDF");

@@ -772,7 +772,10 @@
           : `页面图像生成完成，正在上传 ${imagePaths.length} 张图像…`,
         progress: 80
       });
-      await driver.attachFiles(imagePaths, options.signal, { emit: options.emit });
+      await driver.attachFiles(imagePaths, options.signal, {
+        emit: options.emit,
+        waitIndefinitely: true
+      });
       if (pageResult.downgraded && pageResult.message) {
         this.sendToPage(runtime, {
           type: "event",
