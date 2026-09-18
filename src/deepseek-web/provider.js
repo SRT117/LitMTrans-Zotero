@@ -568,10 +568,11 @@
               await driver.attachFiles(uploadFiles, signal);
               options.emit?.({ type: "log", message: "[探针5-Provider] 附件上传完成" });
             } catch (error) {
+              if (error?.code !== "DEEPSEEK_ATTACHMENT_REJECTED") throw error;
               attachmentsRejected = true;
-              const msg = `[探针5-Provider] 附件上传失败，降级为纯文本输入: ${error?.message || error}`;
+              const msg = `[探针5-Provider] DeepSeek网页拒绝附件上传，降级为纯文本输入: ${error?.message || error}`;
               options.emit?.({ type: "warning", message: msg });
-              options.onReasoning?.(`[系统提醒] 附件上传未能成功，本轮已降级为纯文本模式提交。\n\n`);
+              options.onReasoning?.(`[系统提醒] DeepSeek网页当前禁用了附件上传，本轮已降级为纯文本模式提交。\n\n`);
             }
           }
           if (questionImages.length) {
@@ -579,6 +580,7 @@
             try {
               await driver.attachImages(questionImages, signal);
             } catch (error) {
+              if (error?.code !== "DEEPSEEK_ATTACHMENT_REJECTED") throw error;
               options.emit?.({ type: "warning", message: `[DeepSeek网页] 本轮图片上传被拒绝，已跳过: ${error?.message || error}` });
             }
           }

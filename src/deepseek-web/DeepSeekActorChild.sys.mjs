@@ -982,6 +982,9 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
       const timeout = Math.max(1000, Number(payload.timeout) || 15000);
       const expectedCount = Number(payload.expectedCount) || 0;
       const start = Date.now();
+      let attachmentObserved = false;
+      let uploading = false;
+      let attachmentCount = 0;
       while (Date.now() - start < timeout) {
         const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
         const composer = (input && (
@@ -992,14 +995,18 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         const hasUploading = Boolean(
           (composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
         );
+        uploading = hasUploading;
+        if (hasUploading) attachmentObserved = true;
 
         const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
         // DeepSeek 在附件后台上传时禁用发送按钮。当发送按钮恢复可用且无加载动画时，表示附件已就绪
-        if (sendBtn && !hasUploading) return { ready: true };
+        if (sendBtn && !hasUploading && attachmentObserved) return { ready: true };
 
         // 兜底：若输入区中附件缩略图已渲染，且无上传加载动画，亦视作就绪
         if (!hasUploading && composer) {
           const thumbs = composer.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment']");
+          attachmentCount = Math.max(attachmentCount, thumbs.length);
+          if (thumbs.length > 0) attachmentObserved = true;
           if (thumbs.length > 0 && (expectedCount <= 0 || thumbs.length >= expectedCount)) {
             return { ready: true };
           }
@@ -1007,7 +1014,7 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
 
         await delay(100);
       }
-      return { ready: false };
+      return { ready: false, attachmentObserved, uploading, attachmentCount };
     }
 
     if (action === "get-assistant-text") return replySnapshot(doc);

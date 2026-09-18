@@ -546,12 +546,16 @@
           } catch (_) {}
         }
 
+        if (!attached) throw new Error("无法将附件添加到DeepSeek网页，请稍后重试。");
         sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ok: true, count: payload.files.length } });
       } else if (action === "wait-attachments-ready") {
         const timeout = Math.max(1000, Number(payload.timeout) || 15000);
         const expectedCount = Number(payload.expectedCount) || 0;
         const start = Date.now();
         let ready = false;
+        let attachmentObserved = false;
+        let uploading = false;
+        let attachmentCount = 0;
         while (Date.now() - start < timeout) {
           const input = findElement(doc, payload.chatInputSelectors || ["#chat-input", "textarea"]);
           const composer = (input && (
@@ -562,15 +566,19 @@
           const hasUploading = Boolean(
             (composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
           );
+          uploading = hasUploading;
+          if (hasUploading) attachmentObserved = true;
 
           const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
-          if (sendBtn && !hasUploading) {
+          if (sendBtn && !hasUploading && attachmentObserved) {
             ready = true;
             break;
           }
 
           if (!hasUploading && composer) {
             const thumbs = composer.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment']");
+            attachmentCount = Math.max(attachmentCount, thumbs.length);
+            if (thumbs.length > 0) attachmentObserved = true;
             if (thumbs.length > 0 && (expectedCount <= 0 || thumbs.length >= expectedCount)) {
               ready = true;
               break;
@@ -579,7 +587,7 @@
 
           await delay(100);
         }
-        sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ready } });
+        sendAsyncMessage("litmtrans:deepseek:response", { id, result: { ready, attachmentObserved, uploading, attachmentCount } });
       } else if (action === "get-assistant-text") {
         const assistantSelectors = payload.assistantSelectors || [
           "[data-role='assistant']",

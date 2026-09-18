@@ -47,7 +47,10 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(controller.includes('case "pdf-page-count"'), "workbench must be able to check the source PDF page count before translating");
   assert(workbench.includes('els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;'), "failed source PDFs must expose the retry action when retrying is safe");
   assert(workbench.includes("summary.documentsPrimaryBytes ??") && workbench.includes("summary.orphanedCoreBytes ??"), "storage chart segments must use non-overlapping document totals");
-  assert(deepSeekDriver.includes("if (options.throwOnTimeout !== false)"), "attachment readiness timeouts must fail by default so document chat can degrade safely");
+  assert(deepSeekDriver.includes("if (options.throwOnTimeout !== false)"), "attachment readiness timeouts must fail explicitly instead of being mistaken for a successful upload");
+  assert(deepSeekDriver.includes('"DEEPSEEK_ATTACHMENT_REJECTED"')
+    && deepSeekDriver.includes('"DEEPSEEK_ATTACHMENT_TIMEOUT"'),
+  "attachment rejection and readiness timeout must remain distinct outcomes");
   assert(deepSeekPages.includes("adjustDeepSeekWebPagesCacheBytes?.(-stats.bytes)"), "obsolete page-image profiles must be deducted from the cache ledger");
   assert(controller.includes('this.withOperation(runtime, "deepseek-pages"')
     && controller.includes('`页面图像生成完成，正在上传 ${imagePaths.length} 张图像…`')
