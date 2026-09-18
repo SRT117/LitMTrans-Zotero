@@ -215,6 +215,24 @@ async function testIndependentTranslationAndChatSettings() {
   assert.equal(defaults.chunkChars, 135000, "chunked fallback must use the Python default boundary");
   assert.equal(defaults.layoutChunkChars, 135000, "layout translation must cap each JSON group at the shared character boundary");
   assert.equal(defaults.layoutChunkBlocks, 160, "layout translation must cap the number of id mappings per group");
+  llm.saveSettings({
+    webPageImageQuality: "high",
+    webInputMode: "clipboard",
+    deleteWebTranslationSessions: false
+  }, "translation");
+  const savedWebSettings = llm.getSettings("translation");
+  assert.equal(savedWebSettings.webPageImageQuality, "high", "web page image quality must persist independently of input mode");
+  assert.equal(savedWebSettings.webInputMode, "clipboard", "web input mode must persist");
+  assert.equal(savedWebSettings.deleteWebTranslationSessions, false, "web translation session cleanup preference must persist");
+  llm.saveSettings({
+    webPageImageQuality: "invalid",
+    webInputMode: "invalid",
+    deleteWebTranslationSessions: "false"
+  }, "translation");
+  const normalizedWebSettings = llm.getSettings("translation");
+  assert.equal(normalizedWebSettings.webPageImageQuality, "medium", "invalid web page image quality must fall back to medium");
+  assert.equal(normalizedWebSettings.webInputMode, "auto", "invalid web input mode must fall back to auto");
+  assert.equal(normalizedWebSettings.deleteWebTranslationSessions, false, "string false must remain false when restoring web settings");
   llm.saveSettings({ sourceLanguage: "日文", chunkChars: 20000, layoutChunkChars: 60000, layoutChunkBlocks: 20 }, "translation");
   const fixedTranslationDefaults = llm.getSettings("translation");
   assert.equal(fixedTranslationDefaults.sourceLanguage, "自动识别", "source-language preferences must not affect LLM translation");

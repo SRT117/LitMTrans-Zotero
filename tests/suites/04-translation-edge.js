@@ -124,10 +124,11 @@ async function testEdgeLocalTranslationMigration() {
     && controllerCode.includes('assets/docs/token-guide.pdf')
     && controllerCode.includes('case "open-token-guide"'),
   "both settings surfaces must open the packaged token guide with the default application");
-  assert(workbenchSettingsCSS.includes(".settings-modal { min-height: 0; height: fit-content; }")
-    && workbenchSettingsCSS.includes(".settings-modal .settings-grid { max-height: calc(100vh - 170px); }")
-    && !workbenchSettingsCSS.includes(".settings-modal { height: min(860px"),
-  "settings dialogs must fit collapsed content instead of reserving an empty full-height body");
+  assert(workbenchSettingsCSS.includes(".settings-modal { min-height: 0; height: fit-content; overflow: hidden; }")
+    && workbenchSettingsCSS.includes(".settings-modal .modal-card { height: 100%; grid-template-rows: auto minmax(0, 1fr) auto; }")
+    && workbenchSettingsCSS.includes(".settings-modal .settings-grid { max-height: none; }")
+    && !workbenchSettingsCSS.includes(".settings-modal .settings-grid { max-height: calc(100vh - 170px); }"),
+  "settings dialogs must keep collapsed content compact while reserving a fixed footer when expanded");
   assert(workbenchSettingsCode.includes("function fitSettingsDialog(dialog)")
     && workbenchSettingsCode.includes('const desired = Math.min(available, Math.ceil(card.scrollHeight));')
     && workbenchSettingsCode.includes('els["settings-advanced"].addEventListener("toggle"'),

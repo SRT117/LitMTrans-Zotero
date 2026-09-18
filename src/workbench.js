@@ -5485,18 +5485,21 @@
     const advanced = els["setting-web-mode-advanced"];
     if (advanced) advanced.hidden = !isWebEngine;
     const pageImagesGroup = els["setting-web-page-images-group"];
-    if (pageImagesGroup) pageImagesGroup.hidden = !isWebEngine || !els["setting-web-input-mode-auto"]?.checked;
+    if (pageImagesGroup) pageImagesGroup.hidden = !isWebEngine;
   }
 
   function fitSettingsDialog(dialog) {
     if (!dialog?.open) return;
     const card = dialog.querySelector(".modal-card");
     if (!card) return;
-    // Reset Gecko's stale dialog height after the grid becomes shorter.
+    // 先按自然高度测量，再把超出视口的部分交给设置内容区滚动；底部操作栏
+    // 始终属于弹窗的固定网格行，不随内容区一起滚走。
     dialog.style.height = "auto";
+    card.style.height = "auto";
     const available = Math.max(280, window.innerHeight - 48);
     const desired = Math.min(available, Math.ceil(card.scrollHeight));
     dialog.style.height = `${desired}px`;
+    card.style.height = "100%";
   }
 
   function updateChatImageSettingsVisibility() {
@@ -5989,6 +5992,7 @@
     populateSettings(state.settings);
     els["settings-advanced"].open = false;
     els["settings-dialog"].style.height = "auto";
+    els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
     if (!els["settings-dialog"].open) els["settings-dialog"].showModal();
     requestAnimationFrame(() => {
       syncDeepSeekWebBounds();
@@ -7279,6 +7283,7 @@
     });
     els["settings-dialog"].addEventListener("close", () => {
       els["settings-dialog"].style.height = "auto";
+      els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
       requestAnimationFrame(() => syncDeepSeekWebBounds());
     });
 
@@ -7318,6 +7323,10 @@
         addAction("图形式添加至AI", () => {
           void hostCall("deepseek-web-add-paper-pages")
             .catch(error => toast(`添加论文页面图像失败：${error.message || error}`));
+        });
+        addAction("粘贴", () => {
+          void hostCall("deepseek-web-paste-clipboard")
+            .catch(error => toast(`粘贴到DeepSeek输入框失败：${error.message || error}`));
         });
         addAction("刷新", () => {
           void hostCall("load-deepseek-web", { reload: true })

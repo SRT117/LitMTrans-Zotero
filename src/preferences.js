@@ -264,7 +264,7 @@ var LitMTransControllerPreferences = {
     const advanced = document.getElementById("litmtrans-pref-web-mode-advanced");
     if (advanced) advanced.hidden = !isWebEngine;
     const pageImagesGroup = document.getElementById("litmtrans-pref-web-page-images-group");
-    if (pageImagesGroup) pageImagesGroup.hidden = !isWebEngine || !this.$("web-input-mode-auto")?.checked;
+    if (pageImagesGroup) pageImagesGroup.hidden = !isWebEngine;
   },
 
   updateCustomTranslationInstruction(forceOpen = false) {

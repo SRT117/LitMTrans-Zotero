@@ -50,6 +50,26 @@
     return aliases[text] || text || "default";
   }
 
+  const WEB_PAGE_IMAGE_QUALITIES = Object.freeze(["none", "low", "medium", "high"]);
+
+  function normalizeWebPageImageQuality(value, fallback = "medium") {
+    const quality = String(value ?? "").trim().toLowerCase();
+    return WEB_PAGE_IMAGE_QUALITIES.includes(quality) ? quality : fallback;
+  }
+
+  function normalizeWebInputMode(value) {
+    return String(value ?? "").trim().toLowerCase() === "clipboard" ? "clipboard" : "auto";
+  }
+
+  function normalizeBooleanPreference(value, fallback = false) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off", ""].includes(normalized)) return false;
+    return fallback;
+  }
+
   function isDeepSeekReasoningProtocol(provider, baseURL, model) {
     const id = String(provider || "").toLowerCase();
     const url = String(baseURL || "").toLowerCase();
@@ -772,11 +792,9 @@
         chatImageSize: String(U.getPref("chatImageSize", "auto") || "auto"),
         chatImageQuality: String(U.getPref("chatImageQuality", "auto") || "auto"),
         chatImageFormat: String(U.getPref("chatImageFormat", "png") || "png"),
-        webPageImageQuality: ["none", "low", "medium", "high"].includes(String(U.getPref("webPageImageQuality", "medium")))
-          ? String(U.getPref("webPageImageQuality", "medium"))
-          : "medium",
-        webInputMode: U.getPref("webInputMode", "auto") === "clipboard" ? "clipboard" : "auto",
-        deleteWebTranslationSessions: Boolean(U.getPref("deleteWebTranslationSessions", true)),
+        webPageImageQuality: normalizeWebPageImageQuality(U.getPref("webPageImageQuality", "medium")),
+        webInputMode: normalizeWebInputMode(U.getPref("webInputMode", "auto")),
+        deleteWebTranslationSessions: normalizeBooleanPreference(U.getPref("deleteWebTranslationSessions", true), true),
         targetLanguage: U.normalizeLanguageName(U.getPref("targetLanguage", "简体中文"), "简体中文"),
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,
         machineSourceLanguage: U.normalizeLanguageName(U.getPref("machineSourceLanguage", "英文"), "英文"),
@@ -847,11 +865,12 @@
         chatImageFormat: ["png", "jpeg", "webp"].includes(String(values.chatImageFormat ?? current.chatImageFormat))
           ? String(values.chatImageFormat ?? current.chatImageFormat)
           : "png",
-        webPageImageQuality: ["none", "low", "medium", "high"].includes(String(values.webPageImageQuality ?? current.webPageImageQuality))
-          ? String(values.webPageImageQuality ?? current.webPageImageQuality)
-          : "medium",
-        webInputMode: (values.webInputMode ?? current.webInputMode) === "clipboard" ? "clipboard" : "auto",
-        deleteWebTranslationSessions: Boolean(values.deleteWebTranslationSessions ?? current.deleteWebTranslationSessions),
+        webPageImageQuality: normalizeWebPageImageQuality(values.webPageImageQuality ?? current.webPageImageQuality),
+        webInputMode: normalizeWebInputMode(values.webInputMode ?? current.webInputMode),
+        deleteWebTranslationSessions: normalizeBooleanPreference(
+          values.deleteWebTranslationSessions ?? current.deleteWebTranslationSessions,
+          current.deleteWebTranslationSessions
+        ),
         targetLanguage: U.normalizeLanguageName(values.targetLanguage ?? current.targetLanguage, "简体中文"),
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,
         machineSourceLanguage: U.normalizeLanguageName(values.machineSourceLanguage ?? current.machineSourceLanguage, "英文"),

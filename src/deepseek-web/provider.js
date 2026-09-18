@@ -4,6 +4,7 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   LitMTrans.DeepSeekWeb = LitMTrans.DeepSeekWeb || {};
   const U = LitMTrans.Utils;
+  const TEXT_ONLY_DOCUMENT_TASKS = new Set(["key_points", "paper_mindmap", "paper_logic_flow"]);
 
   function uint8ArrayToBase64(bytes) {
     let binary = "";
@@ -461,6 +462,7 @@
       const sessionKey = documentID;
       const sessionPath = this.storage.path(documentID, "deepseek-web", "session.json");
       const questionImages = latestUserImageFiles(messages);
+      const textOnlyDocumentTask = TEXT_ONLY_DOCUMENT_TASKS.has(String(options.taskType || ""));
 
       const abortListener = () => {
         void driver.stop();
@@ -524,7 +526,9 @@
 
           const pageImageQuality = this.controller?.getSettings?.().webPageImageQuality || "medium";
           let imagePaths = [];
-          if (pageImageQuality === "none") {
+          if (textOnlyDocumentTask) {
+            options.emit?.({ type: "log", message: "[探针5-Provider] 当前任务仅注入文献文本，跳过论文页面图像" });
+          } else if (pageImageQuality === "none") {
             await this.pageRenderer.clearPageCaches(documentID, { emit: options.emit });
             options.emit?.({ type: "log", message: "[探针5-Provider] 已按设置跳过论文页面图上传" });
           } else {

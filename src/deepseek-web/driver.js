@@ -347,14 +347,14 @@
       return result;
     }
 
-    async pasteDraft(text) {
+    async pasteDraft(text, errorMessage = "无法将内容粘贴到DeepSeek输入框。") {
       await this.ensureReady(10000);
       const result = await this.execute("append-draft", {
         text,
         paste: true,
         chatInputSelectors: SELECTORS.chatInput
       });
-      if (!result?.ok) throw new Error(result?.error || "无法将论文原文添加到DeepSeek输入框。");
+      if (!result?.ok) throw new Error(result?.error || errorMessage);
       return result;
     }
 

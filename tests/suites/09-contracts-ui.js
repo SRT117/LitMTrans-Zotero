@@ -91,7 +91,10 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(workbench.includes('hostCall("clipboard-read-text")'), "mouse paste must read text from Zotero's host clipboard");
   assert(workbench.includes('(control.closest("dialog[open]") || document.body).appendChild(menu);'),
     "an editable-control menu inside a modal dialog must remain in the browser top layer");
+  assert(workbench.includes('hostCall("deepseek-web-paste-clipboard")'), "the web context menu must expose clipboard paste");
   assert(controller.includes('case "clipboard-read-text"'), "the host must expose clipboard text to the editable-control context menu");
+  assert(controller.includes('setAttribute("label", "粘贴")') && controller.includes('case "deepseek-web-paste-clipboard"'),
+    "the native web context menu must expose a working clipboard paste action");
   assert(controller.includes('"text/plain"') && controller.includes('"text/unicode"'), "clipboard text transfer must support standard plain text and unicode flavors");
   assert(workbench.includes("navigator?.clipboard?.readText"), "context menu paste must provide fallback clipboard reading");
   const diagramViewer = fs.readFileSync(path.join(root, "src", "diagram-viewer.js"), "utf8");
@@ -304,6 +307,8 @@ function testDeepSeekWebSidebarIntegration() {
   const workbenchXHTML = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
   const workbenchJS = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   const workbenchCSS = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+  const chat = fs.readFileSync(path.join(root, "src", "chat.js"), "utf8");
+  const deepSeekProvider = fs.readFileSync(path.join(root, "src", "deepseek-web", "provider.js"), "utf8");
 
   const host = new context.LitMTrans.Controller({ rootURI: "chrome://litmtrans/" });
   let created = 0, navigations = 0;
@@ -331,14 +336,39 @@ function testDeepSeekWebSidebarIntegration() {
   assert.strictEqual(navigations, 2, "explicit reload must navigate again");
   assert.throws(() => host.loadDeepSeekWeb({}), /网页容器尚未就绪/);
   assert(prefs.includes('pref("extensions.litmtrans.chatEngine", "api");'), "prefs must define chatEngine with default api");
+  assert(prefs.includes('pref("extensions.litmtrans.webPageImageQuality", "medium");')
+    && prefs.includes('pref("extensions.litmtrans.webInputMode", "auto");')
+    && prefs.includes('pref("extensions.litmtrans.deleteWebTranslationSessions", true);'),
+  "web mode preferences must have stable defaults");
   assert(!controller.includes("setResponseHeader"), "web sidebar must not rewrite global response headers");
   assert(!workbenchCSS.includes(".embedded-ai-topbar:has(#chat-navigator-button[hidden])"), "mode tabs must remain visible without chat history");
   assert(controller.includes('case "save-chat-engine":'), "controller must handle save-chat-engine bridge action");
   assert(preferencesXHTML.includes('id="litmtrans-pref-chat-engine-web"'), "preferences must provide DeepSeek web checkbox");
-  assert(preferencesJS.includes('this.$("chat-engine-web").checked'), "preferences.js must load and save chatEngine");
+  assert(preferencesXHTML.includes("要点提炼等自动注入提示词") && workbenchXHTML.includes("要点提炼等自动注入提示词")
+    && !preferencesXHTML.includes("自动注入图片与提示词") && !workbenchXHTML.includes("自动注入图片与提示词"),
+  "web auto mode must describe prompt injection without promising automatic page images");
+  assert(preferencesJS.includes('this.$("chat-engine-web").checked')
+    && preferencesJS.includes('pageImagesGroup.hidden = !isWebEngine;')
+    && preferencesJS.includes('webPageImageQuality: this.$("web-page-image-quality").value')
+    && preferencesJS.includes('webInputMode: this.$("web-input-mode-auto").checked ? "auto" : "clipboard"')
+    && preferencesJS.includes('deleteWebTranslationSessions: this.$("delete-web-translation-sessions").checked'),
+  "preferences.js must load, persist, and independently expose web mode settings");
   assert(workbenchXHTML.includes('id="ai-mode-web-button"') && workbenchXHTML.includes('id="ai-mode-api-button"'), "workbench must provide dual-mode tabs");
   assert(workbenchXHTML.includes('id="deepseek-web-container"') && workbenchXHTML.includes('id="deepseek-web-frame"'), "workbench must provide deepseek web container and frame");
   assert(workbenchJS.includes("function setAIMode") && workbenchJS.includes("function sendToDeepSeekWeb"), "workbench.js must provide mode switcher and bridge sender");
+  assert(workbenchJS.includes('pageImagesGroup.hidden = !isWebEngine;')
+    && workbenchJS.includes('webPageImageQuality: els["setting-web-page-image-quality"].value')
+    && workbenchJS.includes('webInputMode: els["setting-web-input-mode-auto"].checked ? "auto" : "clipboard"')
+    && workbenchJS.includes('deleteWebTranslationSessions: els["setting-delete-web-translation-sessions"].checked'),
+  "workbench.js must load, persist, and independently expose web mode settings");
+  assert(workbenchCSS.includes('.settings-modal .modal-card { height: 100%; grid-template-rows: auto minmax(0, 1fr) auto; }')
+    && workbenchCSS.includes('.settings-modal .settings-grid { max-height: none; }'),
+  "settings dialog must keep its footer outside the scrolling content area");
+  assert(chat.includes('taskType: session.messages[userIndex]?.taskType || options.taskType || "chat"'),
+    "web chat completion must preserve the selected task type");
+  assert(deepSeekProvider.includes('new Set(["key_points", "paper_mindmap", "paper_logic_flow"])')
+    && deepSeekProvider.includes("当前任务仅注入文献文本，跳过论文页面图像"),
+  "paper insight tasks must skip automatic PDF page image uploads");
   assert(workbenchCSS.includes(".deepseek-web-container") && workbenchCSS.includes(".deepseek-web-frame"), "workbench.css must style the web container");
 }
 

@@ -498,6 +498,13 @@
         void this.addPaperPagesToAI(runtime);
       });
       popup.appendChild(addPaperPagesItem);
+
+      const pasteItem = hostWindow.document.createXULElement("menuitem");
+      pasteItem.setAttribute("label", "粘贴");
+      pasteItem.addEventListener("command", () => {
+        void this.pasteClipboardToAI(runtime).catch(() => {});
+      });
+      popup.appendChild(pasteItem);
       popup.appendChild(hostWindow.document.createXULElement("menuseparator"));
 
       const reloadItem = hostWindow.document.createXULElement("menuitem");
@@ -734,6 +741,39 @@
         this.sendToPage(runtime, {
           type: "event",
           payload: { type: "toast", message: `添加论文页面图像失败：${error?.message || error}`, level: "error" }
+        });
+        throw error;
+      }
+    }
+
+    async pasteClipboardToAI(runtime) {
+      const text = String(this.readClipboardText() || "");
+      if (!text) {
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: "剪贴板没有可粘贴的文字", level: "info" }
+        });
+        return { pasted: false, empty: true };
+      }
+      this.sendToPage(runtime, {
+        type: "event",
+        payload: { type: "toast", message: "正在粘贴到DeepSeek输入框...", level: "info" }
+      });
+      try {
+        await this.loadDeepSeekWeb(runtime, false);
+        const driver = this.ensureDeepSeekDriver(runtime);
+        if (!driver) throw new Error("DeepSeek网页尚未就绪，请稍后重试。");
+        const result = await driver.pasteDraft(text, "无法将剪贴板内容粘贴到DeepSeek输入框。");
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: "已粘贴到DeepSeek输入框", level: "success" }
+        });
+        return { pasted: true, result };
+      } catch (error) {
+        this.log(`粘贴剪贴板内容到DeepSeek失败: ${error?.message || error}`);
+        this.sendToPage(runtime, {
+          type: "event",
+          payload: { type: "toast", message: `粘贴到DeepSeek输入框失败：${error?.message || error}`, level: "error" }
         });
         throw error;
       }
@@ -4720,6 +4760,9 @@
 
         case "deepseek-web-add-paper-pages":
           return this.addPaperPagesToAI(runtime);
+
+        case "deepseek-web-paste-clipboard":
+          return this.pasteClipboardToAI(runtime);
 
         case "set-deepseek-web-bounds":
           return this.setDeepSeekWebBounds(runtime, payload);

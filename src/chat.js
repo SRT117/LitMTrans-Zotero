@@ -2258,6 +2258,7 @@
       const completionOptions = {
         purpose: "chat",
         clipboardPrompt: messageTextForAPI(session.messages[userIndex]),
+        taskType: session.messages[userIndex]?.taskType || options.taskType || "chat",
         documentID,
         sessionID: session.id,
         provider: settings.provider,
