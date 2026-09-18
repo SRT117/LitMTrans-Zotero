@@ -7965,6 +7965,147 @@
     return icons[name] || icons.other;
   }
 
+  const storageCategoryLabels = {
+    images: "图片与排版素材",
+    model: "版面解析与模型",
+    translation: "双语译文数据",
+    cajSource: "CAJ 转换与阅读缓存",
+    mineruResult: "原始解析包 (MinerU)",
+    chat: "文献对话与附件",
+    deepseekWeb: "页面转图缓存",
+    logs: "运行日志与审计",
+    other: "其他辅助文件"
+  };
+
+  function closeStorageContextMenu() {
+    const menu = document.querySelector(".storage-context-menu");
+    if (menu) menu.remove();
+  }
+
+  async function clearStorageEntry(entry) {
+    const kind = String(entry?.kind || "");
+    const category = kind === "subcategory" ? String(entry.subcategory || "") : "all";
+    const title = String(entry?.title || "该条目");
+    let message = "";
+    if (kind === "document") {
+      message = entry.isCAJ
+        ? `确定删除文献《${title}》的全部插件数据吗？\n\n解析结果、译文和对话记录将被删除，自动生成的 LitMTrans 阅读附件也会移除。原 CAJ 附件和已导出的 PDF 不受影响。`
+        : `确定删除文献《${title}》的所有插件数据吗？\n\nZotero 中的原 PDF 附件不会受影响。`;
+    } else if (kind === "subcategory") {
+      const label = storageCategoryLabels[category] || category;
+      message = `确定删除文献《${String(entry.documentTitle || title)}》的【${label}】数据吗？`;
+      if (category === "cajSource") {
+        message += "\n\n自动生成的 LitMTrans 阅读附件也会一起移除；原 CAJ 附件、已导出的 PDF 和译文不会受影响。";
+      }
+    } else if (kind === "temp") {
+      message = "确定删除全部临时生成文件与解压缓存吗？";
+    } else if (kind === "edge") {
+      message = "确定删除 Edge 本地离线翻译引擎数据吗？\n\n下次使用离线翻译时会重新下载。";
+    } else {
+      return;
+    }
+    if (!window.confirm(message)) return;
+
+    let payload;
+    if (kind === "document" || kind === "subcategory") {
+      payload = { target: "document", documentID: entry.documentID, category };
+    } else {
+      payload = { target: kind };
+    }
+
+    const result = await hostCall("clear-storage-data", payload);
+    if (result.isCurrentDoc && result.nextState) setData(result.nextState);
+    const released = result.formatted && result.clearedBytes ? `，释放 ${result.formatted}` : "";
+    const label = kind === "document"
+      ? "该文献的所有数据"
+      : kind === "subcategory"
+      ? `【${storageCategoryLabels[category] || category}】数据`
+      : kind === "temp"
+      ? "临时缓存"
+      : "Edge 本地离线翻译引擎数据";
+    toast(`已删除${label}${released}`);
+    refreshStorageManager();
+  }
+
+  function showStorageContextMenu(event, entry) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeStorageContextMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "layout-formula-menu storage-context-menu";
+    menu.setAttribute("role", "menu");
+
+    const close = () => {
+      menu.remove();
+      document.removeEventListener("mousedown", onOutside, true);
+      document.removeEventListener("keydown", onKeydown, true);
+    };
+    const onOutside = otherEvent => {
+      if (!menu.contains(otherEvent.target)) close();
+    };
+    const onKeydown = keyEvent => {
+      if (keyEvent.key === "Escape") {
+        keyEvent.preventDefault();
+        close();
+      }
+    };
+    const addAction = (label, action, danger = false) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.setAttribute("role", "menuitem");
+      if (danger) button.className = "danger";
+      button.addEventListener("mousedown", downEvent => downEvent.preventDefault());
+      button.addEventListener("click", () => {
+        close();
+        void Promise.resolve(action()).catch(error => toast(error.message || `${label}失败`, "error"));
+      });
+      menu.appendChild(button);
+    };
+
+    const openPayload = entry.kind === "subcategory"
+      ? { kind: "subcategory", documentID: entry.documentID, subcategory: entry.subcategory }
+      : entry.kind === "document"
+      ? { kind: "document", documentID: entry.documentID }
+      : { kind: entry.kind };
+    addAction("打开文件夹", () => hostCall("open-storage-folder", openPayload));
+    addAction("删除该条目的数据", () => clearStorageEntry(entry), true);
+
+    // 存储管理是模态 dialog；菜单挂到 body 会落在 dialog 的 top layer 后面。
+    // dialog 自身带有 transform，因此在 dialog 内按其坐标系定位菜单。
+    const menuHost = els["storage-manager-dialog"] || document.body;
+    const hostRect = menuHost === document.body ? null : menuHost.getBoundingClientRect();
+    const clientX = Number(event.clientX || 0);
+    const clientY = Number(event.clientY || 0);
+    if (hostRect) {
+      menu.style.position = "absolute";
+      menu.style.left = `${Math.max(8, clientX - hostRect.left)}px`;
+      menu.style.top = `${Math.max(8, clientY - hostRect.top)}px`;
+    } else {
+      menu.style.left = `${Math.max(8, clientX)}px`;
+      menu.style.top = `${Math.max(8, clientY)}px`;
+    }
+    menuHost.appendChild(menu);
+    const bounds = menu.getBoundingClientRect();
+    if (hostRect) {
+      const left = Math.min(Math.max(8, clientX - hostRect.left), Math.max(8, menuHost.clientWidth - bounds.width - 8));
+      const top = Math.min(Math.max(8, clientY - hostRect.top), Math.max(8, menuHost.clientHeight - bounds.height - 8));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    } else {
+      const left = Math.min(Math.max(8, clientX), Math.max(8, window.innerWidth - bounds.width - 8));
+      const top = Math.min(Math.max(8, clientY), Math.max(8, window.innerHeight - bounds.height - 8));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    }
+    setTimeout(() => {
+      document.addEventListener("mousedown", onOutside, true);
+      document.addEventListener("keydown", onKeydown, true);
+      menu.querySelector("button")?.focus();
+    }, 0);
+  }
+
   function renderStorageTree(query = "") {
     if (!currentStorageSummary || !els["storage-tree-container"]) return;
     const container = els["storage-tree-container"];
@@ -8072,6 +8213,17 @@
             }).catch(err => toast(err.message, "error"));
           });
 
+          subRow.addEventListener("contextmenu", (e) => {
+            if (e.target.closest("button")) return;
+            showStorageContextMenu(e, {
+              kind: "subcategory",
+              documentID: doc.id,
+              documentTitle: doc.title,
+              title: cat.label,
+              subcategory: cat.key
+            });
+          });
+
           subList.appendChild(subRow);
         });
 
@@ -8093,6 +8245,16 @@
             kind: "document",
             documentID: doc.id
           }).catch(err => toast(err.message, "error"));
+        });
+
+        header.addEventListener("contextmenu", (e) => {
+          if (e.target.closest("button")) return;
+          showStorageContextMenu(e, {
+            kind: "document",
+            documentID: doc.id,
+            title: doc.title,
+            isCAJ: Boolean(doc.isCAJ)
+          });
         });
 
         branch.appendChild(header);
@@ -8145,6 +8307,11 @@
       hostCall("open-storage-folder", { kind: "temp" }).catch(err => toast(err.message, "error"));
     });
 
+    tempHeader.addEventListener("contextmenu", (e) => {
+      if (e.target.closest("button")) return;
+      showStorageContextMenu(e, { kind: "temp", title: "临时与运行时缓存" });
+    });
+
     tempGroup.appendChild(tempHeader);
     container.appendChild(tempGroup);
 
@@ -8172,6 +8339,11 @@
         if (e.target.closest("button")) return;
         e.stopPropagation();
         hostCall("open-storage-folder", { kind: "edge" }).catch(err => toast(err.message, "error"));
+      });
+
+      edgeHeader.addEventListener("contextmenu", (e) => {
+        if (e.target.closest("button")) return;
+        showStorageContextMenu(e, { kind: "edge", title: "Edge 本地离线翻译引擎数据" });
       });
 
       edgeGroup.appendChild(edgeHeader);

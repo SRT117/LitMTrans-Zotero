@@ -1024,7 +1024,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .tree-icon-other { color: #95a5a6; }
 
 .tree-item-branch { border: 1px solid var(--line); background: var(--surface); border-radius: 4px; overflow: hidden; }
-.tree-item-branch.is-current { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.tree-item-branch.is-current { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
 .tree-item-branch.is-orphan { border-color: color-mix(in srgb, #e67e22 40%, var(--line)); }
 .tree-item-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; cursor: pointer; user-select: none; background: var(--surface); transition: background .12s ease; }
 .tree-item-header:hover { background: var(--surface-2); }
@@ -1032,7 +1032,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .tree-item-title { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 520px; font-size: 12.5px; }
 .tree-item-key { font-family: var(--mono); font-size: 10.5px; color: var(--muted); background: var(--surface-3); padding: 1px 5px; border-radius: 3px; flex-shrink: 0; border: 1px solid var(--line); }
 .tree-item-badge { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; white-space: nowrap; }
-.tree-item-badge.badge-current { background: color-mix(in srgb, var(--accent) 15%, var(--surface)); color: var(--accent); }
+.tree-item-badge.badge-current { background: color-mix(in srgb, var(--danger) 16%, var(--surface)); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line)); }
 .tree-item-badge.badge-orphan { background: color-mix(in srgb, #e67e22 15%, var(--surface)); color: #e67e22; }
 .tree-item-badge.badge-caj { background: color-mix(in srgb, #16a085 15%, var(--surface)); color: #087f68; }
 .tree-item-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -1041,6 +1041,9 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .tree-action-link { padding: 2px 6px; border: 1px solid var(--line); background: var(--surface); border-radius: 3px; color: var(--ink-2); font-size: 10px; cursor: pointer; transition: all .12s ease; }
 .tree-action-link:hover { border-color: var(--accent); color: var(--accent); background: var(--surface-2); }
 .tree-action-link.danger:hover { border-color: var(--danger); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.storage-context-menu { min-width: 170px; }
+.storage-context-menu button.danger { color: var(--danger); }
+.storage-context-menu button.danger:hover { background: var(--danger-soft); color: var(--danger); }
 
 .tree-sub-list { padding: 4px 10px 8px 24px; display: grid; gap: 2px; background: var(--surface-2); border-top: 1px solid var(--line); }
 .tree-sub-list[hidden] { display: none; }

@@ -1695,7 +1695,6 @@
       }
       catch (_) {}
       try { state.menuItem?.remove?.(); } catch (_) {}
-      try { state.convertItem?.remove?.(); } catch (_) {}
       try {
         if (state.itemsTree && state.onDblClick) {
           state.itemsTree.removeEventListener("dblclick", state.onDblClick, true);
@@ -1705,7 +1704,6 @@
       state.itemMenu = null;
       state.itemMenuRefresh = null;
       state.menuItem = null;
-      state.convertItem = null;
       state.itemsTree = null;
       state.onDblClick = null;
       state.ensureScheduled = false;
@@ -1719,7 +1717,7 @@
         state.ensure?.();
         return;
       }
-      state = { itemMenu: null, itemMenuRefresh: null, menuItem: null, convertItem: null, itemsTree: null, onDblClick: null, observer: null, ensureScheduled: false, ensure: null };
+      state = { itemMenu: null, itemMenuRefresh: null, menuItem: null, itemsTree: null, onDblClick: null, observer: null, ensureScheduled: false, ensure: null };
       this.windowBindings.set(win, state);
 
       const schedule = () => {
@@ -1741,32 +1739,30 @@
             try { state.itemMenu.removeEventListener("popupshowing", state.itemMenuRefresh); } catch (_) {}
           }
           try { state.menuItem?.remove?.(); } catch (_) {}
-          try { state.convertItem?.remove?.(); } catch (_) {}
           state.itemMenu = itemMenu || null;
           state.itemMenuRefresh = null;
           state.menuItem = null;
-          state.convertItem = null;
         }
 
+        // 兼容旧版本已注入的 CAJ 菜单项，确保更新后不再残留。
+        try { itemMenu?.querySelector('[id="litmtrans-convert-caj-menuitem"]')?.remove?.(); } catch (_) {}
+
         const menuBindingsStale = itemMenu && state.itemMenu === itemMenu
-          && ((!state.menuItem || state.menuItem.parentNode !== itemMenu)
-            || (!state.convertItem || state.convertItem.parentNode !== itemMenu));
+          && (!state.menuItem || state.menuItem.parentNode !== itemMenu);
         if (menuBindingsStale) {
           try {
             if (state.itemMenuRefresh) itemMenu.removeEventListener("popupshowing", state.itemMenuRefresh);
           }
           catch (_) {}
           try { state.menuItem?.remove?.(); } catch (_) {}
-          try { state.convertItem?.remove?.(); } catch (_) {}
           state.itemMenuRefresh = null;
           state.menuItem = null;
-          state.convertItem = null;
         }
 
         if (itemMenu && !state.menuItem) {
           const menuItem = itemMenu.querySelector('[id="litmtrans-item-menuitem"]') || doc.createXULElement("menuitem");
           menuItem.id = "litmtrans-item-menuitem";
-          menuItem.setAttribute("label", localize("LitMTrans：解析、翻译与阅读", "LitMTrans: Parse, Translate, and Read"));
+          menuItem.setAttribute("label", localize("用LitMtrans打开", "Open with LitMtrans"));
           menuItem.setAttribute("class", "menuitem-iconic");
           menuItem.setAttribute("image", this.rootURI + "assets/icon.ico");
           if (!menuItem._litmtransCommandAttached) {
@@ -1775,32 +1771,18 @@
           }
           if (!menuItem.parentNode) itemMenu.appendChild(menuItem);
 
-          const convertItem = itemMenu.querySelector('[id="litmtrans-convert-caj-menuitem"]') || doc.createXULElement("menuitem");
-          convertItem.id = "litmtrans-convert-caj-menuitem";
-          convertItem.setAttribute("label", localize("LitMTrans：将 CAJ 转换为 PDF", "LitMTrans: Convert CAJ to PDF"));
-          convertItem.setAttribute("class", "menuitem-iconic");
-          convertItem.setAttribute("image", this.rootURI + "assets/icon.ico");
-          if (!convertItem._litmtransCommandAttached) {
-            convertItem.addEventListener("command", () => this.convertSelectedCAJToPDF(win));
-            convertItem._litmtransCommandAttached = true;
-          }
-          if (!convertItem.parentNode) itemMenu.appendChild(convertItem);
-
           const refresh = () => {
             try {
               const selected = win.ZoteroPane?.getSelectedItems?.() || [];
               menuItem.hidden = !selected.some(item => this.itemCouldHaveAttachment(item));
-              convertItem.hidden = !selected.some(item => this.hasCAJAttachment(item));
             }
             catch (error) {
               // 菜单刷新失败不能中断 Zotero 原生菜单。
               menuItem.hidden = true;
-              convertItem.hidden = true;
               this.log(`Item menu refresh error: ${error}`);
             }
           };
           state.menuItem = menuItem;
-          state.convertItem = convertItem;
           state.itemMenuRefresh = refresh;
           itemMenu.addEventListener("popupshowing", refresh);
         }
@@ -5182,6 +5164,10 @@
       const target = String(payload?.target || "");
       if (target === "temp") {
         const res = await this.storage.clearTempFiles();
+        return { success: true, ...res };
+      }
+      if (target === "edge") {
+        const res = await this.storage.clearEdgeLocalFiles();
         return { success: true, ...res };
       }
       if (target === "orphaned") {

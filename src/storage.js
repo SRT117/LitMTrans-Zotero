@@ -852,6 +852,18 @@
       return { clearedBytes, clearedFiles, formatted: this.formatBytes(clearedBytes) };
     }
 
+    async clearEdgeLocalFiles() {
+      const edgeRoot = PathUtils.join(this.root, "edge-local-translation");
+      const stats = await this.dirStats(edgeRoot);
+      await this.remove(edgeRoot, true);
+      await this.ensureDir(edgeRoot);
+      return {
+        clearedBytes: stats.bytes,
+        clearedFiles: stats.files,
+        formatted: stats.formatted
+      };
+    }
+
     async clearOrphanedDocuments() {
       let clearedBytes = 0;
       let clearedCount = 0;
@@ -939,6 +951,21 @@
         targets = [PathUtils.join(docDir, "deepseek-web")];
       } else if (subcategory === "logs") {
         targets = [PathUtils.join(docDir, "logs"), PathUtils.join(docDir, "AI请求审计")];
+      } else if (subcategory === "model" || subcategory === "other") {
+        const entries = await this.list(docDir);
+        for (const entry of entries) {
+          const info = await this.stat(entry);
+          if (!info || info.type === "directory") continue;
+          const name = PathUtils.filename(entry);
+          const category = name === "asset-map.json" || name === "image-map.json"
+            ? "images"
+            : name === "mineru-task.json"
+            ? "mineruResult"
+            : name.endsWith(".json") || name.endsWith(".md") || name === "document.json"
+            ? "model"
+            : "other";
+          if (category === subcategory) targets.push(entry);
+        }
       }
       const before = await measure(targets);
 
@@ -963,6 +990,8 @@
       } else if (subcategory === "logs") {
         await this.remove(PathUtils.join(docDir, "logs"), true);
         await this.remove(PathUtils.join(docDir, "AI请求审计"), true);
+      } else if (subcategory === "model" || subcategory === "other") {
+        for (const target of targets) await this.remove(target, false);
       }
       return {
         cleared: true,
