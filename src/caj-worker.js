@@ -20,6 +20,19 @@ self.onmessage = async ({ data }) => {
         }
       });
       const api = instance.exports;
+      if (!data.font || !(data.font.byteLength || data.font.length)) {
+        throw new Error("缺少 CAJ 文字渲染字体数据，已停止转换");
+      }
+      if (typeof api.ltm_alloc_font !== "function" || typeof api.ltm_init_font !== "function") {
+        throw new Error("CAJ 转换组件版本不匹配，缺少字体接口");
+      }
+      const fontBytes = new Uint8Array(data.font);
+      const fontPtr = api.ltm_alloc_font(fontBytes.length) >>> 0;
+      if (!fontPtr) throw new Error("无法分配 CAJ 字体渲染内存");
+      new Uint8Array(api.memory.buffer, fontPtr, fontBytes.length).set(fontBytes);
+      const fontOk = api.ltm_init_font(fontPtr, fontBytes.length);
+      if (!fontOk) throw new Error("CAJ 字体初始化失败，无法渲染文字页");
+      data.font = null;
       const pointer = api.ltm_alloc(bytes.length) >>> 0;
       if (!pointer) throw new Error("无法分配转换内存");
       new Uint8Array(api.memory.buffer, pointer, bytes.length).set(bytes);

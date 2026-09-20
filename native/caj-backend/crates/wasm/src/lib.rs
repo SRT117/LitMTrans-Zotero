@@ -21,8 +21,40 @@ extern "C" {
 
 /// 输入缓冲区。wasm 为单线程环境，Mutex 仅用于满足 Rust 借用规则。
 static INPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// 字体缓冲区。用于接收 JS 端动态传入的思源宋体字节。
+static FONT_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 /// 最近一次转换结果：成功时是 PDF 字节，失败时是 UTF-8 错误信息。
 static RESULT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// 申请 len 字节字体缓冲区线性内存，返回缓冲区指针；参数非法时返回 0。
+#[no_mangle]
+pub extern "C" fn ltm_alloc_font(len: i32) -> i32 {
+    if len <= 0 {
+        return 0;
+    }
+    let mut buf = FONT_BUF.lock().unwrap();
+    buf.clear();
+    buf.resize(len as usize, 0);
+    buf.as_ptr() as i32
+}
+
+/// 使用字体缓冲区中的数据初始化全局页面文字渲染字库。
+/// 初始化完成后立即清空并收缩原始缓冲区，释放线性内存。
+/// 成功返回 1，失败返回 0。
+#[no_mangle]
+pub extern "C" fn ltm_init_font(_ptr: i32, len: i32) -> i32 {
+    if len <= 0 {
+        return 0;
+    }
+    let mut buf = FONT_BUF.lock().unwrap();
+    if buf.len() < len as usize {
+        return 0;
+    }
+    let ok = caj2pdf_core::text_render::set_page_font(&buf[..len as usize]);
+    buf.clear();
+    buf.shrink_to_fit();
+    if ok { 1 } else { 0 }
+}
 
 /// 申请 len 字节线性内存，返回缓冲区指针；参数非法时返回 0。
 #[no_mangle]

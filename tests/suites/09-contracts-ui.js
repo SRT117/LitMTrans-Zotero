@@ -516,6 +516,35 @@ function testDiagramCacheAndPromptModeContracts() {
   assert(!workbench.includes('if (renderAssistantMarkdown && message.taskType) {\n      if (flowchart'), "rendering historical chat messages must not rewrite diagram caches with unknown provenance");
 }
 
+async function testCAJFontContractAndWorkerGuard() {
+  const fontPath = path.join(root, "assets", "fonts", "SourceHanSerifCN-Regular.ttf");
+  assert(fs.existsSync(fontPath), "SourceHanSerifCN-Regular.ttf must exist in assets/fonts");
+  const fontStat = fs.statSync(fontPath);
+  assert(fontStat.size > 10 * 1024 * 1024, "Font file must be the complete unsubsetted font (> 10MB)");
+
+  const wasmPath = path.join(root, "native", "dist", "caj2pdf", "caj2pdf.wasm");
+  assert(fs.existsSync(wasmPath), "caj2pdf.wasm must exist in native/dist/caj2pdf");
+  const wasmStat = fs.statSync(wasmPath);
+  assert(wasmStat.size < 1.5 * 1024 * 1024, "caj2pdf.wasm must be decoupled from font and stay < 1.5MB");
+
+  const wasmBytes = fs.readFileSync(wasmPath);
+  const wasmModule = await WebAssembly.compile(wasmBytes);
+  const exportsList = WebAssembly.Module.exports(wasmModule).map(e => e.name);
+  assert(exportsList.includes("ltm_alloc_font"), "caj2pdf.wasm must export ltm_alloc_font");
+  assert(exportsList.includes("ltm_init_font"), "caj2pdf.wasm must export ltm_init_font");
+  assert(exportsList.includes("ltm_alloc"), "caj2pdf.wasm must export ltm_alloc");
+  assert(exportsList.includes("ltm_convert"), "caj2pdf.wasm must export ltm_convert");
+
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  assert(controller.includes("loadNativeCAJFont"), "controller must implement loadNativeCAJFont");
+  assert(controller.includes("!font?.bytes?.length"), "controller must assert font presence for HN/C8");
+
+  const worker = fs.readFileSync(path.join(root, "src", "caj-worker.js"), "utf8");
+  assert(worker.includes("缺少 CAJ 文字渲染字体数据，已停止转换"), "worker must guard against missing font");
+  assert(worker.includes("CAJ 字体初始化失败，无法渲染文字页"), "worker must guard against failed font initialization");
+  assert(worker.includes("data.font = null"), "worker must release font buffer reference after initialization");
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -528,5 +557,6 @@ function testDiagramCacheAndPromptModeContracts() {
     testDeepSeekWebSidebarIntegration,
     testPromptLibraryPresetAndReordering,
     testDiagramCacheAndPromptModeContracts,
+    testCAJFontContractAndWorkerGuard,
   };
 };

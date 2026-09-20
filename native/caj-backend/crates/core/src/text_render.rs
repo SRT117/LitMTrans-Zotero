@@ -13,11 +13,33 @@ const DEFAULT_LOGICAL_SIZE: (u32, u32) = (0x2800, 0x2000);
 const FONT_SIZE_PX: f32 = 13.5;
 const INK_THRESHOLD: u8 = 96;
 
-// The plugin already ships this font for the layout reader. Embedding the
-// same asset keeps the CAJ fallback deterministic on machines without a
-// Chinese system font and works in the WASM build as well.
+#[cfg(not(target_arch = "wasm32"))]
 static SOURCE_HAN_SERIF: &[u8] = include_bytes!("../../../../../assets/fonts/SourceHanSerifCN-Regular.ttf");
+
 static PAGE_FONT: OnceLock<Option<Font>> = OnceLock::new();
+
+/// 动态设置页面文字渲染使用的字体（适用于 WASM 运行时动态注入包内字体）。
+pub fn set_page_font(bytes: &[u8]) -> bool {
+    let font = Font::from_bytes(bytes, FontSettings::default()).ok();
+    let is_some = font.is_some();
+    let _ = PAGE_FONT.set(font);
+    is_some
+}
+
+fn get_page_font() -> Option<&'static Font> {
+    PAGE_FONT
+        .get_or_init(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                Font::from_bytes(SOURCE_HAN_SERIF, FontSettings::default()).ok()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                None
+            }
+        })
+        .as_ref()
+}
 
 /// Convert native WITS/SBS2 page units to the bitmap dimensions used by PDF.
 pub fn logical_size_px(logical_size: Option<(u32, u32)>) -> (u32, u32) {
@@ -37,9 +59,7 @@ pub fn render_text_page(page: &Page) -> Option<(DecodedImage, (u32, u32))> {
     let (width, height) = logical_size_px(page.logical_size);
     let stride = (width as usize).div_ceil(8);
     let mut bits = vec![0u8; stride * height as usize];
-    let font = PAGE_FONT
-        .get_or_init(|| Font::from_bytes(SOURCE_HAN_SERIF, FontSettings::default()).ok())
-        .as_ref()?;
+    let font = get_page_font()?;
 
     let min_x = page.glyphs.iter().map(|glyph| glyph.x).min()? as f32;
     let max_x = page.glyphs.iter().map(|glyph| glyph.x).max()? as f32;

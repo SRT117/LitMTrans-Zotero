@@ -204,7 +204,7 @@ pub mod convert;
 mod caj;
 mod hn;
 mod hn_page;
-mod text_render;
+pub mod text_render;
 
 fn detect_format_inner<R: std::io::Read + std::io::Seek>(
     header: &[u8; 4],

@@ -2412,8 +2412,12 @@
         const bytes = this.normalizeCAJBytes(await this.storage.readBytes(sourcePath));
         const format = LitMTrans.CAJConverter.detectFormat(bytes);
         const module = format === "HN" || format === "C8" ? await this.loadNativeCAJModule() : null;
+        const font = format === "HN" || format === "C8" ? await this.loadNativeCAJFont() : null;
         if ((format === "HN" || format === "C8") && !module) {
           throw new Error(`CAJ 转换组件加载失败：${this._cajWasmError?.message || "请重启 Zotero 后重试"}`);
+        }
+        if ((format === "HN" || format === "C8") && !font?.bytes?.length) {
+          throw new Error(`CAJ 文字渲染组件加载失败：${this._cajFontError?.message || "内置思源宋体读取失败，请重新安装插件"}`);
         }
         if (this._cajShuttingDown) throw new Error("插件已停止");
         const WorkerClass = global.ChromeWorker || Zotero.getMainWindow()?.ChromeWorker;
@@ -2443,7 +2447,7 @@
             const source = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
               ? bytes.buffer
               : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-            worker.postMessage({ source, wasm: module?.bytes }, [source]);
+            worker.postMessage({ source, wasm: module?.bytes, font: font?.bytes }, [source]);
           }
           catch (error) { finish(error); }
         });
@@ -2488,6 +2492,45 @@
       })();
       try { return await this._cajWasmLoading; }
       finally { this._cajWasmLoading = null; }
+    }
+
+    // 加载包内思源宋体并缓存，用于 HN/C8 转换时向 WASM 提供字体渲染数据
+    async loadNativeCAJFont() {
+      if (this._cajFontModule) return this._cajFontModule;
+      if (this._cajFontLoading) return this._cajFontLoading;
+      this._cajFontLoading = (async () => {
+        try {
+          const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
+          const channel = NetUtil.newChannel({
+            uri: this.rootURI + "assets/fonts/SourceHanSerifCN-Regular.ttf",
+            loadUsingSystemPrincipal: true
+          });
+          const bytes = await new Promise((resolve, reject) => {
+            NetUtil.asyncFetch(channel, (input, status) => {
+              if (!Components.isSuccessCode(status)) {
+                reject(new Error(`无法读取思源宋体字体文件（${status}）`));
+                return;
+              }
+              const stream = Cc["@mozilla.org/binaryinputstream;1"].createInstance(Ci.nsIBinaryInputStream);
+              try {
+                stream.setInputStream(input);
+                resolve(Uint8Array.from(stream.readByteArray(stream.available())));
+              }
+              catch (error) { reject(error); }
+              finally { stream.close(); }
+            });
+          });
+          this._cajFontModule = { bytes };
+        }
+        catch (error) {
+          this._cajFontError = error;
+          this._cajFontModule = null;
+          Zotero.logError?.(new Error(`LitMTrans CAJ 字体加载失败：${error?.message || error}`));
+        }
+        return this._cajFontModule;
+      })();
+      try { return await this._cajFontLoading; }
+      finally { this._cajFontLoading = null; }
     }
 
     async convertSelectedCAJToPDF(win) {
