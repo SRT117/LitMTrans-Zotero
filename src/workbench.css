@@ -169,6 +169,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .reader-workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); }
 .reader-toolbar { min-height: 39px; max-height: min(128px, 28vh); display: flex; align-items: center; align-content: center; flex-wrap: wrap; gap: 6px 10px; padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--line); overflow: auto; }
+.reader-pane-actions { display: inline-flex; align-items: center; gap: 5px; }
 .font-control { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--ink-2); font-size: 11px; }
 .font-control input { width: 43px; min-height: 24px; padding: 1px 3px; border: 1px solid var(--line); background: var(--surface-2); color: inherit; }
 .segmented-control { display: inline-flex; border: 1px solid var(--line); }

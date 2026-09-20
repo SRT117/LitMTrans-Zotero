@@ -99,9 +99,11 @@
             <button id="paper-logic-flow-button" class="link-button" type="button" title="重建论文的研究逻辑与证据链">思路流程</button>
             <button id="prompt-library-button" class="link-button" type="button" title="保存和管理常用提示词">常用提示词</button>
           </div>
-          <button id="copy-source-markdown-button" class="link-button" type="button" title="复制清洗图片占位后的原文Markdown">复制原文Markdown</button>
-          <button id="swap-panes-button" class="link-button" type="button" title="交换左右栏">交换左右</button>
-          <label id="debug-boxes-control" class="compact-check" title="显示公式与排版区块边界框（快捷键：Ctrl+Shift+D）"><input id="debug-boxes-check" type="checkbox" /> 调试框</label>
+          <div class="reader-pane-actions" role="group" aria-label="阅读栏操作">
+            <button id="copy-source-markdown-button" class="link-button" type="button" title="复制清洗图片占位后的原文Markdown">复制原文Markdown</button>
+            <button id="swap-panes-button" class="link-button" type="button" title="交换左右栏">交换左右</button>
+          </div>
+          <label id="debug-boxes-control" class="compact-check" hidden="hidden" title="显示公式与排版区块边界框（快捷键：Ctrl+Shift+D）"><input id="debug-boxes-check" type="checkbox" /> 调试框</label>
         </div>
 
         <div id="reader-split" class="reader-split">

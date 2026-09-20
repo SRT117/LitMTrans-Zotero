@@ -2759,7 +2759,9 @@
     // In layout mode this control changes body text only; titles, captions,
     // references, formulas and media retain their fitted styles.
     els["reader-font-input"].closest("label").hidden = false;
-    if (els["debug-boxes-control"]) els["debug-boxes-control"].hidden = !layout;
+    // Boundary diagnostics remain available through the developer shortcut,
+    // but must never be exposed in the release reader toolbar.
+    if (els["debug-boxes-control"]) els["debug-boxes-control"].hidden = true;
     const showLayoutLivePreview = layout && hasLayoutLivePreview();
     els["translation-content"].hidden = showLayoutLivePreview
       ? false

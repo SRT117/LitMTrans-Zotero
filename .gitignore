@@ -25,8 +25,10 @@ docs/deepseek-web-provider-upgrade-plan.md
 .env
 .env.local
 .env.*.local
+.mutagen.yml
 scripts/manage_feedbacks.py
 docs/feedback-management-guide.md
+docs/plugin-python-migration-comparison.md
 feedbacks/
 *.log
 npm-debug.log*
@@ -38,6 +40,7 @@ tmp/
 .DS_Store
 Thumbs.db
 desktop.ini
+.mutagen.yml.lock
 *.swp
 *.swo
 *~
