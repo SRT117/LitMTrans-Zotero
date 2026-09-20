@@ -4,7 +4,7 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
 
-  const PAGE_CACHE_ALERT_THRESHOLD_BYTES = 700 * 1024 * 1024; // 700 MB
+  const PAGE_CACHE_ALERT_THRESHOLD_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
   const PAGE_CACHE_ALERT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000; // 3 天
 
   class Storage {

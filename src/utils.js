@@ -517,6 +517,44 @@
     }
   }
 
+  function repairSharedChatModelPreference() {
+    const marker = "migration.sharedChatModelRepairV1";
+    if (getPref(marker, false)) return;
+    try {
+      if (getPref("chatUsesTranslationModel", null) === false) {
+        const translationProvider = String(getPref("translationProvider", getPref("provider", "deepseek")) || "deepseek").toLowerCase();
+        const chatProvider = String(getPref("chatProvider", translationProvider) || translationProvider).toLowerCase();
+        const translationBaseURL = String(getPref("translationBaseURL", getPref("baseURL", "")) || "").trim().replace(/\/+$/, "");
+        const chatBaseURL = String(getPref("chatBaseURL", "") || "").trim().replace(/\/+$/, "");
+        const translationModel = String(getPref("translationModel", getPref("model", "")) || "").trim();
+        const chatModel = String(getPref("chatModel", "") || "").trim();
+        const translationThinking = String(getPref("translationThinkingMode", getPref("thinkingMode", "default")) || "default");
+        const chatThinking = String(getPref("chatThinkingMode", "default") || "default");
+        const translationEffort = String(getPref("translationReasoningEffort", getPref("reasoningEffort", "default")) || "default");
+        const chatEffort = String(getPref("chatReasoningEffort", "default") || "default");
+
+        // 严格全等镜像校验（Exact Mirror Match）：
+        // 只有当两边的服务商、BaseURL、模型名称、思考模式和思考强度完全一致且模型名称非空时，
+        // 才确认为共享模式同步的镜像副本被旧版网页模式保存误杀，安全恢复为 true；
+        // 任何一处不同（例如不同的BaseURL、不同的服务商或模型）均严格视为用户的独立个性化配置，坚决保持 false。
+        const isExactMirrorConfig = (chatProvider === translationProvider)
+          && (chatBaseURL === translationBaseURL)
+          && (chatModel === translationModel && Boolean(chatModel))
+          && (chatThinking === translationThinking)
+          && (chatEffort === translationEffort);
+
+        if (isExactMirrorConfig) {
+          setPref("chatUsesTranslationModel", true);
+        }
+      }
+      setPref(marker, true);
+    }
+    catch (error) {
+      try { Zotero.debug(`[LitMTrans] Shared chat model preference repair deferred: ${error}`); }
+      catch (_) {}
+    }
+  }
+
   function normalizeProviderID(providerID) {
     const requested = String(providerID || "oneapi").trim().toLowerCase();
     if (requested === "deepseek_web") return "deepseek_web";
@@ -871,6 +909,7 @@
     setPref,
     clearPref,
     migrateLegacyPreferences,
+    repairSharedChatModelPreference,
     normalizeProviderID,
     normalizeLanguageName,
     providerSpec,

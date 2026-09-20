@@ -116,6 +116,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .reader-ai-actions { display: inline-flex; align-items: center; gap: 1px; padding-inline: 2px; border-inline: 1px solid var(--line); }
 .reader-ai-actions .link-button { text-decoration: none; }
 .reader-ai-actions .link-button:hover { background: var(--surface-3); }
+.reader-ai-actions .link-button.has-persistent-diagram { font-weight: 600; }
 
 .log-drawer { position: fixed; z-index: 50; top: 74px; left: 50%; width: min(720px, calc(100vw - 32px)); max-height: 220px; min-height: 74px; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 10px 28px rgba(0, 0, 0, .22); overflow: hidden; }
 .log-header { min-height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 5px 8px 5px 14px; border-bottom: 1px solid var(--line); }

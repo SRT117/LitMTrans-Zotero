@@ -22,6 +22,9 @@
     // deliberately never participates in layout fitting or PDF export.
     layoutPageZoom: 1,
     readerView: "both",
+    readerViewDocumentID: null,
+    paperAICacheDocumentID: null,
+    paperAICacheStatus: {},
     syncScroll: false,
     aiMode: "api",
     aiModeInitialized: false,
@@ -120,6 +123,42 @@
 
   const $ = id => document.getElementById(id);
   const els = {};
+  const PAPER_AI_TASK_BUTTONS = Object.freeze({
+    key_points: "key-points-button",
+    paper_mindmap: "paper-mindmap-button",
+    paper_logic_flow: "paper-logic-flow-button"
+  });
+  let paperAICacheRefreshToken = 0;
+
+  function renderPaperAITaskIndicators() {
+    for (const [taskType, buttonID] of Object.entries(PAPER_AI_TASK_BUTTONS)) {
+      const button = els[buttonID];
+      if (button) button.classList.toggle("has-persistent-diagram", Boolean(state.paperAICacheStatus?.[taskType]));
+    }
+  }
+
+  function markPaperAITaskCached(taskType, cached) {
+    if (!Object.prototype.hasOwnProperty.call(PAPER_AI_TASK_BUTTONS, taskType)) return;
+    state.paperAICacheStatus = { ...(state.paperAICacheStatus || {}), [taskType]: Boolean(cached) };
+    renderPaperAITaskIndicators();
+  }
+
+  async function refreshPaperAITaskIndicators(documentID, data) {
+    const token = ++paperAICacheRefreshToken;
+    if (!documentID || (!data?.capabilities?.hasParsed && !data?.parsed?.markdown)) {
+      state.paperAICacheStatus = {};
+      renderPaperAITaskIndicators();
+      return;
+    }
+    const entries = await Promise.all(Object.keys(PAPER_AI_TASK_BUTTONS).map(async taskType => {
+      const result = await hostCall("diagram-get-cached", { taskType }, { timeout: 5000 }).catch(() => null);
+      return [taskType, Boolean(result?.cached && result.data?.diagram)];
+    }));
+    if (token !== paperAICacheRefreshToken
+        || String(state.data?.item?.documentID || "") !== documentID) return;
+    state.paperAICacheStatus = Object.fromEntries(entries);
+    renderPaperAITaskIndicators();
+  }
 
   function cacheElements() {
     for (const id of [
@@ -1000,6 +1039,17 @@
 
   function setData(data, { preserveLayout = false } = {}) {
     state.data = data || null;
+    const documentID = String(data?.item?.documentID || "");
+    if (state.readerViewDocumentID !== documentID) {
+      state.readerViewDocumentID = documentID;
+      state.readerView = data?.item?.isCAJ ? "source" : "both";
+    }
+    if (state.paperAICacheDocumentID !== documentID) {
+      state.paperAICacheDocumentID = documentID;
+      state.paperAICacheStatus = {};
+      renderPaperAITaskIndicators();
+    }
+    void refreshPaperAITaskIndicators(documentID, data);
     state.chatFollowLatest = true;
     renderedTranslationMarkdown = null;
     renderedSourceMarkdown = null;
@@ -1028,7 +1078,6 @@
     state.sessions = data?.chat?.sessions || [];
     state.currentSession = data?.chat?.session || null;
     els["sync-scroll-check"].checked = state.syncScroll;
-    const documentID = String(data?.item?.documentID || "");
     const layoutFonts = state.settings?.layoutReaderFonts || {};
     // An absent per-document layout font means automatic fitting owns the body
     // font. Treating the stream reader's default as an override would replace
@@ -3500,6 +3549,7 @@
           toast(`清空[${taskName}]数据失败，请稍后重试`, "error");
           return;
         }
+        markPaperAITaskCached(taskType, false);
         LitMTrans.DiagramViewer?.close?.();
         toast(`已清空当前[${taskName}]数据，再次点击顶栏按钮将重新生成`, "info");
       }
@@ -6653,8 +6703,7 @@
       }
     };
     const isWebEngine = Boolean(els["setting-chat-engine-web"]?.checked);
-    const sharedChatModel = !isWebEngine
-      && !isWebMachineTranslationProvider(translationProvider)
+    const sharedChatModel = !isWebMachineTranslationProvider(translationProvider)
       && els["setting-chat-uses-translation-model"].checked;
     const payload = {
       translationProvider,
@@ -7901,13 +7950,15 @@
       captureModeScrollPosition();
       state.modeUserSelected = true;
       state.mode = "stream";
+      const isCAJ = Boolean(state.data?.item?.isCAJ);
+      if (isCAJ) state.readerView = "source";
       state.syncScroll = Boolean(state.settings?.streamSyncScroll ?? state.syncScroll);
       els["sync-scroll-check"].checked = state.syncScroll;
       renderMode();
       requestAnimationFrame(() => restoreModeScrollPosition("stream"));
       void hostCall("save-reader-mode", { mode: "stream" }).catch(() => {});
       // Offer to translate when the selected reading mode has no result yet.
-      if (state.data?.parsed?.markdown && !state.data?.translation?.markdown && !state.running.size) {
+      if (!isCAJ && state.data?.parsed?.markdown && !state.data?.translation?.markdown && !state.running.size) {
         if (window.confirm("当前模式暂无译文。是否立即翻译？")) els["translate-button"].click();
       }
     });
@@ -8489,6 +8540,7 @@
             const title = diagram.title || (taskType === "key_points" ? "论文核心要点" : "知识结构图");
             void hostCall("diagram-save-cached", { taskType, mode, title, diagram }, { timeout: 5000 })
               .then(result => {
+                if (result?.saved) markPaperAITaskCached(taskType, true);
                 if (isWeb && !result?.saved) toast("图谱已生成，但未能保存本地快照", "warning");
               })
               .catch(() => {
@@ -8912,7 +8964,7 @@
     const banner = els["storage-cache-warning-banner"];
     const textEl = els["storage-warning-banner-text"];
     if (!banner) return;
-    const text = `页面转图缓存已累积约 ${formatted || "700 MB"}，建议清理以释放磁盘空间（使用时随时现场重新生成）。`;
+    const text = `页面转图缓存已累积约 ${formatted || "1.5 GB"}，建议清理以释放磁盘空间（使用时随时现场重新生成）。`;
     if (textEl) textEl.textContent = text;
     banner.hidden = false;
   }

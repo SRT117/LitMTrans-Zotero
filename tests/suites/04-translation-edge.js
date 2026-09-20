@@ -591,6 +591,19 @@ async function testWebMachineRulesAndSettingsTransitions() {
       chatReasoningEffort: "high"
     });
     assert.equal(controller.getSettings().chatUsesTranslationModel, false, "selecting web machine must override a stale checked sharing flag");
+
+    controller.saveSettings({
+      translationProvider: "deepseek",
+      translationBaseURL: "https://api.deepseek.com",
+      translationModel: "deepseek-chat",
+      chatEngine: "deepseek_web",
+      chatUsesTranslationModel: true
+    });
+    assert.equal(
+      controller.getSettings().chatUsesTranslationModel,
+      true,
+      "saving settings under deepseek_web engine must preserve the user-configured chatUsesTranslationModel preference"
+    );
   }
   finally {
     prefValues.clear();
@@ -599,6 +612,7 @@ async function testWebMachineRulesAndSettingsTransitions() {
 
   const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   const preferences = fs.readFileSync(path.join(root, "src", "preferences.js"), "utf8");
+  assert(!workbench.includes("!isWebEngine\n      && !isWebMachineTranslationProvider(translationProvider)\n      && els[\"setting-chat-uses-translation-model\"].checked"), "workbench must not clamp sharedChatModel with !isWebEngine");
   assert(workbench.includes("syncChatMode: true"), "workbench settings must synchronize sharing on provider transitions");
   assert(preferences.includes("syncChatMode: true"), "Zotero Preferences settings must synchronize sharing on provider transitions");
   assert(preferences.includes("supportsChat !== false"), "Zotero Preferences chat provider list must exclude web machine translation");

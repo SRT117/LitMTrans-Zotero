@@ -140,6 +140,7 @@ async function startup({ id, version, rootURI }) {
   LitMTrans.DeepSeekWeb.actorRegistrationError = LitMTransDeepSeekActorError;
 
   LitMTrans.Utils.migrateLegacyPreferences();
+  LitMTrans.Utils.repairSharedChatModelPreference();
   LitMTransController = LitMTrans.createController({ id, version, rootURI });
   Zotero.LitMTransController = LitMTransController;
   await LitMTransController.init();

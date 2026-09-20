@@ -4166,7 +4166,7 @@
       const event = {
         type: "deepseek-web-cache-warning",
         bytes: Number(payload?.bytes || 0),
-        formatted: String(payload?.formatted || "700 MB")
+        formatted: String(payload?.formatted || "1.5 GB")
       };
       for (const runtime of this.runtimes.values()) {
         try { this.emit(runtime, event); } catch (_) {}

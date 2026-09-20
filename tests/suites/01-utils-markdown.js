@@ -35,6 +35,75 @@ async function testUtils() {
   prefValues.delete("extensions.ai-literature-translator.provider");
   prefValues.delete("extensions.litmtrans.provider");
   prefValues.delete("extensions.litmtrans.migration.legacyPreferencesV1");
+
+  // 老用户历史受污染的chatUsesTranslationModel修复测试
+  prefValues.set("extensions.litmtrans.chatUsesTranslationModel", false);
+  prefValues.set("extensions.litmtrans.translationProvider", "gemini");
+  prefValues.set("extensions.litmtrans.translationModel", "gemini-3.5-flash-lite");
+  prefValues.set("extensions.litmtrans.chatProvider", "gemini");
+  prefValues.set("extensions.litmtrans.chatModel", "gemini-3.5-flash-lite");
+  U.repairSharedChatModelPreference();
+  assert.equal(
+    prefValues.get("extensions.litmtrans.chatUsesTranslationModel"),
+    true,
+    "equivalent translation and chat models must be safely restored to shared mode"
+  );
+  prefValues.delete("extensions.litmtrans.migration.sharedChatModelRepairV1");
+
+  // 独立配置不同对话模型的用户不可被误篡改
+  prefValues.set("extensions.litmtrans.chatUsesTranslationModel", false);
+  prefValues.set("extensions.litmtrans.chatEngine", "api");
+  prefValues.set("extensions.litmtrans.translationProvider", "deepseek");
+  prefValues.set("extensions.litmtrans.translationModel", "deepseek-chat");
+  prefValues.set("extensions.litmtrans.chatProvider", "openai");
+  prefValues.set("extensions.litmtrans.chatModel", "gpt-4o");
+  U.repairSharedChatModelPreference();
+  assert.equal(
+    prefValues.get("extensions.litmtrans.chatUsesTranslationModel"),
+    false,
+    "distinct dedicated chat models must strictly retain their independent false state"
+  );
+  prefValues.delete("extensions.litmtrans.migration.sharedChatModelRepairV1");
+
+  // 边界用例1：模型名称相同但BaseURL不同（如翻译为自定义代理，聊天为默认URL），必须严格保持false
+  prefValues.set("extensions.litmtrans.chatUsesTranslationModel", false);
+  prefValues.set("extensions.litmtrans.translationProvider", "openai");
+  prefValues.set("extensions.litmtrans.translationModel", "gpt-4o");
+  prefValues.set("extensions.litmtrans.translationBaseURL", "https://proxy.example.com/v1");
+  prefValues.set("extensions.litmtrans.chatProvider", "openai");
+  prefValues.set("extensions.litmtrans.chatModel", "gpt-4o");
+  prefValues.set("extensions.litmtrans.chatBaseURL", "");
+  U.repairSharedChatModelPreference();
+  assert.equal(
+    prefValues.get("extensions.litmtrans.chatUsesTranslationModel"),
+    false,
+    "distinct BaseURL must strictly retain independent false state"
+  );
+  prefValues.delete("extensions.litmtrans.migration.sharedChatModelRepairV1");
+
+  // 边界用例2：处于deepseek_web模式，但chatProvider不同且chatModel为空，绝不可误认为未配置而覆写
+  prefValues.set("extensions.litmtrans.chatUsesTranslationModel", false);
+  prefValues.set("extensions.litmtrans.chatEngine", "deepseek_web");
+  prefValues.set("extensions.litmtrans.translationProvider", "gemini");
+  prefValues.set("extensions.litmtrans.translationModel", "gemini-3.5-flash-lite");
+  prefValues.set("extensions.litmtrans.chatProvider", "openai");
+  prefValues.set("extensions.litmtrans.chatModel", "");
+  U.repairSharedChatModelPreference();
+  assert.equal(
+    prefValues.get("extensions.litmtrans.chatUsesTranslationModel"),
+    false,
+    "deepseek_web with different chatProvider and empty model must not be overwritten"
+  );
+
+  prefValues.delete("extensions.litmtrans.chatUsesTranslationModel");
+  prefValues.delete("extensions.litmtrans.chatEngine");
+  prefValues.delete("extensions.litmtrans.translationProvider");
+  prefValues.delete("extensions.litmtrans.translationModel");
+  prefValues.delete("extensions.litmtrans.translationBaseURL");
+  prefValues.delete("extensions.litmtrans.chatProvider");
+  prefValues.delete("extensions.litmtrans.chatModel");
+  prefValues.delete("extensions.litmtrans.chatBaseURL");
+  prefValues.delete("extensions.litmtrans.migration.sharedChatModelRepairV1");
   assert.equal(U.normalizeBaseURL("https://openrouter.ai/api", "openrouter"), "https://openrouter.ai/api/v1");
   assert.equal(U.normalizeBaseURL("https://api.deepseek.com/chat/completions", "deepseek"), "https://api.deepseek.com");
   assert.equal(U.providerSpec("oneapi").defaultBaseURL, "");

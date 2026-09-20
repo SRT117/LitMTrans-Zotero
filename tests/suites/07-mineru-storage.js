@@ -303,16 +303,17 @@ async function testDeepSeekWebPagesCacheAndClearTemp() {
   assert(!removedPaths.includes("/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json"), "session.json must still not be removed by subcategory clear");
   assert.equal(recordedBytes, 0, "clearing one document's page cache must decrement the cache ledger");
 
-  // 4. 测试 700MB 切图增量记账与冷却告警
-  context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 500 * 1024 * 1024);
-  assert.equal(recordedBytes, 500 * 1024 * 1024, "recording written bytes must accumulate");
-  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), false, "under 700MB must not alert");
+  // 4. 测试 1.5GB 切图增量记账与冷却告警
+  context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 1500 * 1024 * 1024);
+  assert.equal(recordedBytes, 1500 * 1024 * 1024, "recording written bytes must accumulate");
+  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), false, "under 1.5GB must not alert");
 
-  context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 250 * 1024 * 1024);
-  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), true, "750MB must trigger alert");
+  context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 100 * 1024 * 1024);
+  assert.equal(recordedBytes, 1600 * 1024 * 1024, "recording written bytes must continue accumulating");
+  assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), true, "1600MB must trigger alert");
 
-  context.LitMTrans.Storage.prototype.adjustDeepSeekWebPagesCacheBytes.call(mockStorage, -300 * 1024 * 1024);
-  assert.equal(recordedBytes, 450 * 1024 * 1024, "removed page caches must be deducted from the cache ledger");
+  context.LitMTrans.Storage.prototype.adjustDeepSeekWebPagesCacheBytes.call(mockStorage, -200 * 1024 * 1024);
+  assert.equal(recordedBytes, 1400 * 1024 * 1024, "removed page caches must be deducted from the cache ledger");
   assert.equal(context.LitMTrans.Storage.prototype.shouldAlertDeepSeekWebCache.call(mockStorage, recordedBytes), false, "removing caches below the threshold must clear the alert condition");
 
   context.LitMTrans.Storage.prototype.dismissDeepSeekWebCacheAlert.call(mockStorage, 3 * 86400 * 1000);
