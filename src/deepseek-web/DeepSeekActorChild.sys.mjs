@@ -484,103 +484,6 @@ function currentSessionID(doc, fallbackURL = "") {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
-async function sessionAPI(doc, action, payload = {}) {
-  const sessionID = currentSessionID(doc, payload?.expectedURL);
-  if (!sessionID) throw new Error("当前页面还没有 DeepSeek 会话 ID");
-  const endpoint = action === "rename" ? "/api/v0/chat_session/update_title" : "/api/v0/chat_session/delete";
-  const body = action === "rename"
-    ? { chat_session_id: sessionID, title: String(payload.newTitle || "").trim() }
-    : { chat_session_id: sessionID };
-  if (action === "rename" && !body.title) throw new Error("会话标题不能为空");
-  const pageWindow = doc.defaultView?.wrappedJSObject || doc.defaultView;
-
-  let token = "";
-  try {
-    const ls = pageWindow.localStorage;
-    if (ls) {
-      for (const key of ["userToken", "token", "auth_token", "user_token"]) {
-        const raw = ls.getItem(key);
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            token = parsed?.value || parsed?.token || parsed?.access_token || parsed?.accessToken
-              || parsed?.data?.token || (typeof parsed === "string" ? parsed : "");
-          } catch (_) {
-            token = raw;
-          }
-          if (token) break;
-        }
-      }
-    }
-  } catch (_) {}
-
-  if (!token) {
-    try {
-      const cookie = String(pageWindow.document?.cookie || "");
-      const match = /(?:^|;\s*)ds_token=([^;]+)/.exec(cookie);
-      if (match?.[1]) token = decodeURIComponent(match[1]);
-    } catch (_) {}
-  }
-
-  token = String(token || "").replace(/^Bearer\s+/i, "").trim();
-  const headers = {
-    accept: "*/*",
-    "content-type": "application/json",
-    "x-client-platform": "web",
-    "x-client-version": "1.7.0"
-  };
-  if (token) headers.authorization = "Bearer " + token;
-
-  const response = await pageWindow.fetch(endpoint, {
-    method: "POST",
-    credentials: "include",
-    headers,
-    body: JSON.stringify(body)
-  });
-  let result = null;
-  let responseText = "";
-  try {
-    responseText = await response.text();
-    result = JSON.parse(responseText);
-  } catch (_) {}
-  const responseCode = result?.code;
-  const bizCode = result?.data?.biz_code;
-  const isFailureCode = value => value !== undefined && value !== null
-    && String(value) !== "0" && Number(value) !== 200;
-  if (!response.ok || isFailureCode(responseCode) || isFailureCode(bizCode)) {
-    const detail = result?.msg || result?.message
-      || [responseCode !== undefined ? `code=${responseCode}` : "", bizCode !== undefined ? `biz_code=${bizCode}` : ""]
-        .filter(Boolean).join(", ")
-      || responseText.trim().replace(/\s+/g, " ").slice(0, 200);
-    throw new Error(`DeepSeek会话${action === "rename" ? "重命名" : "删除"}接口失败（HTTP ${response.status}${detail ? `: ${detail}` : ""}）`);
-  }
-  if (action === "rename") {
-    try {
-      const targetURL = sessionURL(payload?.expectedURL, doc);
-      const row = sessionRows(doc).find(r => (targetURL && r.url === targetURL) || (sessionID && r.url.endsWith(sessionID)));
-      if (row?.element) {
-        row.element.setAttribute("title", payload.newTitle);
-        const titleEl = row.element.querySelector("[title]") || row.element.querySelector("span, div") || row.element;
-        if (titleEl) {
-          titleEl.textContent = payload.newTitle;
-          titleEl.setAttribute("title", payload.newTitle);
-        }
-      }
-    } catch (_) {}
-  }
-  if (action === "delete") {
-    try {
-      const targetURL = sessionURL(payload?.expectedURL, doc);
-      const row = sessionRows(doc).find(r => (targetURL && r.url === targetURL) || (sessionID && r.url.endsWith(sessionID)));
-      if (row?.element) {
-        const container = row.element.closest("[data-virtual-list-item-key], li, [class*='session-item'], [class*='conversation-item'], [class*='chat-item']") || row.element;
-        container?.remove();
-      }
-      doc.defaultView?.history?.replaceState(null, "", "/");
-    } catch (_) {}
-  }
-  return { ok: true, sessionID, result };
-}
 
 function sessionRows(doc) {
   const rows = new Map();
@@ -636,7 +539,7 @@ async function waitFor(find, timeout = 2500) {
 async function openSessionMenu(doc, win, expectedURL) {
   const targetURL = sessionURL(expectedURL, doc);
   if (!targetURL || sessionURL(doc.location.href, doc) !== targetURL) throw new Error("当前网页已切换会话，未执行会话操作");
-  let row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element, 1500);
+  let row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element, 2000);
   if (!row || !visible(row)) {
     // 宽屏/窄屏自适应：若侧栏收起，寻找顶部左侧合法的侧栏/抽屉展开按钮
     let expand = findElement(doc, [
@@ -659,9 +562,9 @@ async function openSessionMenu(doc, win, expectedURL) {
     }
     if (expand) {
       expand.click();
-      await delay(300);
+      await delay(400);
     }
-    row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element, 2000);
+    row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element, 4500);
   }
   if (!row) {
     // 新版 DeepSeek 使用虚拟列表且不暴露 href；当前 URL 对应的活动项仍可通过菜单按钮操作。
@@ -1073,25 +976,17 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         if (subAction === "list") {
           return { sessions: sessionRows(doc).map(({ url, title }) => ({ url, title })) };
         }
-      if (subAction === "select") {
+        if (subAction === "select") {
           const row = sessionRows(doc).find(row => payload.url
             ? row.url === sessionURL(payload.url, doc)
             : row.title === payload.title);
           if (!row) return { ok: false };
           row.element.click();
           const selected = await waitFor(() => sessionURL(doc.location.href, doc) === row.url);
-        return { ok: Boolean(selected), url: row.url };
-      }
-      if (subAction === "rename" || subAction === "delete") {
-        try {
-          return await sessionAPI(doc, subAction, payload);
-        } catch (apiError) {
-          // 接口是首选；接口失败或特殊场景再退回 DOM 菜单操作
-          if (payload.forceAPI || (subAction === "rename" && !payload.expectedURL)) throw apiError;
+          return { ok: Boolean(selected), url: row.url };
         }
-      }
-      if (subAction === "rename" && sessionRows(doc).some(row =>
-          row.url === sessionURL(payload.expectedURL, doc) && row.title === payload.newTitle)) return { ok: true };
+        if (subAction === "rename" && sessionRows(doc).some(row =>
+            row.url === sessionURL(payload.expectedURL, doc) && row.title === payload.newTitle)) return { ok: true };
         const menuRow = await openSessionMenu(doc, win, payload.expectedURL);
         if (subAction === "rename") {
           const option = await waitFor(() => labeledControl(doc, ["重命名", "Rename"]));

@@ -583,6 +583,34 @@ async function testUpdaterContractsAndSafety() {
   assert(/^[a-f0-9]{64}$/.test(expected), "valid 64-char hex hash must pass");
 }
 
+function testDeepSeekWebDriverSessionActionAndRetryContracts() {
+  const driverSource = fs.readFileSync(path.join(root, "src", "deepseek-web", "driver.js"), "utf8");
+  const childSource = fs.readFileSync(path.join(root, "src", "deepseek-web", "DeepSeekActorChild.sys.mjs"), "utf8");
+
+  // 1. 确保已彻底清除未公开私有 API 相关调用
+  assert(!driverSource.includes("forceAPI"), "driver.js must not contain forceAPI");
+  assert(!driverSource.includes("sessionAPI"), "driver.js must not call sessionAPI");
+  assert(!childSource.includes("sessionAPI"), "DeepSeekActorChild must not define or call sessionAPI");
+  assert(!childSource.includes("/api/v0/chat_session"), "DeepSeekActorChild must not call private chat_session endpoints");
+
+  // 2. 检查 mayRetryAfterNavigation 判定逻辑：delete 和 rename 等有副作用操作绝不自动重试
+  assert(
+    driverSource.includes('action === "session-action" && ["list", "select"].includes(payload?.subAction)'),
+    "driver.js must restrict session-action retry to read-only list/select and forbid retry on mutating delete/rename"
+  );
+
+  // 3. 检查 deleteCurrentSession 的安全契约：导航必须位于 try 块内，且 finally 必须重置回根页面
+  assert(
+    driverSource.includes("try {\n        const currentURL =")
+      && driverSource.includes("finally {\n        try { await this.navigate(rootURL); } catch (_) {}"),
+    "deleteCurrentSession must wrap target navigation in try and guarantee reset to rootURL in finally"
+  );
+  assert(
+    driverSource.includes('execute("session-action", { subAction: "delete", expectedURL: targetURL }, 20000)'),
+    "deleteCurrentSession must execute delete with adequate timeout margin (20000ms)"
+  );
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -597,5 +625,7 @@ async function testUpdaterContractsAndSafety() {
     testDiagramCacheAndPromptModeContracts,
     testCAJFontContractAndWorkerGuard,
     testUpdaterContractsAndSafety,
+    testDeepSeekWebDriverSessionActionAndRetryContracts,
   };
 };
+

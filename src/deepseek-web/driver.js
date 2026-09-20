@@ -163,11 +163,15 @@
     }
 
     async execute(action, payload = {}, timeoutMs = 15000) {
-      // 页面路由提交时会短暂替换 WindowGlobal。读取状态和会话管理可以在
-      // 新 Actor 建立后安全重试；提交消息本身不可重试，避免重复发送。
-      const mayRetryAfterNavigation = new Set([
-        "check-ready", "get-assistant-text", "is-generating", "click-continue", "session-action"
-      ]).has(action);
+      // 页面路由提交时会短暂替换 WindowGlobal。
+      // 状态读取以及可安全重复的 list/select 可在新 Actor 建立后重试；
+      // submit、delete、rename 不自动重试。
+      const mayRetryAfterNavigation =
+        action === "check-ready"
+        || action === "get-assistant-text"
+        || action === "is-generating"
+        || action === "click-continue"
+        || (action === "session-action" && ["list", "select"].includes(payload?.subAction));
       const deadline = Date.now() + timeoutMs;
       let lastError = null;
       for (let attempt = 0; attempt < (mayRetryAfterNavigation ? 3 : 1); attempt++) {
@@ -442,50 +446,19 @@
       const rootURL = "https://chat.deepseek.com/";
       const targetURL = String(expectedURL || "").split(/[?#]/)[0].replace(/\/$/, "");
       if (!targetURL) throw new Error("DeepSeek临时翻译会话地址为空，未执行删除");
-      const deleteByAPI = async () => {
-        const res = await this.execute("session-action", { subAction: "delete", expectedURL: targetURL, forceAPI: true }, 12000);
-        if (!res?.ok) throw new Error(res?.error || "DeepSeek临时翻译会话删除未完成");
-      };
-      const apiErrors = [];
-      const currentURL = String(this.browser.currentURI?.spec || "").split(/[?#]/)[0].replace(/\/$/, "");
 
-      // 当前会话页和新建会话页都尝试一次接口，避免页面切换时丢掉可用的认证上下文。
-      if (currentURL === targetURL) {
-        try {
-          await deleteByAPI();
-          try { await this.navigate(rootURL); } catch (_) {}
-          return true;
-        } catch (error) {
-          apiErrors.push(error);
-        }
-      }
-
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          // 离开活动会话后再重试接口，不依赖窄侧栏是否挂载目标条目。
-          await this.navigate(rootURL);
-          await deleteByAPI();
-          return true;
-        } catch (error) {
-          apiErrors.push(error);
-        }
-      }
-
-      let menuError = null;
       try {
-        // 接口不可用时回到目标会话，再走原有侧栏菜单；不能在根页面直接调用它。
-        await this.navigate(targetURL);
-        const res = await this.execute("session-action", { subAction: "delete", expectedURL: targetURL }, 12000);
-        if (!res?.ok) throw new Error(res?.error || "DeepSeek临时翻译会话删除未完成");
-        try { await this.navigate(rootURL); } catch (_) {}
-        return true;
-      } catch (error) {
-        menuError = error;
-      }
+        const currentURL = String(this.browser.currentURI?.spec || "").split(/[?#]/)[0].replace(/\/$/, "");
+        if (currentURL !== targetURL) {
+          await this.navigate(targetURL);
+        }
 
-      const describe = error => String(error?.message || error).replace(/\s+/g, " ").slice(0, 600);
-      const apiDetail = apiErrors.map(describe).filter(Boolean).join("；") || "未知接口错误";
-      throw new Error(`DeepSeek临时翻译会话删除失败（接口：${apiDetail}；侧栏菜单：${describe(menuError)}）`);
+        const res = await this.execute("session-action", { subAction: "delete", expectedURL: targetURL }, 20000);
+        if (!res?.ok) throw new Error(res?.error || "DeepSeek临时翻译会话删除未完成");
+        return true;
+      } finally {
+        try { await this.navigate(rootURL); } catch (_) {}
+      }
     }
 
     async submitMessage(text, options = {}) {
