@@ -32,6 +32,82 @@
     throw new Error("无法解码Base64图片数据");
   }
 
+  function dataURLToUint8Array(dataURL) {
+    const match = String(dataURL || "").match(/^data:[^;,]+;base64,(.*)$/s);
+    if (!match) throw new Error("页面图像编码无效");
+    return base64ToUint8Array(match[1]);
+  }
+
+  function readUint32(bytes, offset) {
+    return (((bytes[offset] << 24) >>> 0) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+  }
+
+  function writeUint32(bytes, offset, value) {
+    const n = Number(value) >>> 0;
+    bytes[offset] = n >>> 24;
+    bytes[offset + 1] = n >>> 16;
+    bytes[offset + 2] = n >>> 8;
+    bytes[offset + 3] = n;
+  }
+
+  function pngCRC32(bytes) {
+    let crc = 0xffffffff;
+    for (const value of bytes) {
+      crc ^= value;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function pngChunk(type, data) {
+    const payload = data instanceof Uint8Array ? data : new Uint8Array(data || []);
+    const chunk = new Uint8Array(payload.length + 12);
+    writeUint32(chunk, 0, payload.length);
+    for (let index = 0; index < 4; index++) chunk[4 + index] = type.charCodeAt(index) || 0;
+    chunk.set(payload, 8);
+    const crcInput = new Uint8Array(payload.length + 4);
+    crcInput.set(chunk.slice(4, 8), 0);
+    crcInput.set(payload, 4);
+    writeUint32(chunk, payload.length + 8, pngCRC32(crcInput));
+    return chunk;
+  }
+
+  function addPNGResolution(bytes, dpi = 300) {
+    const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    if (!(bytes instanceof Uint8Array) || bytes.length < 33 || !signature.every((value, index) => bytes[index] === value)) return bytes;
+    const pixelsPerMeter = Math.max(1, Math.round(Number(dpi || 300) / 0.0254));
+    const phys = new Uint8Array(9);
+    writeUint32(phys, 0, pixelsPerMeter);
+    writeUint32(phys, 4, pixelsPerMeter);
+    phys[8] = 1;
+    let offset = 8;
+    while (offset + 12 <= bytes.length) {
+      const length = readUint32(bytes, offset);
+      const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+      const end = offset + 12 + length;
+      if (end > bytes.length) return bytes;
+      if (type === "pHYs" && length === 9) {
+        const output = bytes.slice();
+        output.set(phys, offset + 8);
+        const crcInput = new Uint8Array(13);
+        crcInput.set(output.slice(offset + 4, offset + 8), 0);
+        crcInput.set(phys, 4);
+        writeUint32(output, offset + 17, pngCRC32(crcInput));
+        return output;
+      }
+      if (type === "IHDR") {
+        const chunk = pngChunk("pHYs", phys);
+        const output = new Uint8Array(bytes.length + chunk.length);
+        output.set(bytes.slice(0, end), 0);
+        output.set(chunk, end);
+        output.set(bytes.slice(end), end + chunk.length);
+        return output;
+      }
+      offset = end;
+    }
+    return bytes;
+  }
+
   function getPartitionStrategy(numPages, maxImages = 49) {
     const limit = Math.max(1, Number(maxImages) || 49);
     if (numPages <= limit) {
@@ -479,6 +555,104 @@
         downgraded: false,
         via: iframeCtx ? "iframe" : "self"
       };
+    }
+
+    async renderPagesToDirectory(runtime, outputDir, options = {}) {
+      const diagnostics = [];
+      const iframeCtx = this.getPreviewIframeContext(runtime, diagnostics);
+      let selfDoc = null;
+      if (!iframeCtx) selfDoc = await this.loadSelfDocument(runtime, diagnostics);
+      if (diagnostics.length) {
+        options.emit?.({
+          type: "warning",
+          message: `[导出PDF页面图] ${diagnostics.join("；")}`
+        });
+      }
+
+      const pdfDocument = iframeCtx?.pdfDocument || selfDoc;
+      const numPages = Number(pdfDocument?.numPages || 0);
+      if (!numPages) throw new Error("尚未获取到PDF文档，无法转换页面图像");
+
+      const scale = 300 / 72;
+      const images = [];
+      await this.storage.ensureDir(outputDir);
+      const baseStem = U.safeStem(String(options.stem || "document"), 80, "document");
+      const existingNames = new Set((await this.storage.walk(outputDir)).map(path => PathUtils.filename(path)));
+      let stem = "";
+      for (let serial = 1; serial < 1000; serial++) {
+        const candidate = serial === 1 ? baseStem : `${baseStem}-${serial}`;
+        const prefix = `${candidate}-第`;
+        const conflict = [...existingNames].some(name => name.startsWith(prefix) && name.endsWith("页.png"));
+        if (!conflict) {
+          stem = candidate;
+          break;
+        }
+      }
+      if (!stem) throw new Error("无法为页面图找到不冲突的导出文件名");
+      try {
+        for (let pageNumber = 1; pageNumber <= numPages; pageNumber++) {
+          U.throwIfAborted(options.signal);
+          options.emit?.({
+            type: "progress",
+            phase: "export-pdf-pages",
+            message: `正在转换第 ${pageNumber}/${numPages} 页…`,
+            progress: Math.round((pageNumber - 1) / numPages * 95)
+          });
+          let dataURL = "";
+          if (iframeCtx) {
+            const { cw } = iframeCtx;
+            const code = `
+              (async () => {
+                const pdfDocument = window.PDFViewerApplication && window.PDFViewerApplication.pdfDocument;
+                if (!pdfDocument) return JSON.stringify({ ok: false, error: "PDFViewerApplication.pdfDocument 不可用" });
+                const page = await pdfDocument.getPage(${pageNumber});
+                const viewport = page.getViewport({ scale: ${scale} });
+                const canvas = document.createElement("canvas");
+                canvas.width = Math.round(viewport.width);
+                canvas.height = Math.round(viewport.height);
+                const context = canvas.getContext("2d");
+                if (!context) return JSON.stringify({ ok: false, error: "iframe 画布 2D 上下文不可用" });
+                context.fillStyle = "#ffffff";
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                await page.render({ canvasContext: context, viewport }).promise;
+                return JSON.stringify({ ok: true, dataURL: canvas.toDataURL("image/png") });
+              })()
+            `;
+            const result = JSON.parse(await cw.eval(code));
+            if (!result.ok || !result.dataURL) throw new Error(result.error || "页面图像为空");
+            dataURL = result.dataURL;
+          }
+          else {
+            const win = runtime.window
+              || runtime.browser?.ownerGlobal
+              || Zotero.getMainWindow?.()
+              || Services.wm.getMostRecentWindow("navigator:browser");
+            const doc = win?.document || runtime.browser?.contentDocument || document;
+            const canvas = await renderSinglePageToCanvas(selfDoc, pageNumber, doc, scale);
+            dataURL = canvas.toDataURL("image/png");
+            canvas.width = 1;
+            canvas.height = 1;
+          }
+          const outputPath = PathUtils.join(
+            outputDir,
+            `${stem}-第${String(pageNumber).padStart(String(numPages).length, "0")}页.png`
+          );
+          const imageBytes = addPNGResolution(dataURLToUint8Array(dataURL), 300);
+          await this.storage.writeBytes(outputPath, imageBytes);
+          images.push(outputPath);
+        }
+      }
+      catch (error) {
+        await Promise.all(images.map(path => this.storage.remove(path, false)));
+        throw error;
+      }
+      options.emit?.({
+        type: "progress",
+        phase: "export-pdf-pages",
+        message: `已完成 ${numPages} 页，分辨率 300 DPI`,
+        progress: 100
+      });
+      return { images, pageCount: numPages, dpi: 300, via: iframeCtx ? "iframe" : "self" };
     }
   }
 

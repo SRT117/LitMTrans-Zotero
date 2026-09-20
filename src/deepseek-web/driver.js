@@ -18,6 +18,12 @@
       "textarea"
     ],
     sendButton: [
+      "div[role='button'].ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true'])",
+      "button.ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true'])",
+      ".ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true']):has(svg)",
+      ".ds-button--filled.ds-button--circle:not(.ds-button--disabled):not([aria-disabled='true'])",
+      ".ds-button[style*='34px']:has(svg):not(.ds-button--disabled):not([aria-disabled='true'])",
+      "div[role='button']._52c986b:not(.ds-button--disabled):not([aria-disabled='true'])",
       "div[role='button'][aria-label*='发送']:not([aria-disabled='true'])",
       "button[aria-label*='发送']:not([aria-disabled='true'])",
       "div[role='button'][aria-label*='Send']:not([aria-disabled='true'])",
@@ -447,6 +453,7 @@
       if (currentURL === targetURL) {
         try {
           await deleteByAPI();
+          try { await this.navigate(rootURL); } catch (_) {}
           return true;
         } catch (error) {
           apiErrors.push(error);

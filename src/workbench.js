@@ -81,7 +81,9 @@
     logEntries: [],
     logAutoCloseTimer: null,
     logAutoOpened: false,
-    systemMessages: []
+    systemMessages: [],
+    exportCapabilities: null,
+    exportSelectedKind: ""
   };
   // Bump when the print snapshot format changes.
   const LAYOUT_PDF_EXPORT_REVISION = 20;
@@ -145,6 +147,7 @@
       "setting-mineru-token", "setting-mineru-model",
       "setting-target-language", "setting-target-language-picker", "setting-machine-source-language-group", "setting-machine-source-language", "setting-machine-source-language-picker", "setting-translation-mode",
       "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation",
+      "export-dialog", "export-dialog-close", "export-dialog-cancel", "export-dialog-confirm", "export-option-list", "export-empty",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "open-storage-manager-button", "clear-document-button", "save-settings-button",
@@ -665,8 +668,7 @@
     if (els["empty-parse-only-button"]) {
       els["empty-parse-only-button"].disabled = running || !state.data?.capabilities?.canParse;
     }
-    els["export-pdf-button"].disabled = running || exportBusy
-      || !hasCurrentExportContent(state.mode === "layout", exportToolbarPane());
+    els["export-pdf-button"].disabled = running || exportBusy;
     const isChatRunning = state.running.has("chat");
     const isDocRunning = state.running.has("document");
     els["chat-send-button"].disabled = isChatRunning || isDocRunning;
@@ -2830,11 +2832,9 @@
 
   function renderReaderView() {
     const view = ["source", "translation"].includes(state.readerView) ? state.readerView : "both";
-    const toolbarPane = view === "source" ? "source" : "translation";
-    const toolbarLabel = exportActionLabel(toolbarPane);
-    els["export-pdf-button"].textContent = toolbarLabel;
-    els["export-pdf-button"].title = `${toolbarLabel}为PDF`;
-    els["export-pdf-button"].setAttribute("aria-label", `${toolbarLabel}为PDF`);
+    els["export-pdf-button"].textContent = "导出";
+    els["export-pdf-button"].title = "选择要导出的对象";
+    els["export-pdf-button"].setAttribute("aria-label", "选择要导出的对象");
     els["reader-split"].dataset.readerView = view;
     els["both-panes-button"].classList.toggle("active", view === "both");
     els["source-only-button"].classList.toggle("active", view === "source");
@@ -3941,6 +3941,19 @@
     return container;
   }
 
+  async function ensureTranslationLayoutExportPane() {
+    const model = state.data?.layout?.model;
+    if (!model?.pages?.length) throw new Error("排版译文尚未准备好，请先完成排版翻译");
+    const container = els["translation-layout"];
+    const identity = `${layoutFitSnapshotKey("translation")}|${model.pages.length}`;
+    if (container.dataset.layoutExportIdentity !== identity || !container.querySelector(".layout-page")) {
+      renderLayoutPane(container, els["translation-scroll"], model, true);
+      container.dataset.layoutExportIdentity = identity;
+    }
+    if (!await waitForLayoutPanePDFReady("translation")) throw new Error("排版译文尚未完成排版，请稍后再试");
+    return container;
+  }
+
   function frozenPrintStyle(pages, paper) {
     const paperWidth = Math.max(1, Number(paper?.width || 1));
     const paperHeight = Math.max(1, Number(paper?.height || 1));
@@ -4308,7 +4321,7 @@
     const pane = arguments[1] === "source" ? "source" : "translation";
     const source = pane === "source"
       ? await ensureSourceLayoutExportPane()
-      : els["translation-layout"];
+      : await ensureTranslationLayoutExportPane();
     if (pane !== "source" && !await waitForLayoutPanePDFReady(pane)) throw new Error("排版尚未完成，无法生成文本PDF");
     const renderVersion = String(source?.dataset.layoutRenderVersion || "");
     const pages = [...source.querySelectorAll(".layout-page")];
@@ -4371,6 +4384,7 @@
       root.remove();
       style.remove();
       resumeLayoutImageMemoryManagement();
+      if (state.mode !== "layout") renderMode();
     }
   }
 
@@ -4386,6 +4400,14 @@
       body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body {
         display:block !important; max-width:none !important; margin:0 !important; padding:0 !important;
         color:#111 !important; background:#fff !important; font-size:var(--reader-font-size) !important; line-height:1.72 !important;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body > p {
+        text-align:justify;
+        text-indent:.8cm;
+      }
+      body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body > p.caption-like {
+        width:fit-content; max-width:100%; margin:.7em auto .25em; color:#333; font-size:.92em;
+        font-weight:500; text-align:center; text-indent:0;
       }
       body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h1,
       body[data-print-snapshot="stream"] #litmtrans-stream-print-root .markdown-body h2,
@@ -4472,9 +4494,9 @@
     }
   }
 
-  async function exportCurrentReaderPDF(pane = exportToolbarPane()) {
+  async function exportCurrentReaderPDF(pane = exportToolbarPane(), options = {}) {
     const target = pane === "source" ? "source" : "translation";
-    const layout = state.mode === "layout";
+    const layout = options.layout === undefined ? state.mode === "layout" : Boolean(options.layout);
     if (exportBusy) return;
     if (state.running.size) {
       toast("当前任务完成后才能导出", "warning");
@@ -4510,6 +4532,343 @@
       if (!result?.cancelled) {
         recordSystemMessage(`PDF已导出：${result.path}`);
         toast("PDF已导出");
+      }
+    }
+    catch (error) {
+      toast(error.message, "error");
+    }
+    finally {
+      exportBusy = false;
+      updateOperationUI();
+    }
+  }
+
+  async function exportStreamMarkdown(pane) {
+    const target = pane === "source" ? "source" : "translation";
+    const markdown = target === "source"
+      ? String(state.data?.parsed?.markdown || "")
+      : String(state.data?.translation?.markdown || "");
+    if (!markdown.trim()) {
+      toast(`当前没有可导出的${exportPaneLabel(target)}`, "warning");
+      return;
+    }
+    if (exportBusy) return;
+    if (state.running.size) {
+      toast("当前任务完成后才能导出", "warning");
+      return;
+    }
+    exportBusy = true;
+    updateOperationUI();
+    try {
+      const result = await hostCall("export-stream-markdown", { pane: target });
+      if (!result?.cancelled) {
+        const missing = Number(result?.missingCount || 0);
+        const message = missing > 0
+          ? `Markdown和图片已导出，${missing}张图片未找到`
+          : (Number(result?.assetCount || 0) > 0 ? "Markdown和图片已导出" : "Markdown已导出");
+        recordSystemMessage(`${message}：${result.path}`);
+        toast(message, missing > 0 ? "warning" : undefined);
+      }
+    }
+    catch (error) {
+      toast(error.message, "error");
+    }
+    finally {
+      exportBusy = false;
+      updateOperationUI();
+    }
+  }
+
+  const EXPORT_HELP_TEXT = Object.freeze({
+    "layout-translation": "导出的pdf的字号基于界面当前的显示效果，如果手动调整过字号，导出的是调整后的当前字号",
+    "layout-comparison": "导出的pdf的字号基于界面当前的显示效果，如果手动调整过字号，导出的是调整后的当前字号",
+    "layout-source": "导出的pdf原文是经过解析后的排版原文，扫描版pdf会变成文字可识别的pdf"
+  });
+
+  function fallbackExportCapabilities() {
+    const fileName = String(state.data?.item?.fileName || "");
+    const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")).toLowerCase() : "";
+    const imageCount = Array.isArray(state.data?.parsed?.imageMap)
+      ? state.data.parsed.imageMap.filter(record => !record?.warning).length
+      : 0;
+    return {
+      originalPDF: extension === ".pdf",
+      originalCAJ: Boolean(state.data?.item?.isCAJ),
+      pdfPages: extension === ".pdf" || Boolean(state.data?.item?.isCAJ),
+      streamSource: Boolean(state.data?.parsed?.markdown),
+      streamTranslation: Boolean(state.data?.translation?.markdown),
+      imageCount,
+      title: state.data?.item?.title || ""
+    };
+  }
+
+  function exportOptionDefinitions(capabilities = fallbackExportCapabilities()) {
+    const available = capabilities || fallbackExportCapabilities();
+    return [
+      {
+        kind: "layout-translation",
+        label: "排版译文（当前字体）",
+        meta: "PDF",
+        help: EXPORT_HELP_TEXT["layout-translation"],
+        available: hasCurrentExportContent(true, "translation")
+      },
+      {
+        kind: "layout-comparison",
+        label: "排版对照版（当前字体）",
+        meta: "PDF",
+        help: EXPORT_HELP_TEXT["layout-comparison"],
+        available: Boolean(available.pdfPages) && hasCurrentExportContent(true, "translation")
+      },
+      {
+        kind: "layout-source",
+        label: "排版原文（解析结果）",
+        meta: "PDF",
+        help: EXPORT_HELP_TEXT["layout-source"],
+        available: hasCurrentExportContent(true, "source")
+      },
+      {
+        kind: "original-pdf",
+        label: "原始文件",
+        meta: "PDF",
+        available: Boolean(available.originalPDF)
+      },
+      {
+        kind: "original-caj",
+        label: "原始CAJ文件",
+        meta: "CAJ",
+        available: Boolean(available.originalCAJ)
+      },
+      {
+        kind: "stream-source",
+        label: "流式原文",
+        meta: "PDF",
+        available: Boolean(available.streamSource || state.data?.parsed?.markdown)
+      },
+      {
+        kind: "stream-source-markdown",
+        label: "流式原文",
+        meta: "Markdown + 图片",
+        available: Boolean(available.streamSource || state.data?.parsed?.markdown)
+      },
+      {
+        kind: "stream-translation",
+        label: "流式译文",
+        meta: "PDF",
+        available: Boolean(available.streamTranslation || state.data?.translation?.markdown)
+      },
+      {
+        kind: "stream-translation-markdown",
+        label: "流式译文",
+        meta: "Markdown + 图片",
+        available: Boolean(available.streamTranslation || state.data?.translation?.markdown)
+      },
+      {
+        kind: "images",
+        label: "文献图片",
+        meta: "图片文件",
+        available: Number(available.imageCount || 0) > 0
+      },
+      {
+        kind: "pdf-pages",
+        label: "文献转图片",
+        meta: "PNG · 300 DPI",
+        available: Boolean(available.pdfPages)
+      }
+    ].filter(option => option.available);
+  }
+
+  function setExportDialogSelection(kind) {
+    state.exportSelectedKind = String(kind || "");
+    els["export-dialog-confirm"].disabled = !state.exportSelectedKind;
+    for (const input of els["export-option-list"].querySelectorAll('input[type="radio"]')) {
+      input.checked = input.value === state.exportSelectedKind;
+      input.closest(".export-option")?.classList.toggle("selected", input.checked);
+    }
+  }
+
+  function toggleExportHelp(button, visible) {
+    const explanation = button.closest(".export-option")?.querySelector(".export-option-explanation");
+    if (!explanation) return;
+    const next = visible === undefined ? button.getAttribute("aria-expanded") !== "true" : Boolean(visible);
+    button.setAttribute("aria-expanded", String(next));
+    explanation.hidden = !next;
+  }
+
+  function renderExportOptions(capabilities, loading = false) {
+    const list = els["export-option-list"];
+    list.replaceChildren();
+    if (loading) {
+      const hint = document.createElement("p");
+      hint.className = "export-loading-hint";
+      hint.textContent = "正在检查可导出的文件…";
+      list.appendChild(hint);
+      els["export-empty"].hidden = true;
+      els["export-dialog-confirm"].disabled = true;
+      return;
+    }
+    const options = exportOptionDefinitions(capabilities);
+    els["export-empty"].hidden = options.length > 0;
+    if (!options.length) {
+      state.exportSelectedKind = "";
+      els["export-dialog-confirm"].disabled = true;
+      return;
+    }
+    const selected = options.some(option => option.kind === state.exportSelectedKind)
+      ? state.exportSelectedKind
+      : options[0].kind;
+    for (const option of options) {
+      const row = document.createElement("div");
+      row.className = "export-option";
+      row.addEventListener("click", event => {
+        if (event.target.closest(".export-option-help")) return;
+        setExportDialogSelection(option.kind);
+      });
+
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "export-object";
+      input.value = option.kind;
+      input.checked = option.kind === selected;
+      input.setAttribute("aria-label", option.label);
+      input.addEventListener("change", () => setExportDialogSelection(option.kind));
+
+      const label = document.createElement("label");
+      label.className = "export-option-label";
+      const title = document.createElement("span");
+      title.className = "export-option-title";
+      title.textContent = option.label;
+      label.appendChild(title);
+      if (option.meta) {
+        const meta = document.createElement("span");
+        meta.className = "export-option-meta";
+        meta.textContent = option.meta;
+        label.appendChild(meta);
+      }
+
+      row.append(input, label);
+      if (option.help) {
+        const help = document.createElement("button");
+        help.className = "export-option-help";
+        help.type = "button";
+        help.textContent = "?";
+        help.title = option.help;
+        help.setAttribute("aria-label", `${option.label}说明`);
+        help.setAttribute("aria-expanded", "false");
+        help.addEventListener("mouseenter", () => toggleExportHelp(help, true));
+        help.addEventListener("mouseleave", () => {
+          if (help.dataset.pinned !== "true") toggleExportHelp(help, false);
+        });
+        help.addEventListener("focus", () => toggleExportHelp(help, true));
+        help.addEventListener("blur", () => {
+          if (help.dataset.pinned !== "true") toggleExportHelp(help, false);
+        });
+        help.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          const next = help.dataset.pinned !== "true";
+          help.dataset.pinned = String(next);
+          toggleExportHelp(help, next);
+        });
+        row.appendChild(help);
+        const explanation = document.createElement("p");
+        explanation.className = "export-option-explanation";
+        explanation.hidden = true;
+        explanation.textContent = option.help;
+        row.appendChild(explanation);
+      }
+      list.appendChild(row);
+    }
+    setExportDialogSelection(selected);
+  }
+
+  async function openExportDialog() {
+    if (state.running.size || exportBusy || els["export-dialog"].open) return;
+    state.exportSelectedKind = "";
+    renderExportOptions(null, true);
+    els["export-dialog"].showModal();
+    try {
+      state.exportCapabilities = await hostCall("export-capabilities", {}, { timeout: 12000 });
+    }
+    catch (_) {
+      state.exportCapabilities = fallbackExportCapabilities();
+    }
+    if (els["export-dialog"].open) renderExportOptions(state.exportCapabilities);
+  }
+
+  async function exportLayoutComparisonPDF() {
+    if (exportBusy) return;
+    if (!hasCurrentExportContent(true, "translation")) {
+      toast("当前没有可导出的排版译文", "warning");
+      return;
+    }
+    exportBusy = true;
+    updateOperationUI();
+    try {
+      const result = await withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>
+        hostCall("export-layout-comparison-pdf", { expectedPages, layoutPaper })
+      );
+      if (!result?.cancelled) {
+        recordSystemMessage(`PDF已导出：${result.path}`);
+        toast("PDF已导出");
+      }
+    }
+    catch (error) {
+      toast(error.message, "error");
+    }
+    finally {
+      exportBusy = false;
+      updateOperationUI();
+    }
+  }
+
+  async function runSelectedExport() {
+    const kind = state.exportSelectedKind;
+    if (!kind) return;
+    els["export-dialog"].close();
+    if (kind === "layout-translation") {
+      await exportCurrentReaderPDF("translation", { layout: true });
+      return;
+    }
+    if (kind === "layout-comparison") {
+      await exportLayoutComparisonPDF();
+      return;
+    }
+    if (kind === "layout-source") {
+      await exportCurrentReaderPDF("source", { layout: true });
+      return;
+    }
+    if (kind === "stream-source") {
+      await exportCurrentReaderPDF("source", { layout: false });
+      return;
+    }
+    if (kind === "stream-source-markdown") {
+      await exportStreamMarkdown("source");
+      return;
+    }
+    if (kind === "stream-translation") {
+      await exportCurrentReaderPDF("translation", { layout: false });
+      return;
+    }
+    if (kind === "stream-translation-markdown") {
+      await exportStreamMarkdown("translation");
+      return;
+    }
+
+    const requests = {
+      "original-pdf": ["export-original-file", { kind: "pdf" }, "原始文件已导出"],
+      "original-caj": ["export-original-file", { kind: "caj" }, "原始CAJ文件已导出"],
+      "images": ["export-document-images", {}, "文献图片已导出"],
+      "pdf-pages": ["export-pdf-pages", {}, "文献页面图已导出"]
+    };
+    const request = requests[kind];
+    if (!request || exportBusy) return;
+    exportBusy = true;
+    updateOperationUI();
+    try {
+      const result = await hostCall(request[0], request[1]);
+      if (!result?.cancelled) {
+        recordSystemMessage(`${request[2]}：${result.path || "已保存"}`);
+        toast(request[2]);
       }
     }
     catch (error) {
@@ -7384,7 +7743,10 @@
         toggleLayoutDebugMode();
       }
     });
-    els["export-pdf-button"].addEventListener("click", () => { void exportCurrentReaderPDF(); });
+    els["export-pdf-button"].addEventListener("click", () => { void openExportDialog(); });
+    els["export-dialog-close"].addEventListener("click", () => els["export-dialog"].close());
+    els["export-dialog-cancel"].addEventListener("click", () => els["export-dialog"].close());
+    els["export-dialog-confirm"].addEventListener("click", () => { void runSelectedExport(); });
     els["settings-button"].addEventListener("click", async () => {
       try { await openSettingsDialog(); }
       catch (error) { toast(error.message, "error"); }

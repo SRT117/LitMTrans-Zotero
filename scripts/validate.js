@@ -149,7 +149,7 @@ const runtimeText = walk(path.join(root, "src"))
   .join("\n");
 for (const pattern of [
   /mtranserver|youdao_direct|sogou_free|export_fidelity\.lua|python-docx|pandoc/i,
-  /export[-_ ]?(?:docx|word|html|markdown)|download[-_ ]?(?:docx|html|markdown)/i,
+  /export[-_ ]?(?:docx|word|html)|download[-_ ]?(?:docx|html)/i,
   /layoutShowParsedSource|show-parsed-source|layout-parsed-source-toggle/i,
   /cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com/i
 ]) {
@@ -183,6 +183,8 @@ for (const file of allProjectFiles.filter(f => f.startsWith(path.join(root, "scr
 const auditText = allProjectFiles
   .filter(file => /\.(?:js|ts|json|md|xhtml|css|mjs|ps1|sh|txt|csv)$/.test(file))
   .filter(file => path.basename(file) !== "AGENTS.md")
+  .filter(file => path.resolve(file) !== path.resolve(__filename))
+  .filter(file => !path.relative(root, file).replace(/\\/g, "/").startsWith("docs/"))
   .map(file => fs.readFileSync(file, "utf8"))
   .join("\n");
 for (const pattern of [

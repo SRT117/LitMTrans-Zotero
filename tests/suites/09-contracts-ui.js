@@ -319,11 +319,18 @@ function testPDFPreviewLifecycle() {
 function testPDFExportUsesCompletePaneSources() {
   const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
   const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const styles = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
+  const pdfPages = fs.readFileSync(path.join(root, "src", "deepseek-web", "pdf-pages.js"), "utf8");
 
   assert(workbench.includes("function hasCurrentExportContent(layout, pane)"), "export availability must be decided per pane and reading mode");
   assert(workbench.includes("function withStreamPrintRoot(pane, callback)"), "stream exports must build an isolated print root");
   assert(workbench.includes('String(state.data?.translation?.markdown || "")'), "stream translation export must use the persisted full Markdown");
   assert(workbench.includes('String(state.data?.parsed?.markdown || "")'), "stream source export must use the parsed full Markdown");
+  assert(workbench.includes("text-align:justify;"), "stream PDF print styles must preserve the reader's justified paragraphs");
+  assert(workbench.includes('kind: "stream-source-markdown"') && workbench.includes('kind: "stream-translation-markdown"'), "stream source and translation must each expose Markdown export");
+  assert(workbench.includes('hostCall("export-stream-markdown", { pane: target })'), "stream Markdown export must use the host file picker path");
+  assert(workbench.includes('meta: "Markdown + 图片"'), "stream Markdown export must advertise its bundled image resources");
+  assert(workbench.includes('label: "排版对照版（当前字体）"') && workbench.includes('label: "原始文件"') && workbench.includes('label: "文献转图片"'), "export option names must keep file types in the metadata line instead of the title");
   assert(workbench.includes('document.body.dataset.printSnapshot = "stream"'), "stream export must mark its dedicated print snapshot");
   assert(workbench.includes('hostCall("export-pdf", { pane, layout: true, expectedPages, layoutPaper })'), "layout translation export must retain the complete fitted-page path");
   assert(workbench.includes('return state.readerView === "source" ? "source" : "translation";'), "the toolbar must follow the explicitly selected pane");
@@ -331,6 +338,14 @@ function testPDFExportUsesCompletePaneSources() {
   assert(workbench.includes("async function ensureSourceLayoutExportPane()"), "layout source export must prepare the parsed source layout");
   assert(workbench.includes("renderLayoutPane(container, els[\"source-scroll\"], model, false)"), "layout source export must render source blocks instead of copying the PDF");
   assert(workbench.includes("withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>"), "layout source export must use the complete fitted-page print path");
+  assert(styles.includes(".document-pane .markdown-body > p { text-align: justify;"), "the reader must keep the canonical paragraph alignment rule");
+  assert(controller.includes('async exportStreamMarkdown(runtime, payload = {})') && controller.includes('case "export-stream-markdown":'), "controller must provide a persisted stream Markdown export command");
+  assert(controller.includes("async exportMarkdownImageBundle(markdown, documentID, outputPath)") && controller.includes("assetDirectory"), "stream Markdown export must bundle referenced local images beside the Markdown file");
+  assert(controller.includes("PathUtils.filename(sourcePath)") && controller.includes("nextAvailableExportFilePath"), "standalone document image export must preserve source Markdown filenames with collision handling");
+  assert(controller.includes('match(/\\]\\(\\s*/)') && controller.includes('match(/\\bsrc\\s*=\\s*["\']/i)'), "Markdown image export must locate the URL after the link delimiter instead of using an ambiguous first indexOf");
+  assert(controller.includes("isGeneratedExportAttachment(item)") && controller.includes('title.includes("（LitMTrans）")'), "generated PDF attachments must be distinguishable from original files");
+  assert(pdfPages.includes("addPNGResolution") && pdfPages.includes('pngChunk("pHYs"'), "PDF page images must carry explicit 300 DPI PNG metadata");
+  assert(pdfPages.includes("await Promise.all(images.map(path => this.storage.remove(path, false)))"), "failed page-image exports must clean up partial output");
   assert(!controller.includes("copiedSource"), "layout source export must not silently copy the original PDF");
   assert(controller.includes('label: "导出排版原文为PDF"') && controller.includes('type: "export-reader-pdf"'), "embedded Zotero Reader must route parsed-layout export back to the workbench");
 }

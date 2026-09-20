@@ -739,6 +739,14 @@
         }]);
         return { attached: true };
       } catch (error) {
+        // 保险丝：若页面上实际上已存在已完成的附件卡片且不在上传中，说明上传已就绪，绝不执行全文回退粘贴
+        try {
+          const checkReady = await driver.execute("wait-attachments-ready", { timeout: 1000 }, 2000);
+          if (checkReady?.ready || (checkReady?.attachmentCount > 0 && !checkReady?.uploading)) {
+            this.log("检测到 DeepSeek 页面已存在附件卡片，忽略等待异常，取消全文回退粘贴。");
+            return { attached: true };
+          }
+        } catch (_) {}
         this.log(`上传论文原文附件失败，改为粘贴文本: ${error?.message || error}`);
         return driver.pasteDraft(markdown);
       }
@@ -2672,6 +2680,66 @@
       return /\.pdf$/i.test(path) ? path : `${path}.pdf`;
     }
 
+    async selectMarkdownExportPath(win, defaultName) {
+      const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
+      const safeName = `${U.safeStem(String(defaultName || "document").replace(/\.(?:md|markdown)$/i, ""), 100)}.md`;
+      if (typeof Zotero.FilePicker === "function") {
+        const picker = new Zotero.FilePicker();
+        picker.init(target, localize("导出Markdown", "Export Markdown"), picker.modeSave);
+        picker.appendFilter("Markdown", "*.md; *.markdown");
+        picker.defaultString = safeName;
+        const result = await picker.show();
+        if (result !== picker.returnOK && result !== picker.returnReplace) return "";
+        const path = String(picker.file?.path || "");
+        return /\.(?:md|markdown)$/i.test(path) ? path : `${path}.md`;
+      }
+      const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
+      picker.init(target.browsingContext || target, localize("导出Markdown", "Export Markdown"), Ci.nsIFilePicker.modeSave);
+      picker.appendFilter("Markdown", "*.md; *.markdown");
+      picker.defaultString = safeName;
+      const result = await new Promise(resolve => picker.open(resolve));
+      if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return "";
+      const path = String(picker.file?.path || "");
+      return /\.(?:md|markdown)$/i.test(path) ? path : `${path}.md`;
+    }
+
+    async selectCAJExportPath(win, defaultName) {
+      const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
+      const safeName = `${U.safeStem(String(defaultName || "document").replace(/\.caj$/i, ""), 100)}.caj`;
+      if (typeof Zotero.FilePicker === "function") {
+        const picker = new Zotero.FilePicker();
+        picker.init(target, localize("导出CAJ", "Export CAJ"), picker.modeSave);
+        picker.appendFilter("CAJ", "*.caj");
+        picker.defaultString = safeName;
+        const result = await picker.show();
+        if (result !== picker.returnOK && result !== picker.returnReplace) return "";
+        const path = String(picker.file?.path || "");
+        return /\.caj$/i.test(path) ? path : `${path}.caj`;
+      }
+      const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
+      picker.init(target.browsingContext || target, localize("导出CAJ", "Export CAJ"), Ci.nsIFilePicker.modeSave);
+      picker.appendFilter("CAJ", "*.caj");
+      picker.defaultString = safeName;
+      const result = await new Promise(resolve => picker.open(resolve));
+      if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return "";
+      const path = String(picker.file?.path || "");
+      return /\.caj$/i.test(path) ? path : `${path}.caj`;
+    }
+
+    async selectDirectoryExportPath(win, title) {
+      const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
+      if (typeof Zotero.FilePicker === "function") {
+        const picker = new Zotero.FilePicker();
+        picker.init(target, localize(title, title), picker.modeGetFolder);
+        const result = await picker.show();
+        return result === picker.returnOK ? String(picker.file?.path || "") : "";
+      }
+      const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
+      picker.init(target.browsingContext || target, localize(title, title), Ci.nsIFilePicker.modeGetFolder);
+      const result = await new Promise(resolve => picker.open(resolve));
+      return result === Ci.nsIFilePicker.returnOK ? String(picker.file?.path || "") : "";
+    }
+
     decodeImageDataURL(dataURL, win = null) {
       return U.decodeImageDataURL(dataURL, win);
     }
@@ -3004,6 +3072,345 @@
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       throw new Error("PDF打印已结束，但没有生成有效文件");
+    }
+
+    isGeneratedExportAttachment(item) {
+      try {
+        const title = String(item?.getField?.("title") || "");
+        return title.includes("（LitMTrans）")
+          || /(?:^|[-_])译文(?:对照版)?[-_]/.test(title);
+      }
+      catch (_) { return false; }
+    }
+
+    sameFilePath(left, right) {
+      const normalize = value => String(value || "")
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "")
+        .toLocaleLowerCase();
+      return Boolean(left && right && normalize(left) === normalize(right));
+    }
+
+    async exportAttachmentForKind(context, kind) {
+      const expectedExtension = kind === "caj" ? ".caj" : ".pdf";
+      const candidates = [];
+      const seen = new Set();
+      const add = item => {
+        if (!item || this.isGeneratedExportAttachment(item)) return;
+        const id = Number(item.id || 0);
+        if (id && seen.has(id)) return;
+        if (id) seen.add(id);
+        candidates.push(item);
+      };
+      add(context?.attachment);
+      const parent = context?.parent?.isRegularItem?.()
+        ? context.parent
+        : (context?.attachment?.parentID ? Zotero.Items.get(context.attachment.parentID) : null);
+      for (const id of parent?.getAttachments?.() || []) add(Zotero.Items.get(id));
+
+      for (const attachment of candidates) {
+        try {
+          const path = await this.attachmentPath(attachment);
+          if (U.extension(path).toLowerCase() !== expectedExtension) continue;
+          return { attachment, path };
+        }
+        catch (_) {}
+      }
+      return null;
+    }
+
+    async documentImageFiles(documentID) {
+      const imageRoot = this.storage.path(documentID, "images");
+      const files = await this.storage.walk(imageRoot);
+      return files
+        .filter(path => /\.(?:png|jpe?g|jp2|webp|gif|bmp|svg)$/i.test(String(path)))
+        .sort((left, right) => String(left).localeCompare(String(right), undefined, { numeric: true }));
+    }
+
+    async nextAvailableExportFilePath(outputDir, fileName, reserved = new Set()) {
+      let safeName = PathUtils.filename(String(fileName || "").replace(/\\/g, "/"));
+      safeName = safeName
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+        .replace(/[. ]+$/g, "");
+      if (!safeName) safeName = "image.png";
+      const extension = /\.[^.]+$/.test(safeName) ? safeName.slice(safeName.lastIndexOf(".")) : "";
+      const base = (extension ? safeName.slice(0, -extension.length) : safeName) || "image";
+      const keyFor = name => Zotero.isWin ? name.toLocaleLowerCase() : name;
+      for (let serial = 1; serial < 1000; serial++) {
+        const candidate = serial === 1 ? `${base}${extension}` : `${base}-${serial}${extension}`;
+        const key = keyFor(candidate);
+        if (reserved.has(key)) continue;
+        const path = PathUtils.join(outputDir, candidate);
+        if (await this.storage.exists(path)) continue;
+        return { path, name: candidate, key };
+      }
+      throw new Error("无法为导出图片找到不冲突的文件名");
+    }
+
+    async nextAvailableExportDirectory(parentDir, baseName) {
+      const base = U.safeStem(baseName, 90, "assets");
+      for (let serial = 1; serial < 1000; serial++) {
+        const name = serial === 1 ? base : `${base}-${serial}`;
+        const path = PathUtils.join(parentDir, name);
+        if (!await this.storage.exists(path)) return { path, name };
+      }
+      throw new Error("无法为导出图片找到不冲突的资源目录");
+    }
+
+    parseMarkdownImageTarget(value) {
+      let target = String(value || "").trim();
+      const wrapped = target.startsWith("<") && target.endsWith(">");
+      if (wrapped) target = target.slice(1, -1).trim();
+      if (!target || /^(?:data:|[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return null;
+      const suffixMatch = target.match(/([?#].*)$/s);
+      const suffix = suffixMatch ? suffixMatch[1] : "";
+      let pathPart = suffix ? target.slice(0, -suffix.length) : target;
+      try { pathPart = decodeURIComponent(pathPart); }
+      catch (_) {}
+      pathPart = pathPart.replace(/\\/g, "/").replace(/^\.\//, "");
+      const segments = pathPart.split("/");
+      if (!segments.length || !["images", "assets"].includes(segments[0].toLocaleLowerCase())) return null;
+      if (segments.some(segment => !segment || segment === "." || segment === ".." || segment.includes("\0"))) return null;
+      return { relative: segments.join("/"), suffix, wrapped };
+    }
+
+    encodeMarkdownAssetPath(relativePath) {
+      return String(relativePath || "")
+        .split("/")
+        .map(segment => encodeURIComponent(segment))
+        .join("/");
+    }
+
+    async exportMarkdownImageBundle(markdown, documentID, outputPath) {
+      const sourceMarkdown = String(markdown || "");
+      const documentRoot = this.storage.documentDir(documentID);
+      const references = new Map();
+      const replacements = [];
+      const collect = (token, start, end) => {
+        const parsed = this.parseMarkdownImageTarget(token);
+        if (!parsed) return;
+        let reference = references.get(parsed.relative);
+        if (!reference) {
+          reference = {
+            ...parsed,
+            sourcePath: PathUtils.join(documentRoot, ...parsed.relative.split("/")),
+            available: false
+          };
+          references.set(parsed.relative, reference);
+        }
+        replacements.push({ start, end, token, reference });
+      };
+
+      const markdownPattern = /!\[[^\]]*\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/gs;
+      for (const match of sourceMarkdown.matchAll(markdownPattern)) {
+        const token = String(match[1] || "");
+        const delimiter = match[0].match(/\]\(\s*/);
+        const offset = delimiter ? delimiter.index + delimiter[0].length : -1;
+        if (offset >= 0) collect(token, match.index + offset, match.index + offset + token.length);
+      }
+      const htmlPattern = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>/gis;
+      for (const match of sourceMarkdown.matchAll(htmlPattern)) {
+        const token = String(match[2] || "");
+        const attribute = match[0].match(/\bsrc\s*=\s*["']/i);
+        const offset = attribute ? attribute.index + attribute[0].length : -1;
+        if (offset >= 0) collect(token, match.index + offset, match.index + offset + token.length);
+      }
+
+      const available = [];
+      let missingCount = 0;
+      for (const reference of references.values()) {
+        if (await this.storage.exists(reference.sourcePath)) {
+          reference.available = true;
+          available.push(reference);
+        }
+        else missingCount++;
+      }
+      if (!available.length) return { markdown: sourceMarkdown, assetDirectory: "", assetCount: 0, missingCount };
+
+      const outputParent = PathUtils.parent(outputPath);
+      const outputStem = PathUtils.filename(outputPath).replace(/\.(?:md|markdown)$/i, "");
+      const directory = await this.nextAvailableExportDirectory(outputParent, `${outputStem}-assets`);
+      try {
+        await this.storage.ensureDir(directory.path);
+        for (const reference of available) {
+          await this.storage.copyFile(
+            reference.sourcePath,
+            PathUtils.join(directory.path, ...reference.relative.split("/"))
+          );
+        }
+      }
+      catch (error) {
+        await this.storage.remove(directory.path, true);
+        throw error;
+      }
+
+      const replacementText = replacement => {
+        const relative = `${directory.name}/${this.encodeMarkdownAssetPath(replacement.reference.relative)}${replacement.reference.suffix}`;
+        if (replacement.reference.wrapped || /\s/.test(relative)) return `<${relative}>`;
+        return relative;
+      };
+      let bundled = sourceMarkdown;
+      for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+        if (!replacement.reference.available) continue;
+        const replacementValue = replacementText(replacement);
+        bundled = bundled.slice(0, replacement.start) + replacementValue + bundled.slice(replacement.end);
+      }
+      return {
+        markdown: bundled,
+        assetDirectory: directory.path,
+        assetCount: available.length,
+        missingCount
+      };
+    }
+
+    async streamMarkdownForExport(documentID, pane) {
+      const parsed = await this.mineru.loadParsed(documentID);
+      if (pane === "source") return String(parsed?.markdown || "");
+      const loaded = await this.translation.load(documentID);
+      const sourceFingerprint = parsed?.markdown ? U.hashString(parsed.markdown) : "";
+      if (loaded?.meta?.sourceFingerprint && sourceFingerprint
+        && loaded.meta.sourceFingerprint !== sourceFingerprint) return "";
+      return String(loaded?.markdown || "");
+    }
+
+    async exportStreamMarkdown(runtime, payload = {}) {
+      const context = await this.attachmentContext(runtime.attachmentID, false);
+      const pane = payload.pane === "source" ? "source" : "translation";
+      const markdown = await this.streamMarkdownForExport(context.documentID, pane);
+      if (!markdown.trim()) throw new Error(`当前没有可导出的${pane === "source" ? "原文" : "译文"}`);
+      const suffix = pane === "source" ? "流式原文" : "流式译文";
+      const defaultName = `${U.safeStem(context.title || PathUtils.filename(context.filePath) || "document", 90)}-${suffix}.md`;
+      const outputPath = await this.selectMarkdownExportPath(runtime.window, defaultName);
+      if (!outputPath) return { cancelled: true };
+      const bundle = await this.exportMarkdownImageBundle(markdown, context.documentID, outputPath);
+      try {
+        await this.storage.writeText(outputPath, bundle.markdown);
+      }
+      catch (error) {
+        if (bundle.assetDirectory) await this.storage.remove(bundle.assetDirectory, true);
+        throw error;
+      }
+      return {
+        cancelled: false,
+        path: outputPath,
+        size: bundle.markdown.length,
+        assetDirectory: bundle.assetDirectory,
+        assetCount: bundle.assetCount,
+        missingCount: bundle.missingCount
+      };
+    }
+
+    async exportDocumentImages(runtime) {
+      const context = await this.attachmentContext(runtime.attachmentID, false);
+      const files = await this.documentImageFiles(context.documentID);
+      if (!files.length) throw new Error("当前文献没有可导出的图片");
+      const defaultName = `${U.safeStem(context.title || "document", 90)}-图片`;
+      const outputDir = await this.selectDirectoryExportPath(runtime.window, "选择文献图片导出文件夹");
+      if (!outputDir) return { cancelled: true };
+      const reserved = new Set();
+      const copied = [];
+      try {
+        for (const sourcePath of files) {
+          const selected = await this.nextAvailableExportFilePath(
+            outputDir,
+            PathUtils.filename(sourcePath),
+            reserved
+          );
+          reserved.add(selected.key);
+          await this.storage.copyFile(sourcePath, selected.path);
+          copied.push(selected.path);
+        }
+      }
+      catch (error) {
+        await Promise.all(copied.map(path => this.storage.remove(path, false)));
+        throw error;
+      }
+      return { cancelled: false, path: outputDir, files: copied, count: copied.length, defaultName };
+    }
+
+    async exportOriginalFile(runtime, payload = {}) {
+      const context = await this.attachmentContext(runtime.attachmentID, false);
+      const kind = payload.kind === "caj" ? "caj" : "pdf";
+      const source = await this.exportAttachmentForKind(context, kind);
+      if (!source) throw new Error(`当前文献没有可导出的原始${kind === "caj" ? "CAJ" : "PDF"}文件`);
+      const defaultName = PathUtils.filename(source.path) || `document.${kind}`;
+      const outputPath = kind === "pdf"
+        ? await this.selectPDFExportPath(runtime.window, defaultName)
+        : await this.selectCAJExportPath(runtime.window, defaultName);
+      if (!outputPath) return { cancelled: true };
+      if (this.sameFilePath(source.path, outputPath)) throw new Error("导出路径不能覆盖原始附件");
+      await this.storage.copyFile(source.path, outputPath);
+      const stat = await this.storage.stat(outputPath);
+      return { cancelled: false, path: outputPath, size: Number(stat?.size || 0) };
+    }
+
+    async exportCapabilities(runtime) {
+      const context = await this.attachmentContext(runtime.attachmentID, false);
+      const [originalPDF, originalCAJ, parsed, translation, images] = await Promise.all([
+        this.exportAttachmentForKind(context, "pdf"),
+        this.exportAttachmentForKind(context, "caj"),
+        this.mineru.loadParsed(context.documentID),
+        this.translation.load(context.documentID),
+        this.documentImageFiles(context.documentID)
+      ]);
+      const sourceFingerprint = parsed?.markdown ? U.hashString(parsed.markdown) : "";
+      const translationReady = Boolean(translation?.markdown)
+        && !(translation?.meta?.sourceFingerprint && sourceFingerprint
+          && translation.meta.sourceFingerprint !== sourceFingerprint);
+      return {
+        originalPDF: Boolean(originalPDF),
+        originalCAJ: Boolean(originalCAJ),
+        pdfPages: Boolean(originalPDF || originalCAJ),
+        streamSource: Boolean(parsed?.markdown),
+        streamTranslation: translationReady,
+        imageCount: images.length,
+        title: context.title,
+        fileName: PathUtils.filename(context.filePath)
+      };
+    }
+
+    async exportLayoutComparisonPDF(runtime, payload = {}) {
+      const context = await this.attachmentContext(runtime.attachmentID);
+      const original = await this.exportAttachmentForKind(context, "pdf");
+      const sourcePath = original?.path || context.filePath;
+      if (!sourcePath || !await this.storage.exists(sourcePath)) throw new Error("当前文献没有可用于生成对照版的PDF原文");
+      const defaultName = `${U.safeStem(context.title || "document", 90)}-排版对照版.pdf`;
+      const outputPath = await this.selectPDFExportPath(runtime.window, defaultName);
+      if (!outputPath) return { cancelled: true };
+      if (this.sameFilePath(sourcePath, outputPath)) throw new Error("导出路径不能覆盖原始附件");
+      const staging = this.storage.temporaryDir("compare");
+      const translationPath = PathUtils.join(staging, "translation.pdf");
+      try {
+        await this.storage.ensureDir(staging);
+        await this.printWorkbenchPDF(runtime, {
+          pane: "translation",
+          layout: true,
+          path: translationPath,
+          expectedPages: payload.expectedPages,
+          layoutPaper: payload.layoutPaper
+        });
+        await this.createLayoutComparisonPDF(sourcePath, translationPath, outputPath);
+        this.openWithDefaultApplication(outputPath);
+        const stat = await this.storage.stat(outputPath);
+        return { cancelled: false, path: outputPath, size: Number(stat?.size || 0), opened: true };
+      }
+      finally {
+        await this.storage.remove(staging, true);
+      }
+    }
+
+    async exportPDFPages(runtime, payload = {}, signal = null, emit = null) {
+      const context = await this.attachmentContext(runtime.attachmentID);
+      const outputDir = await this.selectDirectoryExportPath(runtime.window, "选择文献页面图导出文件夹");
+      if (!outputDir) return { cancelled: true };
+      const renderer = this.deepSeekWebProvider?.pageRenderer;
+      if (!renderer?.renderPagesToDirectory) throw new Error("当前环境没有可用的PDF页面渲染器");
+      const result = await renderer.renderPagesToDirectory(runtime, outputDir, {
+        stem: U.safeStem(context.title || PathUtils.filename(context.filePath) || "document", 90),
+        signal,
+        emit
+      });
+      return { cancelled: false, path: outputDir, ...result };
     }
 
     async createGeneratedPDFAttachment(context, filePath, title) {
@@ -4975,6 +5382,24 @@
 
         case "export-pdf":
           return this.withOperation(runtime, "export", async () => this.printWorkbenchPDF(runtime, payload));
+
+        case "export-capabilities":
+          return this.exportCapabilities(runtime);
+
+        case "export-stream-markdown":
+          return this.withOperation(runtime, "export", async () => this.exportStreamMarkdown(runtime, payload));
+
+        case "export-original-file":
+          return this.withOperation(runtime, "export", async () => this.exportOriginalFile(runtime, payload));
+
+        case "export-document-images":
+          return this.withOperation(runtime, "export", async () => this.exportDocumentImages(runtime, payload));
+
+        case "export-layout-comparison-pdf":
+          return this.withOperation(runtime, "export", async () => this.exportLayoutComparisonPDF(runtime, payload));
+
+        case "export-pdf-pages":
+          return this.withOperation(runtime, "export", (signal, emit) => this.exportPDFPages(runtime, payload, signal, emit));
 
         case "save-image":
           return this.saveImageData(runtime, payload);

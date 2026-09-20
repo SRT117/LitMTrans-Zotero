@@ -208,7 +208,13 @@ function findSendButton(doc, input, customSelectors) {
 
   const searchRoots = composer ? [composer, doc] : [doc];
 
-  const selectors = customSelectors || [
+  const defaultSelectors = [
+    "div[role='button'].ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true'])",
+    "button.ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true'])",
+    ".ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true']):has(svg)",
+    ".ds-button--filled.ds-button--circle:not(.ds-button--disabled):not([aria-disabled='true'])",
+    ".ds-button[style*='34px']:has(svg):not(.ds-button--disabled):not([aria-disabled='true'])",
+    "div[role='button']._52c986b:not(.ds-button--disabled):not([aria-disabled='true'])",
     "div[role='button'][aria-label*='发送']:not([aria-disabled='true'])",
     "button[aria-label*='发送']:not([aria-disabled='true'])",
     "div[role='button'][aria-label*='Send']:not([aria-disabled='true'])",
@@ -218,11 +224,14 @@ function findSendButton(doc, input, customSelectors) {
     ".ds-button--circle:not(.ds-button--disabled):not([aria-disabled='true'])",
     ".chat-input-send-button"
   ];
+  const selectors = Array.isArray(customSelectors) && customSelectors.length
+    ? [...new Set([...customSelectors, ...defaultSelectors])]
+    : defaultSelectors;
 
   const isExcluded = (el, root) => {
     if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return true;
     const className = String(el.className || "");
-    if (className.includes("disabled")) return true;
+    if (className.includes("disabled") || className.includes("Tertiary")) return true;
     // 若在正文消息或列表项内部，绝不是发送按钮
     if (el.closest?.("[data-role='assistant'], .chat-message, [class*='assistant-message'], .ds-markdown")) return true;
     const label = (el.getAttribute("aria-label") || el.title || el.textContent || "").toLowerCase();
@@ -517,8 +526,6 @@ async function sessionAPI(doc, action, payload = {}) {
   const headers = {
     accept: "*/*",
     "content-type": "application/json",
-    "x-client-bundle-id": "com.deepseek.chat",
-    "x-client-locale": "zh_CN",
     "x-client-platform": "web",
     "x-client-version": "1.7.0"
   };
@@ -602,7 +609,12 @@ function sessionRows(doc) {
 }
 
 function visible(element) {
-  return element && element.getClientRects().length > 0;
+  if (!element || element.getClientRects().length === 0) return false;
+  const rect = element.getBoundingClientRect();
+  const style = element.ownerDocument?.defaultView?.getComputedStyle?.(element);
+  if (style && (style.visibility === "hidden" || style.display === "none" || style.opacity === "0")) return false;
+  // 必须真正落在屏幕可见范围内，防止误选屏幕外负坐标的隐藏/折叠控件
+  return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0;
 }
 
 function labeledControl(root, labels) {
@@ -624,19 +636,32 @@ async function waitFor(find, timeout = 2500) {
 async function openSessionMenu(doc, win, expectedURL) {
   const targetURL = sessionURL(expectedURL, doc);
   if (!targetURL || sessionURL(doc.location.href, doc) !== targetURL) throw new Error("当前网页已切换会话，未执行会话操作");
-  let row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL)?.element, 1500);
+  let row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element, 1500);
   if (!row || !visible(row)) {
-    let expand = findElement(doc, ["[aria-label*='展开']", "[aria-label*='打开侧边栏']", "[aria-label*='侧边栏']", "[class*='sidebar-toggle']", "[class*='collapse-btn']"]);
-    if (!expand) {
-      // 350px 窄屏会完全卸载侧栏，只保留页首最左侧无文本的历史抽屉图标。
-      expand = Array.from(doc.querySelectorAll("button, [role='button'], .ds-button"))
+    // 宽屏/窄屏自适应：若侧栏收起，寻找顶部左侧合法的侧栏/抽屉展开按钮
+    let expand = findElement(doc, [
+      "[aria-label*='展开']",
+      "[aria-label*='打开侧边栏']",
+      "[aria-label*='侧边栏']",
+      "[aria-label*='历史']",
+      "[class*='sidebar-toggle']",
+      "[class*='collapse-btn']",
+      "._4f3769f"
+    ]);
+    if (!expand || !visible(expand)) {
+      const winWidth = win.innerWidth || doc.documentElement?.clientWidth || 350;
+      const maxLeft = Math.min(Math.max(winWidth * 0.4, 96), 180);
+      expand = Array.from(doc.querySelectorAll("button, [role='button'], .ds-button, div[tabindex]"))
         .filter(visible)
         .map(node => ({ node, rect: node.getBoundingClientRect() }))
-        .filter(({ rect }) => rect.left <= 96 && rect.top <= 112 && rect.width > 0 && rect.height > 0)
+        .filter(({ rect }) => rect.left >= 0 && rect.left <= maxLeft && rect.top >= 0 && rect.top <= 80 && rect.width > 0 && rect.height > 0)
         .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)[0]?.node || null;
     }
-    expand?.click();
-    row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element);
+    if (expand) {
+      expand.click();
+      await delay(300);
+    }
+    row = await waitFor(() => sessionRows(doc).find(row => row.url === targetURL && visible(row.element))?.element, 2000);
   }
   if (!row) {
     // 新版 DeepSeek 使用虚拟列表且不暴露 href；当前 URL 对应的活动项仍可通过菜单按钮操作。
@@ -773,11 +798,13 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
         return { ok: true, skipped: true };
       }
       const btn = findElement(doc, payload.newChatSelectors || [
+        "div[tabindex]:has-text('开启新对话')",
         "button:has-text('新对话')",
         "button:has-text('开启新对话')",
         "button:has-text('New chat')",
         "div[role='button']:has-text('新对话')",
         "div[role='button']:has-text('开启新对话')",
+        "div[tabindex]:has-text('新对话')",
         "[aria-label*='新对话']",
         "[aria-label*='New chat']"
       ]);
@@ -992,24 +1019,45 @@ export class LitMTransDeepSeekChild extends JSWindowActorChild {
           || input.parentElement?.parentElement
         )) || null;
 
+        // 顶层外壳（Shell）：DeepSeek 外壳通常包含卡片插槽（Child 0）与输入区（Child 1）
+        const shell = composer?.parentElement || composer;
+
         const hasUploading = Boolean(
-          (composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
+          (shell || composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
         );
         uploading = hasUploading;
         if (hasUploading) attachmentObserved = true;
 
-        const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
-        // DeepSeek 在附件后台上传时禁用发送按钮。当发送按钮恢复可用且无加载动画时，表示附件已就绪
-        if (sendBtn && !hasUploading && attachmentObserved) return { ready: true };
-
-        // 兜底：若输入区中附件缩略图已渲染，且无上传加载动画，亦视作就绪
-        if (!hasUploading && composer) {
-          const thumbs = composer.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment']");
-          attachmentCount = Math.max(attachmentCount, thumbs.length);
-          if (thumbs.length > 0) attachmentObserved = true;
-          if (thumbs.length > 0 && (expectedCount <= 0 || thumbs.length >= expectedCount)) {
-            return { ready: true };
+        // 在外壳与输入区范围内查找已渲染的图片、缩略图或文档卡片
+        const searchScope = shell || composer;
+        let thumbsCount = 0;
+        if (searchScope) {
+          const cardItems = searchScope.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment'], [class*='_967f3f9'], [class*='b40079d7'] > div");
+          thumbsCount = cardItems.length;
+          if (thumbsCount === 0) {
+            const fallbackCards = Array.from(searchScope.querySelectorAll("div")).filter(el => {
+              if (el.contains(input) || el === composer || el === shell) return false;
+              const text = el.textContent || "";
+              return text.length > 0 && text.length < 120 && /\.(?:md|txt|pdf|docx?|xlsx?|pptx?|png|jpe?g|webp)/i.test(text);
+            });
+            thumbsCount = fallbackCards.length;
           }
+        }
+        attachmentCount = Math.max(attachmentCount, thumbsCount);
+        if (attachmentCount > 0) attachmentObserved = true;
+
+        const hasInputText = Boolean(input && (String(input.value || input.textContent || "").trim().length > 0));
+        const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
+
+        // 条件 1：输入框原本无文字时，发送按钮被上传完备的附件点亮激活，且无上传加载动画
+        // 这是 DeepSeek 官方对于附件全部就绪最直接的权威信号
+        if (!hasInputText && sendBtn && !hasUploading) {
+          return { ready: true, attachmentObserved: true, attachmentCount: Math.max(attachmentCount, 1) };
+        }
+
+        // 条件 2：输入区/卡片槽中附件卡片已渲染，且无上传加载动画
+        if (!hasUploading && attachmentCount > 0 && (expectedCount <= 0 || attachmentCount >= expectedCount)) {
+          return { ready: true, attachmentObserved: true, attachmentCount };
         }
 
         await delay(100);

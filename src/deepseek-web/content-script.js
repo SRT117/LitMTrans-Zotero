@@ -252,7 +252,13 @@
 
     const searchRoots = composer ? [composer, doc] : [doc];
 
-    const selectors = customSelectors || [
+    const defaultSelectors = [
+      "div[role='button'].ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true'])",
+      "button.ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true'])",
+      ".ds-button--primary:not(.ds-button--disabled):not([aria-disabled='true']):has(svg)",
+      ".ds-button--filled.ds-button--circle:not(.ds-button--disabled):not([aria-disabled='true'])",
+      ".ds-button[style*='34px']:has(svg):not(.ds-button--disabled):not([aria-disabled='true'])",
+      "div[role='button']._52c986b:not(.ds-button--disabled):not([aria-disabled='true'])",
       "div[role='button'][aria-label*='发送']:not([aria-disabled='true'])",
       "button[aria-label*='发送']:not([aria-disabled='true'])",
       "div[role='button'][aria-label*='Send']:not([aria-disabled='true'])",
@@ -262,11 +268,14 @@
       ".ds-button--circle:not(.ds-button--disabled):not([aria-disabled='true'])",
       ".chat-input-send-button"
     ];
+    const selectors = Array.isArray(customSelectors) && customSelectors.length
+      ? [...new Set([...customSelectors, ...defaultSelectors])]
+      : defaultSelectors;
 
     const isExcluded = (el, root) => {
       if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return true;
       const className = String(el.className || "");
-      if (className.includes("disabled")) return true;
+      if (className.includes("disabled") || className.includes("Tertiary")) return true;
       // 若在正文消息或列表项内部，绝不是发送按钮
       if (el.closest?.("[data-role='assistant'], .chat-message, [class*='assistant-message'], .ds-markdown")) return true;
       const label = (el.getAttribute("aria-label") || el.title || el.textContent || "").toLowerCase();
@@ -563,26 +572,47 @@
             || input.parentElement?.parentElement
           )) || null;
 
+          // 顶层外壳（Shell）：DeepSeek 外壳通常包含卡片插槽（Child 0）与输入区（Child 1）
+          const shell = composer?.parentElement || composer;
+
           const hasUploading = Boolean(
-            (composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
+            (shell || composer || doc)?.querySelector?.("[class*='loading'], [class*='spin'], [aria-busy='true'], .ds-loading")
           );
           uploading = hasUploading;
           if (hasUploading) attachmentObserved = true;
 
+          // 在外壳与输入区范围内查找已渲染的图片、缩略图或文档卡片
+          const searchScope = shell || composer;
+          let thumbsCount = 0;
+          if (searchScope) {
+            const cardItems = searchScope.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment'], [class*='_967f3f9'], [class*='b40079d7'] > div");
+            thumbsCount = cardItems.length;
+            if (thumbsCount === 0) {
+              const fallbackCards = Array.from(searchScope.querySelectorAll("div")).filter(el => {
+                if (el.contains(input) || el === composer || el === shell) return false;
+                const text = el.textContent || "";
+                return text.length > 0 && text.length < 120 && /\.(?:md|txt|pdf|docx?|xlsx?|pptx?|png|jpe?g|webp)/i.test(text);
+              });
+              thumbsCount = fallbackCards.length;
+            }
+          }
+          attachmentCount = Math.max(attachmentCount, thumbsCount);
+          const hasInputText = Boolean(input && (String(input.value || input.textContent || "").trim().length > 0));
           const sendBtn = findSendButton(doc, input, payload.sendButtonSelectors);
-          if (sendBtn && !hasUploading && attachmentObserved) {
+
+          // 条件 1：输入框原本无文字时，发送按钮被上传完备的附件点亮激活，且无上传加载动画
+          if (!hasInputText && sendBtn && !hasUploading) {
             ready = true;
+            attachmentObserved = true;
+            attachmentCount = Math.max(attachmentCount, 1);
             break;
           }
 
-          if (!hasUploading && composer) {
-            const thumbs = composer.querySelectorAll("img, [class*='thumb'], [class*='file-item'], [class*='attachment']");
-            attachmentCount = Math.max(attachmentCount, thumbs.length);
-            if (thumbs.length > 0) attachmentObserved = true;
-            if (thumbs.length > 0 && (expectedCount <= 0 || thumbs.length >= expectedCount)) {
-              ready = true;
-              break;
-            }
+          // 条件 2：输入区/卡片槽中附件卡片已渲染，且无上传加载动画
+          if (!hasUploading && attachmentCount > 0 && (expectedCount <= 0 || attachmentCount >= expectedCount)) {
+            ready = true;
+            attachmentObserved = true;
+            break;
           }
 
           await delay(100);
