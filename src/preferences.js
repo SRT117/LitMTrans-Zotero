@@ -467,9 +467,12 @@ var LitMTransControllerPreferences = {
       if (this.pendingUpdateInfo) {
         button.disabled = true;
         status.className = "litmtrans-update-status busy";
-        status.textContent = `正在下载并安装 v${this.pendingUpdateInfo.version}...`;
+        status.textContent = `准备下载更新 v${this.pendingUpdateInfo.version}...`;
         try {
-          await this.controller().applyUpdate({ updateInfo: this.pendingUpdateInfo });
+          await this.controller().applyUpdate(
+            { updateInfo: this.pendingUpdateInfo },
+            p => { if (p?.message) status.textContent = p.message; }
+          );
           status.className = "litmtrans-update-status success";
           status.textContent = `已成功更新至 v${this.pendingUpdateInfo.version}！`;
           button.textContent = "检查更新";
@@ -485,9 +488,12 @@ var LitMTransControllerPreferences = {
 
       button.disabled = true;
       status.className = "litmtrans-update-status busy";
-      status.textContent = "正在检查...";
+      status.textContent = "正在探测更新节点...";
       try {
-        const result = await this.controller().checkForUpdates({ manual: true });
+        const result = await this.controller().checkForUpdates({
+          manual: true,
+          onProgress: p => { if (p?.message) status.textContent = p.message; }
+        });
         if (result?.hasUpdate) {
           this.pendingUpdateInfo = result;
           status.className = "litmtrans-update-status success";

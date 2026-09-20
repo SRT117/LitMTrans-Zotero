@@ -561,7 +561,11 @@ async function testUpdaterContractsAndSafety() {
   assert(updaterCode.includes("fetchBytesWithFullTimeout"), "updater must enforce body-covering download timeout");
   assert(updaterCode.includes("onDownloadFailed") && updaterCode.includes("onInstallCancelled") && updaterCode.includes("install.cancel()"), "updater must handle full install lifecycle");
   assert(updaterCode.includes("candidateId !== ADDON_ID"), "updater must verify addon id before installing");
+  assert(updaterCode.includes("fetchBytesWithFullTimeout(url, 120000, onProgress)"), "download must pass onProgress callback");
   assert(controllerCode.includes("this.autoUpdateTimer = setInterval"), "controller must establish periodic auto-update check interval");
+
+  const workbenchCode = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  assert(workbenchCode.includes('if (type === "update-progress")'), "workbench must handle update-progress events");
 
   const sandbox = { module: {}, exports: {}, require, LitMTrans: {}, TextEncoder };
   vm.runInNewContext(updaterCode, sandbox);

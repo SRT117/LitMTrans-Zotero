@@ -7,6 +7,14 @@
   const PAGE_CACHE_ALERT_THRESHOLD_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
   const PAGE_CACHE_ALERT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000; // 3 天
 
+  function classifyDocumentRootFile(name) {
+    if (name === "document.json") return "metadata";
+    if (name === "asset-map.json" || name === "image-map.json") return "images";
+    if (name === "mineru-task.json") return "mineruResult";
+    if (name.endsWith(".json") || name.endsWith(".md")) return "model";
+    return "other";
+  }
+
   class Storage {
     constructor() {
       this.root = PathUtils.join(Zotero.Profile.dir, "litmtrans");
@@ -761,16 +769,17 @@
               docTotalBytes += size;
               docTotalFiles++;
 
-              if (name === "asset-map.json" || name === "image-map.json") {
+              const category = classifyDocumentRootFile(name);
+              if (category === "images") {
                 categories.images.bytes += size;
                 categories.images.files++;
-              } else if (name === "mineru-task.json") {
+              } else if (category === "mineruResult") {
                 categories.mineruResult.bytes += size;
                 categories.mineruResult.files++;
-              } else if (name.endsWith(".json") || name.endsWith(".md") || name === "document.json") {
+              } else if (category === "model") {
                 categories.model.bytes += size;
                 categories.model.files++;
-              } else {
+              } else if (category === "other") {
                 categories.other.bytes += size;
                 categories.other.files++;
               }
@@ -1117,13 +1126,7 @@
           const info = await this.stat(entry);
           if (!info || info.type === "directory") continue;
           const name = PathUtils.filename(entry);
-          const category = name === "asset-map.json" || name === "image-map.json"
-            ? "images"
-            : name === "mineru-task.json"
-            ? "mineruResult"
-            : name.endsWith(".json") || name.endsWith(".md") || name === "document.json"
-            ? "model"
-            : "other";
+          const category = classifyDocumentRootFile(name);
           if (category === subcategory) targets.push(entry);
         }
       }
@@ -1163,7 +1166,9 @@
         await this.remove(PathUtils.join(docDir, "logs"), true);
         await this.remove(PathUtils.join(docDir, "AI请求审计"), true);
       } else if (subcategory === "model" || subcategory === "other") {
-        for (const target of targets) await this.remove(target, false);
+        for (const target of targets) {
+          if (PathUtils.filename(target) !== "document.json") await this.remove(target, false);
+        }
       }
 
       if (subcategory === "deepseekWeb" && before.bytes > 0 && typeof this.getDeepSeekWebPagesCacheBytes === "function") {

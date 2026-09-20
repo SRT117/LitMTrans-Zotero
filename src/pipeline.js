@@ -236,6 +236,10 @@
           }
         );
         if (revision.archived) {
+          try {
+            await this.storage.removeFile(this.storage.path(context.documentID, "deepseek-web", "session.json"));
+            this.controller?.deepSeekWebProvider?.establishedSessions?.delete(context.documentID);
+          } catch (_) {}
           emit?.({
             type: "log",
             message: `解析正文已变化：已保留旧正文、图片与译文快照，并归档 ${revision.archived} 个旧解析版本对话。`

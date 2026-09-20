@@ -77,7 +77,7 @@
     }
   }
 
-  async function fetchBytesWithFullTimeout(url, timeoutMs = 120000) {
+  async function fetchBytesWithFullTimeout(url, timeoutMs = 120000, onProgress = null) {
     const link = newTimeoutController(timeoutMs, "下载安装包超时（超过120秒未完成）");
     try {
       const res = await fetch(url, {
@@ -86,6 +86,51 @@
         headers: { "Accept": "application/octet-stream,*/*" }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const contentLengthHeader = res.headers.get("Content-Length");
+      const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
+
+      if (res.body && typeof res.body.getReader === "function") {
+        const reader = res.body.getReader();
+        const chunks = [];
+        let receivedBytes = 0;
+        let lastReportTime = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          receivedBytes += value.length;
+
+          const now = Date.now();
+          if (typeof onProgress === "function" && (now - lastReportTime > 200 || receivedBytes === totalBytes)) {
+            lastReportTime = now;
+            let percentStr = "";
+            if (totalBytes > 0) {
+              const percent = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
+              percentStr = ` (${percent}%)`;
+            } else {
+              const mb = (receivedBytes / (1024 * 1024)).toFixed(1);
+              percentStr = ` (${mb} MB)`;
+            }
+            onProgress({
+              stage: "downloading",
+              message: `正在下载更新包${percentStr}...`,
+              loaded: receivedBytes,
+              total: totalBytes
+            });
+          }
+        }
+
+        const combined = new Uint8Array(receivedBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return combined;
+      }
+
       const buf = await res.arrayBuffer();
       return new Uint8Array(buf);
     } finally {
@@ -112,12 +157,34 @@
     stagedVersion: null,
     isUpdating: false,
 
-    async fetchUpdateManifest(timeoutMs = 8000) {
-      let lastErr = null;
-      for (const url of UPDATE_MANIFEST_SOURCES) {
+    async fetchUpdateManifest(timeoutMs = 8000, onProgress = null) {
+      if (typeof onProgress === "function") {
+        onProgress({ stage: "probing", message: "正在探测可用更新通道..." });
+      }
+
+      const controllers = UPDATE_MANIFEST_SOURCES.map(() => {
+        return LitMTrans.Utils?.newAbortController
+          ? LitMTrans.Utils.newAbortController()
+          : (typeof AbortController === "function" ? new AbortController() : null);
+      });
+
+      const fetchOne = async (url, index) => {
+        const controller = controllers[index];
+        let timer = null;
         try {
-          log(`Fetching update manifest from: ${url}`);
-          const data = await fetchJsonWithFullTimeout(url, timeoutMs);
+          if (controller && timeoutMs > 0) {
+            timer = setTimeout(() => {
+              try { controller.abort("请求元数据超时"); } catch (_) {}
+            }, timeoutMs);
+          }
+          log(`Probing update manifest from: ${url}`);
+          const res = await fetch(url, {
+            signal: controller?.signal,
+            cache: "no-store",
+            headers: { "Accept": "application/json" }
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
 
           const addonEntry = data?.addons?.[ADDON_ID];
           const updateItem = Array.isArray(addonEntry?.updates) ? addonEntry.updates[0] : null;
@@ -126,24 +193,52 @@
             if (!/^[a-f0-9]{64}$/.test(rawHash)) {
               throw new Error("更新元数据中的哈希格式非法或缺失，已终止解析");
             }
-            log(`Successfully resolved update manifest from ${url}, latest version: ${updateItem.version}`);
+            log(`Fastest manifest resolved from ${url}, latest version: ${updateItem.version}`);
             return {
               version: updateItem.version.trim(),
               updateLink: String(updateItem.update_link || "").trim(),
               updateHash: rawHash,
+              sourceUrl: url,
               raw: data
             };
           }
-        } catch (err) {
-          lastErr = err;
-          log(`Fetch from ${url} failed: ${err.message || String(err)}`);
+          throw new Error("清单中未包含有效插件版本条目");
+        } finally {
+          if (timer) clearTimeout(timer);
         }
-      }
-      throw new Error(`无法连接更新元数据服务器: ${lastErr?.message || "网络超时，请检查网络连接"}`);
+      };
+
+      return new Promise((resolve, reject) => {
+        let settledCount = 0;
+        let hasResolved = false;
+        const errors = [];
+
+        UPDATE_MANIFEST_SOURCES.forEach((url, idx) => {
+          fetchOne(url, idx).then(
+            result => {
+              if (hasResolved) return;
+              hasResolved = true;
+              controllers.forEach((c, i) => {
+                if (i !== idx) {
+                  try { c?.abort("其他通道已命中更新元数据"); } catch (_) {}
+                }
+              });
+              resolve(result);
+            },
+            err => {
+              errors.push(`${url}: ${err.message || String(err)}`);
+              settledCount++;
+              if (settledCount === UPDATE_MANIFEST_SOURCES.length && !hasResolved) {
+                reject(new Error(`无法连接更新元数据服务器: 所有节点均不可达（${errors.join("; ")}）`));
+              }
+            }
+          );
+        });
+      });
     },
 
-    async checkUpdate(currentVersion) {
-      const manifestInfo = await this.fetchUpdateManifest();
+    async checkUpdate(currentVersion, onProgress = null) {
+      const manifestInfo = await this.fetchUpdateManifest(8000, onProgress);
       const remoteVersion = String(manifestInfo.version || "").trim();
       const current = String(currentVersion || "").trim();
       if (!remoteVersion || !current) {
@@ -185,7 +280,7 @@
             onProgress({ stage: "downloading", message: `正在加速下载更新包 (v${version})...` });
           }
           log(`Downloading XPI from: ${url}`);
-          const bytes = await fetchBytesWithFullTimeout(url, 120000);
+          const bytes = await fetchBytesWithFullTimeout(url, 120000, onProgress);
 
           if (!bytes || bytes.byteLength < 1024) {
             lastErr = new Error("下载的文件过小或损坏");

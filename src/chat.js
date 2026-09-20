@@ -829,8 +829,10 @@ flowchart LR
 
     async currentDocumentFingerprint(documentID) {
       try {
-        const bytes = await this.storage.readBytes(this.storage.path(documentID, "full.cleaned.md"));
-        return bytes?.length ? await U.sha256Bytes(bytes) : "";
+        const text = await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
+        if (text) return U.hashString(text);
+        const raw = await this.storage.readText(this.storage.path(documentID, "full.md"), "");
+        return raw ? U.hashString(raw) : "";
       }
       catch (_) {
         return "";
@@ -926,77 +928,107 @@ flowchart LR
       };
     }
 
+    async discoverStoredSessions(documentID) {
+      const indexed = await this.storage.readJSON(this.indexPath(documentID), []);
+      const rows = new Map();
+      const sessions = new Map();
+      const indexedIDs = new Set();
+      for (const row of Array.isArray(indexed) ? indexed : []) {
+        const id = String(row?.id || "").replace(/[^A-Za-z0-9_-]+/g, "");
+        if (!id) continue;
+        indexedIDs.add(id);
+        rows.set(id, { ...row, id });
+        const raw = await this.storage.readJSON(this.sessionPath(documentID, id), null);
+        if (raw && typeof raw === "object") sessions.set(id, { ...row, ...raw, id });
+      }
+      for (const path of await this.storage.list(this.root(documentID))) {
+        const match = /^session\.([A-Za-z0-9_-]+)\.json$/u.exec(PathUtils.filename(path));
+        if (!match) continue;
+        const id = match[1];
+        const raw = await this.storage.readJSON(path, null);
+        if (!raw || typeof raw !== "object") continue;
+        const session = { ...(rows.get(id) || {}), ...raw, id };
+        sessions.set(id, session);
+        rows.set(id, { ...(rows.get(id) || {}), ...this.sessionIndexRow(session), id });
+      }
+      return { rows: [...rows.values()], sessions, needsIndexRepair: [...sessions.keys()].some(id => !indexedIDs.has(id)) };
+    }
+
     async ensureDocumentSession(documentID, sessionID = "") {
       await this.storage.ensureDir(this.root(documentID));
       const id = String(sessionID || this.documentSessionID()).replace(/[^A-Za-z0-9_-]+/g, "") || this.documentSessionID();
-      const existing = await this.storage.readJSON(this.sessionPath(documentID, id), null);
-      if (existing && typeof existing === "object") return existing;
+      const catalog = await this.discoverStoredSessions(documentID);
+      const existing = catalog.sessions.get(id);
+      if (existing) {
+        if (catalog.needsIndexRepair) await this.writeIndex(documentID, catalog.rows);
+        return existing;
+      }
 
-      // Preserve the most recent conversation when consolidating the session
-      // index, then retire the older entries.
-      const legacyIndex = await this.storage.readJSON(this.indexPath(documentID), []);
-      const legacyRows = id === this.documentSessionID()
-        ? (Array.isArray(legacyIndex) ? legacyIndex : [])
-          .filter(row => row?.id && String(row.id) !== id && String(row.id) !== this.documentSessionID("web"))
+      const legacySessions = id === this.documentSessionID()
+        ? [...catalog.sessions.values()]
+          .filter(session => session?.id && session.id !== id && session.id !== this.documentSessionID("web") && !session.archivedDocumentRevision)
           .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
         : [];
-      const legacy = legacyRows.length
-        ? await this.storage.readJSON(this.sessionPath(documentID, legacyRows[0].id), null)
-        : null;
+      const legacy = legacySessions[0] || null;
       const now = new Date().toISOString();
       const session = {
-        version: 3,
         ...(legacy && typeof legacy === "object" ? legacy : {}),
+        version: 3,
         id,
-        title: id === this.documentSessionID("web") ? "网页端文献会话" : "当前文献对话",
-        titleCustom: false,
+        title: String(legacy?.title || (id === this.documentSessionID("web") ? "网页端文献会话" : "当前文献对话")),
+        titleCustom: Boolean(legacy?.titleCustom),
         createdAt: String(legacy?.createdAt || now),
         updatedAt: String(legacy?.updatedAt || now),
         apiCacheSessionID: String(legacy?.apiCacheSessionID || U.randomCacheKey()),
         sessionModel: id === this.documentSessionID("web") ? "deepseek-web" : String(legacy?.sessionModel || ""),
         documentFingerprint: String(legacy?.documentFingerprint || await this.currentDocumentFingerprint(documentID) || ""),
-        archivedDocumentRevision: false,
-        archivedAt: "",
-        revisionSourceRelativePath: "",
-        revisionTranslationRelativePath: "",
-        messages: Array.isArray(legacy?.messages) ? legacy.messages : []
+        archivedDocumentRevision: Boolean(legacy?.archivedDocumentRevision),
+        archivedAt: String(legacy?.archivedAt || ""),
+        revisionSourceRelativePath: String(legacy?.revisionSourceRelativePath || ""),
+        revisionTranslationRelativePath: String(legacy?.revisionTranslationRelativePath || ""),
+        migratedFromSessionID: String(legacy?.id || ""),
+        messages: (Array.isArray(legacy?.messages) ? legacy.messages : []).map(m => ({
+          ...m,
+          id: String(m?.id || U.randomID("message"))
+        }))
       };
       await this.storage.writeJSON(this.sessionPath(documentID, id), session);
-      // Preserve older standalone conversations while assigning the newest
-      // one the embedded reader's stable default ID.
-      if (legacyRows.length) await this.storage.remove(this.sessionPath(documentID, legacyRows[0].id), false);
-      await this.writeIndex(documentID, [this.sessionIndexRow(session), ...legacyRows.slice(1)]);
+      await this.writeIndex(documentID, [...catalog.rows, this.sessionIndexRow(session)]);
       return session;
     }
 
     async listSessions(documentID) {
-      const session = await this.ensureDocumentSession(documentID);
-      return [this.sessionIndexRow(session)];
+      const current = await this.ensureDocumentSession(documentID);
+      const catalog = await this.discoverStoredSessions(documentID);
+      const hidden = new Set([this.documentSessionID("web"), String(current.migratedFromSessionID || "")]);
+      return [...catalog.sessions.values()]
+        .filter(session => !hidden.has(String(session.id || "")))
+        .map(session => this.sessionIndexRow(session))
+        .sort((a, b) => a.id === current.id ? -1 : b.id === current.id ? 1 : String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
     }
 
     async writeIndex(documentID, sessions) {
-      const normalized = (sessions || [])
-        .filter(row => row && row.id)
+      const current = await this.storage.readJSON(this.indexPath(documentID), []);
+      const merged = new Map();
+      for (const row of [...(Array.isArray(current) ? current : []), ...(sessions || [])]) {
+        if (row?.id) merged.set(String(row.id), row);
+      }
+      const normalized = [...merged.values()]
         .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
       await this.storage.writeJSON(this.indexPath(documentID), normalized);
       return normalized;
     }
 
     async loadSession(documentID, sessionID = "", present = true) {
-      const requested = String(sessionID || "");
-      const isWeb = requested === this.documentSessionID("web") || requested === "web-document-chat";
-      const id = isWeb
-        ? this.documentSessionID("web")
-        // 嵌入式工作台每篇文献只保留一个当前会话；旧版独立会话 ID
-        // 只能作为迁移线索，不能再次打开成另一条对话。
-        : this.documentSessionID();
-      const fallback = await this.ensureDocumentSession(documentID, id);
-      const raw = fallback;
+      const requested = String(sessionID || "").replace(/[^A-Za-z0-9_-]+/g, "");
+      const catalog = await this.discoverStoredSessions(documentID);
+      const id = requested && catalog.sessions.has(requested) ? requested : (requested === this.documentSessionID("web") ? requested : this.documentSessionID());
+      const raw = catalog.sessions.get(id) || await this.ensureDocumentSession(documentID, id);
       const session = {
         version: 3,
         id: String(raw.id || id),
         title: String(raw.title || (id === this.documentSessionID("web") ? "网页端文献会话" : "当前文献对话")),
-        titleCustom: false,
+        titleCustom: Boolean(raw.titleCustom),
         createdAt: String(raw.createdAt || new Date().toISOString()),
         updatedAt: String(raw.updatedAt || raw.createdAt || new Date().toISOString()),
         apiCacheSessionID: String(raw.apiCacheSessionID || U.randomCacheKey()),
@@ -1006,6 +1038,7 @@ flowchart LR
         archivedAt: String(raw.archivedAt || ""),
         revisionSourceRelativePath: String(raw.revisionSourceRelativePath || ""),
         revisionTranslationRelativePath: String(raw.revisionTranslationRelativePath || ""),
+        migratedFromSessionID: String(raw.migratedFromSessionID || ""),
         messages: (Array.isArray(raw.messages) ? raw.messages : []).map(message => normalizeMessage(message)).filter(Boolean)
       };
       // Older replies and models that omitted the explicit source tag may
@@ -1041,7 +1074,7 @@ flowchart LR
         version: 3,
         id: String(session?.id || this.documentSessionID()),
         title: String(session?.title || "当前文献对话").slice(0, 80),
-        titleCustom: false,
+        titleCustom: Boolean(session?.titleCustom),
         createdAt: String(session?.createdAt || now),
         updatedAt: now,
         apiCacheSessionID: String(session?.apiCacheSessionID || U.randomCacheKey()),
@@ -1055,6 +1088,7 @@ flowchart LR
         archivedAt: String(session?.archivedAt || ""),
         revisionSourceRelativePath: String(session?.revisionSourceRelativePath || ""),
         revisionTranslationRelativePath: String(session?.revisionTranslationRelativePath || ""),
+        migratedFromSessionID: String(session?.migratedFromSessionID || ""),
         messages
       };
       await this.storage.writeJSON(this.sessionPath(documentID, normalized.id), normalized);
@@ -1074,31 +1108,36 @@ flowchart LR
         sessionModel: String(session?.sessionModel || ""),
         documentFingerprint: String(session?.documentFingerprint || ""),
         archivedDocumentRevision: Boolean(session?.archivedDocumentRevision),
-        archivedAt: String(session?.archivedAt || "")
+        archivedAt: String(session?.archivedAt || ""),
+        migratedFromSessionID: String(session?.migratedFromSessionID || "")
       };
     }
 
     async archiveDocumentRevision(documentID, previousFingerprint, currentFingerprint, snapshots = {}) {
       const previous = String(previousFingerprint || "").trim();
-      const current = String(currentFingerprint || "").trim();
-      if (!previous || !current || previous === current) return { archived: 0, session: null };
+      let current = typeof currentFingerprint === "string" ? currentFingerprint.trim() : "";
+      let snap = snapshots;
+      if (typeof currentFingerprint === "object" && currentFingerprint !== null && Object.keys(snapshots).length === 0) {
+        snap = currentFingerprint;
+        current = String(snap.currentFingerprint || "").trim();
+      }
 
       const rawIndex = await this.storage.readJSON(this.indexPath(documentID), []);
       const index = Array.isArray(rawIndex) ? rawIndex.filter(row => row?.id) : [];
       if (!index.length) return { archived: 0, session: null };
 
-      const safeFingerprint = previous.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48) || "legacy";
+      const safeFingerprint = (previous || "legacy").replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48) || "legacy";
       const revisionRoot = PathUtils.join(this.revisionRoot(documentID), safeFingerprint);
       await this.storage.ensureDir(revisionRoot);
       const sourceRelativePath = ["chat", "revisions", safeFingerprint, "source.md"].join("/");
       const translationRelativePath = ["chat", "revisions", safeFingerprint, "translation.md"].join("/");
-      if (String(snapshots.sourceMarkdown || "")) {
-        await this.storage.writeText(PathUtils.join(revisionRoot, "source.md"), snapshots.sourceMarkdown);
+      if (String(snap.sourceMarkdown || "")) {
+        await this.storage.writeText(PathUtils.join(revisionRoot, "source.md"), snap.sourceMarkdown);
       }
-      if (String(snapshots.translatedMarkdown || "")) {
-        await this.storage.writeText(PathUtils.join(revisionRoot, "translation.md"), snapshots.translatedMarkdown);
+      if (String(snap.translatedMarkdown || "")) {
+        await this.storage.writeText(PathUtils.join(revisionRoot, "translation.md"), snap.translatedMarkdown);
       }
-      const imageSnapshotRoot = String(snapshots.imageSnapshotRoot || "");
+      const imageSnapshotRoot = String(snap.imageSnapshotRoot || "");
       if (imageSnapshotRoot && await this.storage.exists(imageSnapshotRoot)) {
         const snapshotImages = PathUtils.join(imageSnapshotRoot, "images");
         const snapshotImageMap = PathUtils.join(imageSnapshotRoot, "image-map.json");
@@ -1112,70 +1151,146 @@ flowchart LR
       }
 
       let archived = 0;
+      let mainSessionArchived = false;
+      const newIndex = [];
       for (const row of index) {
         const id = String(row.id || "");
+        if (id === this.documentSessionID("web")) {
+          newIndex.push(row);
+          continue;
+        }
         const raw = await this.storage.readJSON(this.sessionPath(documentID, id), null);
-        if (!raw || raw.archivedDocumentRevision) continue;
+        if (!raw || raw.archivedDocumentRevision) {
+          newIndex.push(row);
+          continue;
+        }
         const recordedFingerprint = String(raw.documentFingerprint || row.documentFingerprint || "");
-        // Sessions created before revision tracking are known to belong to the
-        // document that was visible immediately before this successful reparse.
-        if (recordedFingerprint && recordedFingerprint !== previous) continue;
+        // 若会话已标记为最新指纹，说明是刚刚创建的新会话，无需归档
+        if (current && recordedFingerprint === current) {
+          newIndex.push(row);
+          continue;
+        }
+        // 指纹不同且不是旧格式时跳过
+        if (recordedFingerprint && previous && recordedFingerprint !== previous && recordedFingerprint.length < 64) {
+          newIndex.push(row);
+          continue;
+        }
+
         const baseTitle = String(raw.title || row.title || "当前文献对话").replace(/（旧解析版本）$/u, "");
-        raw.title = `${baseTitle}（旧解析版本）`.slice(0, 80);
-        raw.titleCustom = true;
-        raw.documentFingerprint = previous;
-        raw.archivedDocumentRevision = true;
-        raw.archivedAt = new Date().toISOString();
-        raw.revisionSourceRelativePath = String(snapshots.sourceMarkdown || "") ? sourceRelativePath : "";
-        raw.revisionTranslationRelativePath = String(snapshots.translatedMarkdown || "") ? translationRelativePath : "";
-        await this.storage.writeJSON(this.sessionPath(documentID, id), raw);
-        Object.assign(row, {
-          title: raw.title,
-          documentFingerprint: previous,
-          archivedDocumentRevision: true,
-          archivedAt: raw.archivedAt
-        });
-        archived++;
+        const archivedTitle = `${baseTitle}（旧解析版本）`.slice(0, 80);
+        const archivedAt = new Date().toISOString();
+
+        if (id === this.documentSessionID()) {
+          // 当前默认主会话若有消息，完整克隆出独立的历史会话副本，绝不丢失用户消息
+          if (Array.isArray(raw.messages) && raw.messages.length > 0) {
+            const archiveID = `archived-${safeFingerprint}-${Date.now()}`;
+            const remapAttachmentPath = path => {
+              if (typeof path !== "string") return path;
+              return path.replace(
+                new RegExp(`chat/attachments/${id}/`, "g"),
+                `chat/attachments/${archiveID}/`
+              );
+            };
+            const clonedMessages = (raw.messages || []).map(msg => {
+              const updated = { ...msg };
+              if (Array.isArray(updated.attachments)) {
+                updated.attachments = updated.attachments.map(att => {
+                  if (!att || typeof att !== "object") return att;
+                  const newAtt = { ...att };
+                  if (newAtt.relativePath) {
+                    newAtt.relativePath = remapAttachmentPath(newAtt.relativePath);
+                  }
+                  return newAtt;
+                });
+              }
+              return updated;
+            });
+
+            const archivedSession = {
+              ...raw,
+              id: archiveID,
+              title: archivedTitle,
+              titleCustom: true,
+              messages: clonedMessages,
+              documentFingerprint: previous || recordedFingerprint,
+              archivedDocumentRevision: true,
+              archivedAt,
+              revisionSourceRelativePath: String(snap.sourceMarkdown || "") ? sourceRelativePath : "",
+              revisionTranslationRelativePath: String(snap.translatedMarkdown || "") ? translationRelativePath : ""
+            };
+            await this.storage.writeJSON(this.sessionPath(documentID, archiveID), archivedSession);
+            const oldAttachDir = this.attachmentDir(documentID, id);
+            const newAttachDir = this.attachmentDir(documentID, archiveID);
+            if (typeof this.storage.exists === "function" && await this.storage.exists(oldAttachDir)) {
+              if (typeof this.storage.copyTree === "function") {
+                await this.storage.copyTree(oldAttachDir, newAttachDir);
+              }
+            }
+            newIndex.push(this.sessionIndexRow(archivedSession));
+            archived++;
+            mainSessionArchived = true;
+          } else {
+            // 当前主会话无消息，不进行克隆，但在索引中保留当前主会话
+            newIndex.push(row);
+          }
+        } else {
+          // 独立已命名历史会话，直接就地打上归档标记
+          raw.title = archivedTitle;
+          raw.titleCustom = true;
+          raw.documentFingerprint = previous || recordedFingerprint;
+          raw.archivedDocumentRevision = true;
+          raw.archivedAt = archivedAt;
+          raw.revisionSourceRelativePath = String(snap.sourceMarkdown || "") ? sourceRelativePath : "";
+          raw.revisionTranslationRelativePath = String(snap.translatedMarkdown || "") ? translationRelativePath : "";
+          await this.storage.writeJSON(this.sessionPath(documentID, id), raw);
+          newIndex.push({
+            ...row,
+            title: raw.title,
+            documentFingerprint: raw.documentFingerprint,
+            archivedDocumentRevision: true,
+            archivedAt: raw.archivedAt
+          });
+          archived++;
+        }
       }
-      await this.writeIndex(documentID, index);
-      if (!archived) return { archived: 0, session: null };
-      // A reparse starts a fresh current session while archived revisions stay
-      // selectable as historical conversations.
-      const session = await this.clearSession(documentID, this.documentSessionID());
-      return { archived, session: this.presentSession(documentID, session) };
+
+      if (!archived) {
+        const currentSession = await this.loadSession(documentID, this.documentSessionID(), false);
+        return { archived: 0, session: this.presentSession(documentID, currentSession) };
+      }
+
+      let activeSession = null;
+      if (mainSessionArchived) {
+        // 仅当当前主会话确实被克隆归档时，才重置并生成全新的当前主会话
+        const session = await this.clearSession(documentID, this.documentSessionID());
+        session.title = "当前文献对话";
+        session.titleCustom = false;
+        session.documentFingerprint = String(current || snap.currentFingerprint || "");
+        session.archivedDocumentRevision = false;
+        session.archivedAt = "";
+        session.revisionSourceRelativePath = "";
+        session.revisionTranslationRelativePath = "";
+        await this.saveSession(documentID, session, false);
+        newIndex.push(this.sessionIndexRow(session));
+        activeSession = session;
+      } else {
+        // 主会话未归档（例如正文指纹未变或主会话已是新版），保持当前主会话原样
+        activeSession = await this.loadSession(documentID, this.documentSessionID(), false);
+        if (!newIndex.some(r => r.id === this.documentSessionID())) {
+          newIndex.push(this.sessionIndexRow(activeSession));
+        }
+      }
+
+      await this.writeIndex(documentID, newIndex);
+      return { archived, session: this.presentSession(documentID, activeSession) };
     }
 
     async clearSession(documentID, sessionID) {
       const session = await this.loadSession(documentID, sessionID || this.documentSessionID(), false);
-      await this.storage.remove(this.attachmentDir(documentID, session.id), true);
       session.messages = [];
       session.sessionModel = "";
       session.apiCacheSessionID = U.randomCacheKey();
-      const saved = await this.saveSession(documentID, session, false);
-      await this.cleanupUnreferencedDocuments(documentID, saved);
-      return saved;
-    }
-
-    async cleanupUnreferencedDocuments(documentID, session) {
-      const root = this.documentCacheRoot(documentID);
-      const referenced = new Set();
-      for (const message of Array.isArray(session?.messages) ? session.messages : []) {
-        for (const doc of Array.isArray(message?.documents) ? message.documents : []) {
-          const id = String(doc?.id || "").trim();
-          if (id) referenced.add(id);
-        }
-      }
-      try {
-        const entries = await this.storage.list(root);
-        for (const entry of entries) {
-          const name = PathUtils.filename(entry);
-          if (!name || referenced.has(name)) continue;
-          await this.storage.remove(entry, true);
-        }
-      }
-      catch (_) {
-        // Directory absent or already clean — nothing to do.
-      }
+      return this.saveSession(documentID, session, false);
     }
 
     updateSessionModel(session, emit = null, options = null) {

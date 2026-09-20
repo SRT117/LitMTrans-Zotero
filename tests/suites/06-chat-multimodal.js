@@ -70,9 +70,12 @@ async function testChat() {
   assert(copiedMindmapPrompt.includes("```mermaid\nflowchart LR") && copiedMindmapPrompt.includes("classDef"), "clipboard mode must use a styled horizontal Mermaid architecture code-block example");
   const sessions = await chat.listSessions("doc");
   assert.deepEqual(sessions.map(row => row.id), ["document-chat"], "each literature attachment must expose one durable conversation");
+  const sharedDocument = storage.path("doc", "chat", "documents", "shared", "document.md");
+  await storage.writeText(sharedDocument, "shared document");
   const cleared = await chat.clearSession("doc", session.id);
   assert.equal(cleared.id, "document-chat");
   assert.equal(cleared.messages.length, 0, "clearing history must reset only the current literature conversation");
+  assert.equal(await storage.readText(sharedDocument, ""), "shared document", "clearing history must not delete shared document caches");
 }
 
 async function testChatGeminiStreamTimeoutFallback() {
@@ -406,15 +409,21 @@ async function testLegacyChatSessionMigration() {
   await storage.writeJSON(storage.path("doc", "chat", "session.newer.json"), {
     messages: [{ role: "user", content: "migrated" }], apiCacheSessionID: "legacy-cache"
   });
+  await chat.loadSession("doc", "web-document-chat");
+  const webIndex = await storage.readJSON(storage.path("doc", "chat", "index.json"), []);
+  assert.deepEqual(new Set(webIndex.map(row => row.id)), new Set(["web-document-chat", "newer", "older"]));
   const migrated = await chat.loadSession("doc");
   assert.equal(migrated.id, "document-chat");
   assert.equal(migrated.messages[0].content, "migrated");
   assert.equal(migrated.apiCacheSessionID, "legacy-cache");
   const index = await storage.readJSON(storage.path("doc", "chat", "index.json"), []);
-  assert.deepEqual(index.map(row => row.id), ["document-chat", "older"]);
+  assert.deepEqual(new Set(index.map(row => row.id)), new Set(["document-chat", "web-document-chat", "newer", "older"]));
+  assert(await storage.readJSON(storage.path("doc", "chat", "session.newer.json"), null), "migration must preserve the source session file");
   const again = await chat.loadSession("doc", "older");
-  assert.equal(again.id, "document-chat", "a legacy session ID must not open another conversation in embedded mode");
-  assert.equal(again.messages[0].content, "migrated");
+  assert.equal(again.id, "older", "an existing legacy session must remain directly accessible");
+  assert.equal(again.messages[0].content, "old");
+  const visible = await chat.listSessions("doc");
+  assert.deepEqual(visible.map(row => row.id), ["document-chat", "older"], "internal web state and the migration backup must not duplicate the history picker");
 }
 
 async function testMultimodalChat() {
@@ -883,6 +892,114 @@ async function testNonMultimodalModelMarksTTL() {
   U.setPref("nonMultimodalModelMarks", "{}");
 }
 
+async function testArchiveDocumentRevisionPreservesMessages() {
+  const storage = new MemoryStorage();
+  const llm = withResolvedChatModel({ getSettings: () => ({ targetLanguage: "简体中文" }) });
+  const chat = new ChatService(storage, llm, { load: async () => ({ markdown: "" }) });
+  const docID = "doc-archive-test";
+
+  // 1. 初始化一个拥有正文与历史问答（含附件）的活跃主会话
+  await storage.writeText(storage.path(docID, "full.cleaned.md"), "# Initial Paper");
+  const initialFingerprint = await chat.currentDocumentFingerprint(docID);
+  assert(initialFingerprint, "initial document fingerprint must be non-empty");
+
+  // 写入模拟附件文件
+  const attachDir = chat.attachmentDir(docID, "document-chat");
+  await storage.writeBytes(path.posix.join(attachDir, "test-image.png"), new Uint8Array([1, 2, 3]));
+
+  const session = await chat.loadSession(docID);
+  session.messages = [
+    {
+      role: "user",
+      content: "旧版本提问：请总结引言",
+      attachments: [{
+        id: "att-1",
+        name: "test-image.png",
+        mimeType: "image/png",
+        source: "file",
+        relativePath: "chat/attachments/document-chat/test-image.png"
+      }]
+    },
+    { role: "assistant", content: "旧版本回答：引言概述" }
+  ];
+  session.documentFingerprint = initialFingerprint;
+  await chat.saveSession(docID, session, false);
+
+  // 2. 模拟重新解析生成了新正文
+  await storage.writeText(storage.path(docID, "full.cleaned.md"), "# Updated Paper Content");
+  const newFingerprint = await chat.currentDocumentFingerprint(docID);
+  assert.notEqual(initialFingerprint, newFingerprint, "fingerprint must change after document update");
+
+  // 3. 执行重解析归档
+  const revision = await chat.archiveDocumentRevision(
+    docID,
+    initialFingerprint,
+    newFingerprint,
+    { sourceMarkdown: "# Initial Paper", translatedMarkdown: "# 初始论文" }
+  );
+
+  assert.equal(revision.archived, 1, "exactly 1 session must be archived");
+
+  // 4. 验证当前主会话已被清空且处于干净状态
+  const activeSession = await chat.loadSession(docID);
+  assert.equal(activeSession.id, "document-chat");
+  assert.equal(activeSession.messages.length, 0, "active session messages must be reset to empty");
+  assert.equal(activeSession.title, "当前文献对话", "active session title must not retain archive suffix");
+  assert.equal(activeSession.titleCustom, false);
+  assert.equal(activeSession.archivedDocumentRevision, false);
+  assert.equal(activeSession.documentFingerprint, newFingerprint);
+
+  // 5. 验证历史旧会话文件完整保留了问答消息与重映射后的附件
+  const allSessions = await chat.listSessions(docID);
+  assert.equal(allSessions.length, 2, "history list must contain active session and archived session");
+  const archivedRow = allSessions.find(row => row.id !== "document-chat");
+  assert(archivedRow, "archived session row must be found in catalog");
+  assert(archivedRow.title.includes("旧解析版本"), "archived session title must indicate previous revision");
+
+  const archivedSession = await chat.loadSession(docID, archivedRow.id);
+  assert.equal(archivedSession.messages.length, 2, "archived session messages must be 100% preserved");
+  assert.equal(archivedSession.messages[0].content, "旧版本提问：请总结引言");
+  assert.equal(archivedSession.archivedDocumentRevision, true);
+  assert.equal(archivedSession.documentFingerprint, initialFingerprint);
+
+  // 6. 验证附件物理文件已复制到归档会话目录，且消息内的 relativePath 已正确重映射
+  const expectedNewRelativePath = `chat/attachments/${archivedRow.id}/test-image.png`;
+  assert.equal(archivedSession.messages[0].attachments[0].relativePath, expectedNewRelativePath, "attachment relativePath must be remapped to archiveID");
+  const archivedAttachDir = chat.attachmentDir(docID, archivedRow.id);
+  const fileExistsInArchive = await storage.exists(path.posix.join(archivedAttachDir, "test-image.png"));
+  assert.equal(fileExistsInArchive, true, "attachment binary must be copied to new archive directory");
+}
+
+async function testArchiveDocumentRevisionPreservesActiveWhenNoChange() {
+  const storage = new MemoryStorage();
+  const llm = withResolvedChatModel({ getSettings: () => ({ targetLanguage: "简体中文" }) });
+  const chat = new ChatService(storage, llm, { load: async () => ({ markdown: "" }) });
+  const docID = "doc-no-change-test";
+
+  await storage.writeText(storage.path(docID, "full.cleaned.md"), "# Same Paper Content");
+  const fingerprint = await chat.currentDocumentFingerprint(docID);
+
+  const session = await chat.loadSession(docID);
+  session.messages = [{ role: "user", content: "提问：正文未变时的消息" }];
+  session.documentFingerprint = fingerprint;
+  await chat.saveSession(docID, session, false);
+
+  // 模拟重新解析后指纹相同（无变化）
+  const revision = await chat.archiveDocumentRevision(
+    docID,
+    fingerprint,
+    fingerprint,
+    { sourceMarkdown: "# Same Paper Content", translatedMarkdown: "# 相同论文" }
+  );
+
+  assert.equal(revision.archived, 0, "no sessions should be archived when fingerprint is identical");
+
+  // 验证当前主会话未被清空，用户消息完整保留
+  const activeSession = await chat.loadSession(docID);
+  assert.equal(activeSession.messages.length, 1, "messages must NOT be cleared when archived === 0");
+  assert.equal(activeSession.messages[0].content, "提问：正文未变时的消息");
+}
+
   return {
     testChat,
     testChatGeminiStreamTimeoutFallback,
@@ -901,5 +1018,7 @@ async function testNonMultimodalModelMarksTTL() {
     testDeepSeekDeserializeFallbackAndRollback,
     testDocumentImageSendOptions,
     testNonMultimodalModelMarksTTL,
+    testArchiveDocumentRevisionPreservesMessages,
+    testArchiveDocumentRevisionPreservesActiveWhenNoChange,
   };
 };

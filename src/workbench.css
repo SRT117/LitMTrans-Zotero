@@ -849,11 +849,12 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .modal-header .github-link { color: var(--link); font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 .modal-header .github-link:hover { color: var(--link-hover); }
 .modal-header .github-link:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-.settings-grid { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 12px 16px; }
+.settings-grid { min-width: 0; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 12px 16px; }
 .settings-section {
   --settings-section: #5368d9;
   --settings-section-soft: color-mix(in srgb, var(--settings-section) 8%, var(--surface-2));
   position: relative;
+  min-width: 0;
   align-content: start;
   display: grid;
   gap: 7px;
@@ -868,12 +869,14 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .settings-card-translation { --settings-section: #168477; }
 .settings-card-reading { --settings-section: #a04f72; }
 .settings-section h3 { margin: 0 0 2px; font-size: 13px; }
-.settings-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.settings-section-heading { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .settings-section-heading p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
-.mineru-settings-fields { display: grid; gap: 7px; }
-.mineru-token-label-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.mineru-token-label-line a { color: var(--link); font-size: 10px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+.mineru-settings-fields { min-width: 0; display: grid; gap: 7px; }
+.mineru-token-label-line { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 10px; }
+.mineru-token-label-line a { min-width: 0; flex: 1 1 220px; color: var(--link); font-size: 10px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; white-space: normal; overflow-wrap: anywhere; }
 .mineru-token-label-line a:hover { color: var(--link-hover); text-decoration: underline; }
+.settings-section .inline-check,
+.settings-section .inline-check > span { min-width: 0; }
 .settings-advanced { grid-column: 1 / -1; grid-row: 3; min-width: 0; border-top: 1px solid var(--line); }
 .settings-grid.shared-chat-model .settings-card-model { grid-row: 1; }
 .settings-grid.shared-chat-model .settings-advanced { grid-row: 2; }
@@ -1170,9 +1173,6 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 /* Retain both reading panes on small screens by stacking them. The separator
    changes to a horizontal drag handle in workbench.js at the same breakpoint. */
 @media (max-width: 700px) {
-  .settings-grid { grid-template-columns: 1fr; }
-  .settings-card-mineru, .settings-card-model, .settings-card-chat, .settings-advanced,
-  .settings-grid.shared-chat-model .settings-card-model, .settings-grid.shared-chat-model .settings-advanced { grid-column: auto; grid-row: auto; }
   .settings-advanced-grid { grid-template-columns: 1fr; }
   .mineru-settings-fields { grid-template-columns: 1fr; }
   .topbar { gap: 7px; padding: 7px 10px; }
@@ -1192,3 +1192,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .update-status-label.success { color: var(--color-success, #10b981); font-weight: 500; }
 .update-status-label.error { color: var(--color-danger, #ef4444); }
 .update-status-label.busy { color: var(--accent); }
+.chat-session-select {
+  margin: 8px 10px 0;
+  max-width: calc(100% - 20px);
+}

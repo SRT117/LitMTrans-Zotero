@@ -281,6 +281,7 @@ async function testDeepSeekWebPagesCacheAndClearTemp() {
   assert(webCat && webCat.bytes === 26 && webCat.files === 2, "deepseekWeb category must reflect page images");
   const chatCat = doc.categories.find(c => c.key === "chat");
   assert(chatCat && chatCat.files >= 1, "session.json must be categorized into chat, not deepseekWeb");
+  assert(!doc.categories.some(c => c.key === "model"), "document.json must not be categorized as a removable model cache");
   assert.equal(
     summary.documentsPrimaryBytes + summary.cajActiveBytes + summary.orphanedCoreBytes + summary.tempTotalBytes + summary.edgeLocalTotalBytes,
     summary.totalBytes,
@@ -302,6 +303,9 @@ async function testDeepSeekWebPagesCacheAndClearTemp() {
   assert(subResult.cleared, "clearDocumentSubcategory must succeed");
   assert(!removedPaths.includes("/profile/litmtrans/documents/1-ATTACH/deepseek-web/session.json"), "session.json must still not be removed by subcategory clear");
   assert.equal(recordedBytes, 0, "clearing one document's page cache must decrement the cache ledger");
+
+  await context.LitMTrans.Storage.prototype.clearDocumentSubcategory.call(mockStorage, "1-ATTACH", "model");
+  assert(files.has("/profile/litmtrans/documents/1-ATTACH/document.json"), "model cleanup must preserve document identity metadata");
 
   // 4. 测试 1.5GB 切图增量记账与冷却告警
   context.LitMTrans.Storage.prototype.recordDeepSeekWebPagesWritten.call(mockStorage, 1500 * 1024 * 1024);

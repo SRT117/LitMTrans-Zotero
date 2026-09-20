@@ -92,7 +92,7 @@
 #litmtrans-pref-message:empty {
   display: none;
 }
-.litmtrans-pref-board { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 0 2px 2px; }
+.litmtrans-pref-board { min-width: 0; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; align-content: start; overflow: auto; padding: 0 2px 2px; }
 .litmtrans-pref-column { min-width: 0; display: grid; gap: 12px; align-content: start; }
 .litmtrans-pref-card {
   --litmtrans-section: var(--litmtrans-model);
@@ -123,7 +123,8 @@
 .litmtrans-pref-advanced > summary span { font-size: .82em; font-weight: 700; }
 .litmtrans-pref-advanced > summary small { color: var(--fill-secondary, #666); font-size: .7em; font-weight: 400; }
 .litmtrans-pref-advanced-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-items: start; padding-top: 10px; }
-.litmtrans-pref-card-heading { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 8px; }
+.litmtrans-pref-card-heading { min-width: 0; display: flex; align-items: flex-start; gap: 8px; margin: 0 0 8px; }
+.litmtrans-pref-card-heading > div { min-width: 0; }
 .litmtrans-pref-card-heading h2 { margin: 0; font-size: .98em; line-height: 1.25; }
 .litmtrans-pref-card-heading p { margin: 2px 0 0; color: var(--fill-secondary, #666); font-size: .76em; line-height: 1.4; }
 .litmtrans-pref-card-mark {
@@ -142,8 +143,8 @@
 .litmtrans-pref-form-stack { display: grid; gap: 7px; align-content: start; }
 .litmtrans-reasoning-row { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .litmtrans-reasoning-row label { min-width: 0; }
-.litmtrans-mineru-token-label-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.litmtrans-mineru-token-label-line a { color: var(--litmtrans-link); font-size: .9em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+.litmtrans-mineru-token-label-line { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; }
+.litmtrans-mineru-token-label-line a { min-width: 0; flex: 1 1 220px; color: var(--litmtrans-link); font-size: .9em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; white-space: normal; overflow-wrap: anywhere; }
 .litmtrans-mineru-token-label-line a:hover { color: var(--litmtrans-link-hover); text-decoration: underline; }
 .litmtrans-pref-grid label, .litmtrans-pref-form-stack label { min-width: 0; display: grid; gap: 3px; color: var(--fill-secondary, #555); font-size: .82em; }
 .litmtrans-web-mode-advanced { margin-top: 7px; border: 1px solid var(--material-border, #d7d7d7); background: color-mix(in srgb, var(--material-background, #fff) 94%, var(--litmtrans-model-soft)); }
@@ -239,9 +240,9 @@
 .litmtrans-field-with-action button { width: auto; min-width: 104px; padding-inline: 9px; }
 .litmtrans-shared-toggle { display: flex; align-items: center; gap: 7px; min-height: 30px; margin: 0 0 9px; padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--litmtrans-section) 20%, var(--material-border, #d7d7d7)); border-radius: 5px; background: color-mix(in srgb, var(--material-background, #fff) 78%, transparent); }
 .litmtrans-shared-toggle input { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
-.litmtrans-shared-toggle label { display: grid; gap: 1px; cursor: pointer; line-height: 1.25; }
+.litmtrans-shared-toggle label { min-width: 0; display: grid; gap: 1px; cursor: pointer; line-height: 1.25; }
 .litmtrans-shared-toggle strong { font-size: .8em; }
-.litmtrans-shared-toggle span { color: var(--fill-secondary, #666); font-size: .68em; }
+.litmtrans-shared-toggle span { min-width: 0; color: var(--fill-secondary, #666); font-size: .68em; }
 .litmtrans-web-mode-notice {
   margin: 0 0 9px;
   padding: 8px 10px;
@@ -284,10 +285,6 @@
   .litmtrans-pref-board { gap: 10px; }
 }
 @media (max-width: 520px) {
-  .litmtrans-pref-board { grid-template-columns: 1fr; }
-  .litmtrans-pref-card-mineru, .litmtrans-pref-card-model, .litmtrans-pref-card-chat, .litmtrans-pref-advanced,
-  .litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-model,
-  .litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-advanced { grid-column: auto; grid-row: auto; }
   .litmtrans-pref-advanced-grid { grid-template-columns: 1fr; }
   .litmtrans-pref-grid { grid-template-columns: 1fr; }
   .litmtrans-span-all { grid-column: auto; }

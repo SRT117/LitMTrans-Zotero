@@ -306,21 +306,29 @@
       this.autoUpdateTimer = setInterval(() => { void runCheckIfDue(); }, 6 * 60 * 60 * 1000);
     }
 
-    async checkForUpdates({ manual = false } = {}) {
+    async checkForUpdates({ manual = false, onProgress = null, runtime = null } = {}) {
       if (!LitMTrans.Updater) throw new Error("更新模块未就绪");
       U.setPref("lastUpdateCheckTime", String(Date.now()));
-      const result = await LitMTrans.Updater.checkUpdate(this.version);
+      const progressHandler = manual ? (p => {
+        if (typeof onProgress === "function") onProgress(p);
+        if (runtime) this.emit(runtime, { type: "update-progress", ...p });
+      }) : null;
+      const result = await LitMTrans.Updater.checkUpdate(this.version, progressHandler);
       if (result && result.hasUpdate) {
         this.availableUpdate = result;
       }
       return result;
     }
 
-    async applyUpdate(payload = {}) {
+    async applyUpdate(payload = {}, onProgress = null, runtime = null) {
       if (!LitMTrans.Updater) throw new Error("更新模块未就绪");
       const updateInfo = payload.updateInfo || this.availableUpdate;
       if (!updateInfo || !updateInfo.version) throw new Error("缺少待更新版本信息");
-      return await LitMTrans.Updater.applyUpdate(updateInfo);
+      const progressHandler = p => {
+        if (typeof onProgress === "function") onProgress(p);
+        if (runtime) this.emit(runtime, { type: "update-progress", ...p });
+      };
+      return await LitMTrans.Updater.applyUpdate(updateInfo, progressHandler);
     }
 
     async init() {
@@ -5242,7 +5250,10 @@
             const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
               ? "deepseek_web"
               : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
-            return this.chat.send(context.documentID, this.chat.documentSessionID(engine), payload.text, {
+            const targetSessionID = engine === "deepseek_web"
+              ? this.chat.documentSessionID("web")
+              : (payload.sessionID || this.chat.documentSessionID());
+            return this.chat.send(context.documentID, targetSessionID, payload.text, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
               referenceQuotes: Array.isArray(payload.referenceQuotes) ? payload.referenceQuotes : [],
@@ -5266,7 +5277,10 @@
             const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
               ? "deepseek_web"
               : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
-            return this.chat.resend(context.documentID, this.chat.documentSessionID(engine), payload.messageID, {
+            const targetSessionID = engine === "deepseek_web"
+              ? this.chat.documentSessionID("web")
+              : (payload.sessionID || this.chat.documentSessionID());
+            return this.chat.resend(context.documentID, targetSessionID, payload.messageID, {
               contextMode: payload.contextMode,
               selectedText: payload.selectedText,
               referenceQuotes: Array.isArray(payload.referenceQuotes) ? payload.referenceQuotes : [],
@@ -5287,7 +5301,10 @@
               const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
                 ? "deepseek_web"
                 : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
-              return this.chat.editMessage(context.documentID, this.chat.documentSessionID(engine), payload.messageID, payload.text, {
+              const targetSessionID = engine === "deepseek_web"
+                ? this.chat.documentSessionID("web")
+                : (payload.sessionID || this.chat.documentSessionID());
+              return this.chat.editMessage(context.documentID, targetSessionID, payload.messageID, payload.text, {
                 contextMode: payload.contextMode,
                 selectedText: payload.selectedText,
                 referenceQuotes: Array.isArray(payload.referenceQuotes) ? payload.referenceQuotes : [],
@@ -5373,9 +5390,9 @@
         case "save-settings":
           return this.saveSettings(payload);
         case "check-for-updates":
-          return this.checkForUpdates({ manual: true });
+          return this.checkForUpdates({ manual: true, runtime });
         case "apply-update":
-          return this.applyUpdate(payload);
+          return this.applyUpdate(payload, null, runtime);
         case "save-prompt-library":
           return this.savePromptLibrary(payload.library);
         case "list-models":

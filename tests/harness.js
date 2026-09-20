@@ -107,7 +107,42 @@ class MemoryStorage {
       return { type: "regular", size: String(value).length, lastModified: 1234 };
     }
     if (this.bytes.has(file)) return { type: "regular", size: this.bytes.get(file).length, lastModified: 1234 };
+    const prefix = file.endsWith("/") ? file : `${file}/`;
+    if ([...this.json.keys(), ...this.text.keys(), ...this.bytes.keys()].some(k => k.startsWith(prefix))) {
+      return { type: "directory", size: 0, lastModified: 1234 };
+    }
     return null;
+  }
+  async list(directory) {
+    const prefix = directory.endsWith("/") ? directory : `${directory}/`;
+    return [...new Set([...this.json.keys(), ...this.text.keys(), ...this.bytes.keys()]
+      .filter(file => file.startsWith(prefix))
+      .map(file => prefix + file.slice(prefix.length).split("/")[0]))];
+  }
+  async exists(file) {
+    if (this.json.has(file) || this.text.has(file) || this.bytes.has(file)) return true;
+    const prefix = file.endsWith("/") ? file : `${file}/`;
+    return [...this.json.keys(), ...this.text.keys(), ...this.bytes.keys()].some(k => k.startsWith(prefix));
+  }
+  async copyFile(src, dest) {
+    if (this.json.has(src)) this.json.set(dest, JSON.parse(JSON.stringify(this.json.get(src))));
+    if (this.text.has(src)) this.text.set(dest, this.text.get(src));
+    if (this.bytes.has(src)) this.bytes.set(dest, new Uint8Array(this.bytes.get(src)));
+  }
+  async copyTree(srcDir, destDir) {
+    const prefix = srcDir.endsWith("/") ? srcDir : `${srcDir}/`;
+    const destPrefix = destDir.endsWith("/") ? destDir : `${destDir}/`;
+    for (const store of [this.json, this.text, this.bytes]) {
+      for (const key of [...store.keys()]) {
+        if (key.startsWith(prefix)) {
+          const relative = key.slice(prefix.length);
+          store.set(destPrefix + relative, store.get(key));
+        }
+      }
+    }
+  }
+  async removeFile(file) {
+    return this.remove(file, false);
   }
   async remove(file, recursive = false) {
     for (const store of [this.json, this.text, this.bytes]) {

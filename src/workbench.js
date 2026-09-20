@@ -177,7 +177,7 @@
       "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
       "deepseek-web-container", "deepseek-web-frame",
       "chat-render-markdown", "selection-chip", "selection-text", "clear-selection-button", "chat-messages", "chat-empty", "chat-navigator-button", "chat-navigator-popup",
-      "chat-form", "chat-input",
+      "chat-form", "chat-input", "chat-session-select",
       "chat-document-preview", "chat-document-button", "remove-pending-documents-button", "chat-image-preview", "chat-image-input", "context-status", "chat-send-button",
       "chat-model-settings-dialog", "embedded-chat-provider", "embedded-provider-cards-button", "embedded-chat-base-url", "embedded-chat-model", "embedded-refresh-chat-models", "embedded-chat-api-key", "embedded-chat-thinking-mode", "embedded-chat-reasoning-effort", "embedded-chat-show-reasoning", "embedded-chat-render-markdown", "embedded-chat-api-key-state", "embedded-chat-image-group", "embedded-chat-image-note", "embedded-chat-image-size", "embedded-chat-image-quality", "embedded-chat-image-format", "save-embedded-chat-settings",
       "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "open-feedback-button", "setting-chat-engine-web", "setting-model-heading", "setting-web-mode-advanced", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-form-container", "setting-web-input-mode-auto", "setting-web-input-mode-clipboard", "setting-delete-web-translation-sessions", "setting-web-page-images-group", "setting-web-page-image-quality",
@@ -825,6 +825,13 @@
     }
     if (type === "toast") {
       toast(event.message || "操作失败", event.level || "error");
+      return;
+    }
+    if (type === "update-progress") {
+      const label = els["update-status-label"];
+      if (label && label.classList.contains("busy") && event.message) {
+        label.textContent = event.message;
+      }
       return;
     }
     if (type === "deepseek-web-cache-warning") {
@@ -2934,8 +2941,17 @@
   }
 
   function renderChatSessions() {
-    // Each Zotero attachment has one durable conversation, so refreshing the
-    // workbench does not need a conversation picker.
+    const select = els["chat-session-select"];
+    if (!select) return;
+    const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+    select.replaceChildren(...sessions.map(session => {
+      const option = document.createElement("option");
+      option.value = session.id;
+      option.textContent = session.title || "历史会话";
+      return option;
+    }));
+    select.hidden = sessions.length < 2 || state.aiMode === "web";
+    select.value = state.currentSession?.id || sessions[0]?.id || "";
   }
 
   const CHAT_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/jp2", "image/svg+xml"]);
@@ -8287,6 +8303,15 @@
       }
       catch (error) { toast(error.message, "error"); }
     });
+    els["chat-session-select"].addEventListener("change", async () => {
+      if (state.running.has("chat")) return;
+      try {
+        state.currentSession = await hostCall("chat-load", { sessionID: els["chat-session-select"].value });
+        renderChatSessions();
+        renderChat();
+      }
+      catch (error) { toast(error.message, "error"); }
+    });
     els["remove-pending-documents-button"].addEventListener("click", () => {
       if (!state.pendingDocuments.length) return;
       state.pendingDocuments = [];
@@ -8822,7 +8847,7 @@
       if (pendingUpdateInfo) {
         button.disabled = true;
         label.className = "update-status-label busy";
-        label.textContent = `正在下载并安装 v${pendingUpdateInfo.version}...`;
+        label.textContent = `准备下载更新 v${pendingUpdateInfo.version}...`;
         try {
           await hostCall("apply-update", { updateInfo: pendingUpdateInfo });
           label.className = "update-status-label success";
@@ -8842,7 +8867,7 @@
 
       button.disabled = true;
       label.className = "update-status-label busy";
-      label.textContent = "正在检查...";
+      label.textContent = "正在探测更新节点...";
       try {
         const result = await hostCall("check-for-updates");
         if (result?.hasUpdate) {
