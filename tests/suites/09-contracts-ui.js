@@ -246,6 +246,13 @@ function testConciseStructuredOperationMessages() {
     "the message dialog must keep live task progress and reasoning current while it is open"
   );
   assert(
+    workbenchCode.includes("const SHOW_DEVELOPMENT_PROBES_IN_USER_UI = false;")
+      && workbenchCode.includes("function isDevelopmentProbeMessage(message)")
+      && workbenchCode.includes("state.logEntries.filter(row => !isDevelopmentProbeMessage(row.text))")
+      && workbenchCode.includes("state.systemMessages.filter(item => !isDevelopmentProbeMessage(item.text))"),
+    "development probes must remain recorded but stay hidden from user-facing message lists"
+  );
+  assert(
     !workbenchCode.includes('addLog(error.stack || message, "error")')
       && !workbenchCode.includes('addLog(`${notice}\\n${error.stack || message}`, "error")'),
     "user-facing task messages must not include JavaScript stack traces"

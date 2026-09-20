@@ -53,6 +53,7 @@ __pycache__/
 *.pyc
 docs/repo-map.md
 DeepSeek网页版交互与实现机制笔记.md
+zotero_plugins_sizes.csv
 
 native/caj-backend/target/
 

@@ -90,6 +90,8 @@
   };
   // Bump when the print snapshot format changes.
   const LAYOUT_PDF_EXPORT_REVISION = 20;
+  // 开发诊断仍保留在日志和状态中，但暂不展示给普通用户。
+  const SHOW_DEVELOPMENT_PROBES_IN_USER_UI = false;
 
   // Paint streaming text at a bounded cadence to keep Gecko responsive.
   let translationRenderTimer = null;
@@ -442,6 +444,12 @@
       .trim();
   }
 
+  function isDevelopmentProbeMessage(message) {
+    if (SHOW_DEVELOPMENT_PROBES_IN_USER_UI) return false;
+    const text = normalizeUserMessage(message);
+    return text.startsWith("[探针") || text.startsWith("[LitMTrans-Probe]");
+  }
+
   function toast(message, kind = "") {
     if (kind === "error" || kind === "warning") recordSystemMessage(message, kind);
     const node = document.createElement("div");
@@ -489,6 +497,7 @@
   }
 
   function appendLogRow(row) {
+    if (isDevelopmentProbeMessage(row?.text)) return null;
     const log = els["log-content"];
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 36;
     const node = document.createElement("div");
@@ -530,7 +539,7 @@
 
   function appendTaskMessageRow(row) {
     const list = els["task-messages-list"];
-    if (!list || !row.node) return;
+    if (!list || !row.node || isDevelopmentProbeMessage(row.text)) return;
     const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 36;
     list.querySelector(".task-message-empty")?.remove();
     const clone = row.node.cloneNode(true);
@@ -546,8 +555,9 @@
     const list = els["task-messages-list"];
     if (!list) return;
     list.replaceChildren();
-    for (const row of state.logEntries) appendTaskMessageRow(row);
-    if (!state.logEntries.length) {
+    const visibleRows = state.logEntries.filter(row => !isDevelopmentProbeMessage(row.text));
+    for (const row of visibleRows) appendTaskMessageRow(row);
+    if (!visibleRows.length) {
       const empty = document.createElement("p");
       empty.className = "task-message-empty";
       empty.textContent = "当前还没有任务进度。";
@@ -3865,14 +3875,15 @@
   function renderSystemMessages() {
     const list = els["system-messages-list"];
     list.replaceChildren();
-    if (!state.systemMessages.length) {
+    const visibleMessages = state.systemMessages.filter(item => !isDevelopmentProbeMessage(item.text));
+    if (!visibleMessages.length) {
       const empty = document.createElement("p");
       empty.className = "system-message-empty";
       empty.textContent = "暂无消息。";
       list.appendChild(empty);
       return;
     }
-    for (const item of state.systemMessages) {
+    for (const item of visibleMessages) {
       const row = document.createElement("div");
       const kind = ["success", "warning", "error"].includes(item.kind) ? item.kind : "info";
       row.className = `system-message-row ${kind}`;
