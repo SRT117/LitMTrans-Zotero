@@ -191,6 +191,7 @@
       "export-dialog", "export-dialog-close", "export-dialog-cancel", "export-dialog-confirm", "export-option-list", "export-empty",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
+      "setting-auto-update", "check-update-button", "update-status-label",
       "open-storage-manager-button", "clear-document-button", "save-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
       "storage-chart-card", "storage-donut-chart", "storage-chart-legend",
@@ -6086,6 +6087,8 @@
     }
   }
 
+  let pendingUpdateInfo = null;
+
   function populateSettings(settings) {
     if (!settings) return;
     for (const [selectID, chat] of [["setting-provider", false], ["setting-chat-provider", true]]) {
@@ -6136,6 +6139,7 @@
     els["setting-mineru-model"].value = "vlm";
     if (els["setting-caj-double-click-action"]) els["setting-caj-double-click-action"].value = settings.cajDoubleClickAction || "default";
     if (els["setting-show-native-reader-ask-ai"]) els["setting-show-native-reader-ask-ai"].checked = settings.showNativeReaderAskAI !== false;
+    if (els["setting-auto-update"]) els["setting-auto-update"].checked = settings.autoUpdate !== false;
     els["setting-target-language"].value = settings.targetLanguage || "简体中文";
     els["setting-machine-source-language"].value = settings.machineSourceLanguage || "英文";
     els["setting-translation-mode"].value = settings.translationMode || "full_context";
@@ -6149,6 +6153,17 @@
     updateProviderLabel();
     updateProviderLabel("setting-chat-");
     updateChatModelSectionVisibility();
+    if (els["update-status-label"] && els["check-update-button"]) {
+      if (settings?.availableUpdate?.hasUpdate) {
+        pendingUpdateInfo = settings.availableUpdate;
+        els["update-status-label"].className = "update-status-label success";
+        els["update-status-label"].textContent = `发现可用新版本: v${settings.availableUpdate.version}`;
+        els["check-update-button"].textContent = "立即安装更新";
+      } else if (!pendingUpdateInfo) {
+        els["update-status-label"].textContent = "";
+        els["check-update-button"].textContent = "检查更新";
+      }
+    }
   }
 
   function updateWebMachineTranslationSettings({ previousProvider = null, syncChatMode = false } = {}) {
@@ -6741,6 +6756,7 @@
       translationMode: els["setting-translation-mode"].value,
       cajDoubleClickAction: els["setting-caj-double-click-action"] ? els["setting-caj-double-click-action"].value : "default",
       showNativeReaderAskAI: els["setting-show-native-reader-ask-ai"]?.checked !== false,
+      autoUpdate: els["setting-auto-update"] ? els["setting-auto-update"].checked !== false : true,
       translationReferencePaths: [...state.referencePaths],
       customTranslationInstruction: els["custom-translation-instruction-input"].value.trim(),
       keyPointsPrompt: els["setting-key-points-prompt"].value.trim() === String(state.settings?.keyPointsDefaultPrompt || "").trim()
@@ -8797,6 +8813,54 @@
         toast("这篇文献的数据已清除");
       }
       catch (error) { toast(error.message, "error"); }
+    });
+    els["check-update-button"]?.addEventListener("click", async () => {
+      const button = els["check-update-button"];
+      const label = els["update-status-label"];
+      if (!button || !label) return;
+
+      if (pendingUpdateInfo) {
+        button.disabled = true;
+        label.className = "update-status-label busy";
+        label.textContent = `正在下载并安装 v${pendingUpdateInfo.version}...`;
+        try {
+          await hostCall("apply-update", { updateInfo: pendingUpdateInfo });
+          label.className = "update-status-label success";
+          label.textContent = `已成功更新至 v${pendingUpdateInfo.version}！`;
+          button.textContent = "检查更新";
+          pendingUpdateInfo = null;
+          toast("插件已成功更新并重新加载");
+        } catch (error) {
+          label.className = "update-status-label error";
+          label.textContent = error.message || "更新失败";
+          toast(error.message || "更新失败", "error");
+        } finally {
+          button.disabled = false;
+        }
+        return;
+      }
+
+      button.disabled = true;
+      label.className = "update-status-label busy";
+      label.textContent = "正在检查...";
+      try {
+        const result = await hostCall("check-for-updates");
+        if (result?.hasUpdate) {
+          pendingUpdateInfo = result;
+          label.className = "update-status-label success";
+          label.textContent = `发现可用新版本: v${result.version}`;
+          button.textContent = "立即安装更新";
+        } else {
+          label.className = "update-status-label success";
+          label.textContent = `已是最新版本 (v${result?.version || state.settings?.version || ""})`;
+        }
+      } catch (error) {
+        label.className = "update-status-label error";
+        label.textContent = error.message || "检查失败";
+        toast(error.message || "检查更新失败", "error");
+      } finally {
+        button.disabled = false;
+      }
     });
 
     bindStorageManagerEvents();

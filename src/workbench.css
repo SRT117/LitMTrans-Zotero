@@ -1186,3 +1186,9 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
   .split-handle::after { inset: -3px 0; }
   .provider-cards-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.update-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.update-status-label { font-size: 11px; color: var(--muted); }
+.update-status-label.success { color: var(--color-success, #10b981); font-weight: 500; }
+.update-status-label.error { color: var(--color-danger, #ef4444); }
+.update-status-label.busy { color: var(--accent); }

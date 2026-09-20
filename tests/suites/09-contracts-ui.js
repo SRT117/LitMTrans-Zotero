@@ -545,6 +545,40 @@ async function testCAJFontContractAndWorkerGuard() {
   assert(worker.includes("data.font = null"), "worker must release font buffer reference after initialization");
 }
 
+async function testUpdaterContractsAndSafety() {
+  const updaterCode = fs.readFileSync(path.join(root, "src", "updater.js"), "utf8");
+  const prefsCode = fs.readFileSync(path.join(root, "src", "prefs.js"), "utf8");
+  const controllerCode = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+
+  assert(updaterCode.includes("releases/latest/download/update.json"), "updater must target official update.json manifest");
+  assert(!updaterCode.includes("@main/manifest.json"), "updater must not use unreleased main branch manifest.json");
+
+  assert(prefsCode.includes('pref("extensions.litmtrans.lastUpdateCheckTime", "0");'), "lastUpdateCheckTime must be string pref");
+  assert(controllerCode.includes('U.setPref("lastUpdateCheckTime", String(Date.now()));'), "controller must save timestamp as string");
+
+  assert(updaterCode.includes("computeSha256") && updaterCode.includes("actualHash !== expectedHash"), "updater must enforce SHA-256 integrity check");
+  assert(updaterCode.includes("/^[a-f0-9]{64}$/.test(expectedHash)"), "updater must validate 64-hex SHA-256 format strictly");
+  assert(updaterCode.includes("fetchBytesWithFullTimeout"), "updater must enforce body-covering download timeout");
+  assert(updaterCode.includes("onDownloadFailed") && updaterCode.includes("onInstallCancelled") && updaterCode.includes("install.cancel()"), "updater must handle full install lifecycle");
+  assert(updaterCode.includes("candidateId !== ADDON_ID"), "updater must verify addon id before installing");
+  assert(controllerCode.includes("this.autoUpdateTimer = setInterval"), "controller must establish periodic auto-update check interval");
+
+  const sandbox = { module: {}, exports: {}, require, LitMTrans: {}, TextEncoder };
+  vm.runInNewContext(updaterCode, sandbox);
+  const computeSha256 = sandbox.LitMTrans.computeSha256;
+  assert(typeof computeSha256 === "function", "computeSha256 must be exposed");
+
+  const testBytes = new TextEncoder().encode("LitMTrans-Security-Test");
+  const digest = await computeSha256(testBytes);
+  const expected = nodeCrypto.createHash("sha256").update(testBytes).digest("hex").toLowerCase();
+  assert(digest === expected, `SHA-256 digest mismatch: ${digest} vs ${expected}`);
+
+  // 验证非法哈希格式被严格拦截
+  assert(!/^[a-f0-9]{64}$/.test(""), "empty hash must fail");
+  assert(!/^[a-f0-9]{64}$/.test("xyz123"), "invalid characters must fail");
+  assert(/^[a-f0-9]{64}$/.test(expected), "valid 64-char hex hash must pass");
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -558,5 +592,6 @@ async function testCAJFontContractAndWorkerGuard() {
     testPromptLibraryPresetAndReordering,
     testDiagramCacheAndPromptModeContracts,
     testCAJFontContractAndWorkerGuard,
+    testUpdaterContractsAndSafety,
   };
 };

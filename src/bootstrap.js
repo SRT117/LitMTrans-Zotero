@@ -132,6 +132,7 @@ async function startup({ id, version, rootURI }) {
     "src/deepseek-web/pdf-pages.js",
     "src/deepseek-web/driver.js",
     "src/deepseek-web/provider.js",
+    "src/updater.js",
     "src/controller.js"
   ];
   for (const script of scripts) {

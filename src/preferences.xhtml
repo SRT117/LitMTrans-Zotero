@@ -144,6 +144,23 @@
             </html:label>
           </html:div>
         </html:section>
+
+        <html:section class="litmtrans-pref-card litmtrans-pref-card-update">
+          <html:div class="litmtrans-pref-card-heading">
+            <html:span class="litmtrans-pref-card-mark">更新</html:span>
+            <html:div><html:h2>扩展更新</html:h2><html:p>检查新版本并支持国内镜像极速更新。</html:p></html:div>
+          </html:div>
+          <html:div class="litmtrans-pref-form-stack">
+            <html:div class="litmtrans-shared-toggle">
+              <html:input id="litmtrans-pref-auto-update" type="checkbox" checked="checked"/>
+              <html:label for="litmtrans-pref-auto-update"><html:strong>自动检查新版本（国内加速通道）</html:strong><html:span>每日自动检测最新版本，发现更新时提示一键安装。</html:span></html:label>
+            </html:div>
+            <html:div class="litmtrans-field-with-action update-actions">
+              <html:button id="litmtrans-pref-check-update" type="button">检查更新</html:button>
+              <html:span id="litmtrans-pref-update-status" class="litmtrans-update-status"/>
+            </html:div>
+          </html:div>
+        </html:section>
         </html:div>
       </html:details>
     </html:main>

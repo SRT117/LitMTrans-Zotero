@@ -451,6 +451,15 @@
           <h3>CAJ 文献处理</h3>
           <label>双击CAJ文献时<select id="setting-caj-double-click-action"><option value="default">保持Zotero默认行为</option><option value="litmtrans">使用LitMTrans打开</option><option value="ask">每次询问</option></select></label>
         </section>
+
+        <section class="settings-section settings-card-update">
+          <h3>扩展更新</h3>
+          <label class="inline-check"><input id="setting-auto-update" type="checkbox" checked="checked" /> 自动检查新版本（国内加速通道）</label>
+          <div class="field-with-action update-actions">
+            <button id="check-update-button" class="button" type="button">检查更新</button>
+            <span id="update-status-label" class="update-status-label"></span>
+          </div>
+        </section>
           </div>
         </details>
       </div>

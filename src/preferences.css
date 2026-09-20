@@ -296,3 +296,8 @@
 @media (prefers-reduced-motion: reduce) {
   .litmtrans-pref-advanced > summary::before { transition: none; }
 }
+
+.litmtrans-update-status { font-size: 11px; color: var(--litmtrans-muted); margin-left: 8px; }
+.litmtrans-update-status.success { color: #10b981; font-weight: 500; }
+.litmtrans-update-status.error { color: #ef4444; }
+.litmtrans-update-status.busy { color: var(--litmtrans-accent); }

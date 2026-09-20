@@ -1,6 +1,7 @@
 var LitMTransControllerPreferences = {
   settings: null,
   referencePaths: [],
+  pendingUpdateInfo: null,
 
   $(id) { return document.getElementById(`litmtrans-pref-${id}`); },
 
@@ -232,12 +233,24 @@ var LitMTransControllerPreferences = {
       this.$("mineru-model").value = "vlm";
       if (this.$("caj-double-click-action")) this.$("caj-double-click-action").value = settings.cajDoubleClickAction || "default";
       this.$("show-native-reader-ask-ai").checked = settings.showNativeReaderAskAI !== false;
+      if (this.$("auto-update")) this.$("auto-update").checked = settings.autoUpdate !== false;
       this.$("key-points-prompt").value = settings.effectiveKeyPointsPrompt || settings.keyPointsDefaultPrompt || "";
       this.updateWebMachineTranslationSettings();
       this.updateDeepSeekFastLayoutControl();
       this.updateProviderLabel();
       this.updateProviderLabel("chat-");
       this.updateChatModelSectionVisibility();
+      if (this.$("update-status") && this.$("check-update")) {
+        if (settings?.availableUpdate?.hasUpdate) {
+          this.pendingUpdateInfo = settings.availableUpdate;
+          this.$("update-status").className = "litmtrans-update-status success";
+          this.$("update-status").textContent = `发现可用新版本: v${settings.availableUpdate.version}`;
+          this.$("check-update").textContent = "立即安装更新";
+        } else if (!this.pendingUpdateInfo) {
+          this.$("update-status").textContent = "";
+          this.$("check-update").textContent = "检查更新";
+        }
+      }
       this.message("");
     }
     catch (error) { this.message(error.message || String(error), true); }
@@ -302,6 +315,7 @@ var LitMTransControllerPreferences = {
       translationReferencePaths: [...this.referencePaths], customTranslationInstruction: this.$("custom-translation-instruction").value.trim(),
       cajDoubleClickAction: this.$("caj-double-click-action") ? this.$("caj-double-click-action").value : "default",
       showNativeReaderAskAI: this.$("show-native-reader-ask-ai").checked,
+      autoUpdate: this.$("auto-update") ? this.$("auto-update").checked : true,
       keyPointsPrompt: this.$("key-points-prompt").value.trim() === String(this.settings?.keyPointsDefaultPrompt || "").trim() ? "" : this.$("key-points-prompt").value
     };
   },
@@ -445,6 +459,51 @@ var LitMTransControllerPreferences = {
     this.$("edit-custom-translation-instruction").addEventListener("click", () => { this.updateCustomTranslationInstruction(true); this.$("custom-translation-instruction").focus(); });
     this.$("custom-translation-instruction").addEventListener("input", () => this.updateCustomTranslationInstruction(true));
     this.$("clear-reference").addEventListener("click", () => { this.referencePaths = []; this.$("custom-translation-instruction").value = ""; this.renderReferencePaths(); this.updateCustomTranslationInstruction(); });
+    this.$("check-update")?.addEventListener("click", async () => {
+      const button = this.$("check-update");
+      const status = this.$("update-status");
+      if (!button || !status) return;
+
+      if (this.pendingUpdateInfo) {
+        button.disabled = true;
+        status.className = "litmtrans-update-status busy";
+        status.textContent = `正在下载并安装 v${this.pendingUpdateInfo.version}...`;
+        try {
+          await this.controller().applyUpdate({ updateInfo: this.pendingUpdateInfo });
+          status.className = "litmtrans-update-status success";
+          status.textContent = `已成功更新至 v${this.pendingUpdateInfo.version}！`;
+          button.textContent = "检查更新";
+          this.pendingUpdateInfo = null;
+        } catch (error) {
+          status.className = "litmtrans-update-status error";
+          status.textContent = error.message || "更新失败";
+        } finally {
+          button.disabled = false;
+        }
+        return;
+      }
+
+      button.disabled = true;
+      status.className = "litmtrans-update-status busy";
+      status.textContent = "正在检查...";
+      try {
+        const result = await this.controller().checkForUpdates({ manual: true });
+        if (result?.hasUpdate) {
+          this.pendingUpdateInfo = result;
+          status.className = "litmtrans-update-status success";
+          status.textContent = `发现可用新版本: v${result.version}`;
+          button.textContent = "立即安装更新";
+        } else {
+          status.className = "litmtrans-update-status success";
+          status.textContent = `已是最新版本 (v${result?.version || ""})`;
+        }
+      } catch (error) {
+        status.className = "litmtrans-update-status error";
+        status.textContent = error.message || "检查失败";
+      } finally {
+        button.disabled = false;
+      }
+    });
   }
 };
 

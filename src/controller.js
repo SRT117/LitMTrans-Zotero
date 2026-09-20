@@ -277,6 +277,52 @@
       }
     }
 
+    scheduleAutoUpdateCheck() {
+      if (this.autoUpdateTimer) {
+        clearInterval(this.autoUpdateTimer);
+        this.autoUpdateTimer = null;
+      }
+
+      const runCheckIfDue = async () => {
+        if (!U.getPref("autoUpdate", true)) return;
+        const lastCheck = Number(U.getPref("lastUpdateCheckTime", "0") || 0);
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        if (Date.now() - lastCheck < oneDayMs) return;
+
+        try {
+          if (!U.getPref("autoUpdate", true)) return;
+          U.setPref("lastUpdateCheckTime", String(Date.now()));
+          if (LitMTrans.Updater) {
+            const result = await LitMTrans.Updater.checkUpdate(this.version);
+            if (result && result.hasUpdate) {
+              this.availableUpdate = result;
+              this.log(`发现可用新版本: v${result.version}`);
+            }
+          }
+        } catch (_) {}
+      };
+
+      setTimeout(() => { void runCheckIfDue(); }, 15000);
+      this.autoUpdateTimer = setInterval(() => { void runCheckIfDue(); }, 6 * 60 * 60 * 1000);
+    }
+
+    async checkForUpdates({ manual = false } = {}) {
+      if (!LitMTrans.Updater) throw new Error("更新模块未就绪");
+      U.setPref("lastUpdateCheckTime", String(Date.now()));
+      const result = await LitMTrans.Updater.checkUpdate(this.version);
+      if (result && result.hasUpdate) {
+        this.availableUpdate = result;
+      }
+      return result;
+    }
+
+    async applyUpdate(payload = {}) {
+      if (!LitMTrans.Updater) throw new Error("更新模块未就绪");
+      const updateInfo = payload.updateInfo || this.availableUpdate;
+      if (!updateInfo || !updateInfo.version) throw new Error("缺少待更新版本信息");
+      return await LitMTrans.Updater.applyUpdate(updateInfo);
+    }
+
     async init() {
       this._cajShuttingDown = false;
       if (this._initialized) return;
@@ -289,6 +335,7 @@
       this.registerReaderIntegrations();
       this.registerItemPaneSection();
       await this.startDeveloperDiagnostics();
+      this.scheduleAutoUpdateCheck();
       this._initialized = true;
     }
 
@@ -329,6 +376,10 @@
       if (this.diagnosticTimer) {
         clearInterval(this.diagnosticTimer);
         this.diagnosticTimer = null;
+      }
+      if (this.autoUpdateTimer) {
+        clearInterval(this.autoUpdateTimer);
+        this.autoUpdateTimer = null;
       }
       await this.webMachine?.shutdown?.();
       this.storage.shutdown();
@@ -5321,6 +5372,10 @@
           return this.saveMinerUToken(payload.token);
         case "save-settings":
           return this.saveSettings(payload);
+        case "check-for-updates":
+          return this.checkForUpdates({ manual: true });
+        case "apply-update":
+          return this.applyUpdate(payload);
         case "save-prompt-library":
           return this.savePromptLibrary(payload.library);
         case "list-models":
@@ -5505,6 +5560,8 @@
         mineruToken: this.secrets.getMinerUToken(),
         cajDoubleClickAction: ["ask", "litmtrans"].includes(U.getPref("cajDoubleClickAction", "default")) ? U.getPref("cajDoubleClickAction", "default") : "default",
         showNativeReaderAskAI: Boolean(U.getPref("showNativeReaderAskAI", true)),
+        autoUpdate: Boolean(U.getPref("autoUpdate", true)),
+        availableUpdate: this.availableUpdate || null,
         layoutReaderFonts,
         promptLibrary: this.promptLibrary(),
         hasChatAPIKey: chat.hasAPIKey,
@@ -5718,6 +5775,9 @@
       }
       if (Object.prototype.hasOwnProperty.call(values || {}, "showNativeReaderAskAI")) {
         U.setPref("showNativeReaderAskAI", values.showNativeReaderAskAI === true);
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "autoUpdate")) {
+        U.setPref("autoUpdate", values.autoUpdate === true);
       }
       if (values && values.layoutReaderFonts && typeof values.layoutReaderFonts === "object" && !Array.isArray(values.layoutReaderFonts)) {
         const fonts = {};

@@ -48,3 +48,5 @@ pref("extensions.litmtrans.readerFontPt", 12);
 pref("extensions.litmtrans.debug", false);
 pref("extensions.litmtrans.requestAudit", false);
 pref("extensions.litmtrans.keyPointsPrompt", "");
+pref("extensions.litmtrans.autoUpdate", true);
+pref("extensions.litmtrans.lastUpdateCheckTime", "0");
