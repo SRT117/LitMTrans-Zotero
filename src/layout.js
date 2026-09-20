@@ -435,23 +435,41 @@
 
   const CHECK_TRANSLATED_TYPES = new Set(["title", "text", "table_caption", "table_footnote", "chart_caption", "image_caption", "image_footnote"]);
 
-  function looksOverexpanded(record, translatedText) {
+  function looksOverexpanded(record, translatedText, targetLanguage = "") {
     if (!CHECK_TRANSLATED_TYPES.has(String(record?.type || ""))) return false;
-    const sourceSize = visibleTextLength(record.text);
+    const sourceText = String(record?.text || "");
+    const sourceSize = visibleTextLength(sourceText);
     const translatedSize = visibleTextLength(translatedText);
+    if (sourceSize < 16) return false;
+
+    const sourceIsCJK = cjkCount(sourceText) > (latinCount(sourceText) || 0);
+    const targetIsCJK = targetExpectsCJK(targetLanguage) || (cjkCount(translatedText) > (latinCount(translatedText) || 0));
+
+    // CJK source translated into Latin/alphabetic target naturally expands 3.5x-5x in character length.
+    if (sourceIsCJK && !targetIsCJK) {
+      return translatedSize > Math.max(160, sourceSize * 7);
+    }
+
     return sourceSize >= 24 && translatedSize > Math.max(80, sourceSize * 2);
   }
 
   function looksUntranslated(record, translatedText, targetLanguage) {
-    if (!targetExpectsCJK(targetLanguage) || !shouldCheckTranslation(record)) return false;
-    const source = String(record.text || "").trim();
+    if (!shouldCheckTranslation(record)) return false;
+    const source = String(record?.text || "").trim();
     const translated = String(translatedText || "").trim();
-    const sourceLatin = latinCount(source);
     if (!source) return false;
-    // Titles are commonly short (for example, "ABSTRACT" or "6 EXPERIMENTS").
-    // They need their own unchanged-English check rather than the long-body
-    // threshold below; single-character labels and formula-only titles remain
-    // outside this heuristic.
+
+    // CJK source to non-CJK target: only flag when source is predominantly Chinese and returned unchanged.
+    if (!targetExpectsCJK(targetLanguage)) {
+      if (!translated) return true;
+      const sourceCJK = cjkCount(source);
+      const sourceLatin = latinCount(source);
+      const same = normalizeCompareText(source) === normalizeCompareText(translated);
+      return same && sourceCJK >= 4 && sourceCJK > sourceLatin;
+    }
+
+    // Preserve 100% of established English-to-Chinese logic to avoid regressions on short technical tokens.
+    const sourceLatin = latinCount(source);
     if (String(record?.type || "") === "title") {
       return sourceLatin >= 4
         && normalizeCompareText(source) === normalizeCompareText(translated)
@@ -502,7 +520,7 @@
       if (enableUntranslatedCheck && looksUntranslated(record, translations[record.id], targetLanguage)) {
         add(record, "untranslated");
       }
-      if (looksOverexpanded(record, translations[record.id])) add(record, "overexpanded");
+      if (looksOverexpanded(record, translations[record.id], targetLanguage)) add(record, "overexpanded");
     }
     for (let index = 1; index < records.length; index++) {
       const previous = records[index - 1];
@@ -563,9 +581,9 @@
     );
   }
 
-  function unsafeOverexpandedRecords(records, translations) {
+  function unsafeOverexpandedRecords(records, translations, targetLanguage = "") {
     return records.filter(record =>
-      Boolean(translations[record.id]) && looksOverexpanded(record, translations[record.id])
+      Boolean(translations[record.id]) && looksOverexpanded(record, translations[record.id], targetLanguage)
     );
   }
 
@@ -3057,10 +3075,10 @@
         if (incomplete.length) {
           emit?.({
             type: "warning",
-            message: `自动校对后仍有${incomplete.length}处未能完成，相关位置将暂时显示原文。`
+            message: `自动校对后仍有${incomplete.length}处未能完成，相关结果已保留。`
           });
         }
-        const unsafe = unsafeOverexpandedRecords(group, parsed.translations);
+        const unsafe = unsafeOverexpandedRecords(group, parsed.translations, settings.targetLanguage);
         const unsafeIDs = new Set(unsafe.map(record => record.id));
         for (const record of suspiciousDuplicateTranslationRecords(group, parsed.translations)) {
           if (!unsafeIDs.has(record.id)) {
@@ -3071,9 +3089,8 @@
         if (unsafe.length) {
           emit?.({
             type: "warning",
-            message: `自动校对后仍有${unsafe.length}处内容无法可靠对应原文，相关位置将暂时显示原文。`
+            message: `自动校对后仍有${unsafe.length}处内容需要留意。结果已保留，您可以查看后决定是否重新翻译。`
           });
-          for (const record of unsafe) parsed.translations[record.id] = record.text;
         }
       }
       for (const record of group) {
@@ -3745,12 +3762,6 @@
           type: "warning",
           message: `自动校对后仍有${remainingClassified.length}处内容需要留意。结果已保留，您可以查看后决定是否重新翻译。`
         });
-        const unsafeReasons = new Set(["overexpanded", "duplicate"]);
-        for (const item of remainingClassified) {
-          if (item.reasons.some(reason => unsafeReasons.has(reason))) {
-            translations[item.record.id] = item.record.text;
-          }
-        }
       }
       if (fastMode) {
         emit?.({ type: "log", message: `DeepSeek 快速排版翻译完成，共处理 ${groups.length} 部分。` });

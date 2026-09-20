@@ -164,20 +164,30 @@ namespace LitMTransPort {
   export function visibleTextLength(value: string): number { return normalizedCompareText(String(value || "").replace(/\$[^$]*\$|\\\[[\s\S]*?\\\]/g, "")).length; }
   export function looksOverexpanded(record: LayoutTranslationRecord): boolean {
     const source = Math.max(1, visibleTextLength(record.sourceText)), translated = visibleTextLength(record.translatedText);
+    const sourceIsCJK = cjkCount(record.sourceText) > latinCount(record.sourceText);
+    const translatedIsCJK = cjkCount(record.translatedText) > latinCount(record.translatedText);
+    if (sourceIsCJK && !translatedIsCJK) {
+      return translated > Math.max(160, source * 7);
+    }
     return translated > Math.max(120, source * 5.5);
   }
   export function looksUntranslated(record: LayoutTranslationRecord, targetLanguage: string): boolean {
     if (!record.translatedText.trim()) return true;
     if (!shouldCheckTranslation(record)) return false;
+    if (!targetExpectsCjk(targetLanguage)) {
+      const sourceCJK = cjkCount(record.sourceText);
+      const sourceLatin = latinCount(record.sourceText);
+      const same = normalizedCompareText(record.sourceText) === normalizedCompareText(record.translatedText);
+      return same && sourceCJK >= 4 && sourceCJK > sourceLatin;
+    }
     const same = normalizedCompareText(record.sourceText) === normalizedCompareText(record.translatedText);
     if (record.type === "title") {
-      return targetExpectsCjk(targetLanguage)
-        && latinCount(record.sourceText) >= 4
+      return latinCount(record.sourceText) >= 4
         && same
         && cjkCount(record.translatedText) < 2;
     }
     if (same) return true;
-    if (targetExpectsCjk(targetLanguage) && latinCount(record.translatedText) > 50 && cjkCount(record.translatedText) < Math.max(2, latinCount(record.translatedText) / 16)) return true;
+    if (latinCount(record.translatedText) > 50 && cjkCount(record.translatedText) < Math.max(2, latinCount(record.translatedText) / 16)) return true;
     return false;
   }
   export function suspiciousDuplicateTranslationRecords(records: LayoutTranslationRecord[]): LayoutTranslationRecord[] {

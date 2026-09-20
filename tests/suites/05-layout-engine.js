@@ -487,6 +487,73 @@ function testLayoutTranslationValidation() {
     text: "The result indicates that the proposed mechanism affects the observed pheno-"
   };
   assert(LayoutHelpers.looksOverexpanded(fragment, "海马编码与地点和事件有关的记忆。".repeat(20)));
+
+  const chineseFragment = {
+    id: "zh-fragment",
+    type: "text",
+    text: "实验结果表明，该方法在三个公开基准数据集上均显著优于现有最先进的基线算法。"
+  };
+  const normalEnglishTranslation = "Experimental results demonstrate that our proposed method significantly outperforms existing state-of-the-art baseline algorithms on three public benchmark datasets.";
+  assert.equal(
+    LayoutHelpers.looksOverexpanded(chineseFragment, normalEnglishTranslation, "English"),
+    false,
+    "valid Chinese to English translation must not be flagged as overexpanded"
+  );
+  assert.equal(
+    LayoutHelpers.recordsNeedingRetry([chineseFragment], { [chineseFragment.id]: normalEnglishTranslation }, "English").length,
+    0,
+    "valid Chinese to English translation must not trigger retry"
+  );
+  assert.equal(
+    LayoutHelpers.looksUntranslated(chineseFragment, chineseFragment.text, "English"),
+    true,
+    "Chinese source returned unchanged in English translation must be flagged as untranslated"
+  );
+  const zhToEnUntranslatedRetry = LayoutHelpers.classifyRetryRecords(
+    [chineseFragment],
+    { [chineseFragment.id]: chineseFragment.text },
+    "English",
+    true
+  );
+  assert.equal(zhToEnUntranslatedRetry.length, 1);
+  assert(zhToEnUntranslatedRetry[0].reasons.includes("untranslated"));
+
+  assert.equal(
+    LayoutHelpers.looksUntranslated(fragment, fragment.text, "简体中文"),
+    true,
+    "English source returned unchanged in Chinese translation must be flagged as untranslated"
+  );
+
+  const shortTechFormulaText = {
+    id: "short-tech",
+    type: "text",
+    text: "p < 0.05"
+  };
+  assert.equal(
+    LayoutHelpers.looksUntranslated(shortTechFormulaText, "p < 0.05", "简体中文"),
+    false,
+    "short technical text like 'p < 0.05' unchanged must not be flagged as untranslated in English-to-Chinese"
+  );
+  assert.equal(
+    LayoutHelpers.recordsNeedingRetry(
+      [shortTechFormulaText],
+      { [shortTechFormulaText.id]: "p < 0.05" },
+      "简体中文",
+      true
+    ).length,
+    0,
+    "short technical text unchanged must not trigger retry in English-to-Chinese even with enableUntranslatedCheck=true"
+  );
+
+  assert(
+    LayoutHelpers.looksOverexpanded(
+      chineseFragment,
+      normalEnglishTranslation.repeat(10),
+      "English"
+    ),
+    "runaway repetition in Chinese to English translation must still be caught as overexpanded"
+  );
+
   assert.equal(
     LayoutHelpers.repairEquationReferenceTranslation("See Eqs. (3) and (4).", "见式 3 和式 4。"),
     "见式 (3) 和式 (4)。"
