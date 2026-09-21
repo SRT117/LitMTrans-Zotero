@@ -144,7 +144,7 @@
         </div>
       </section>
 
-      <div id="sidebar-split-handle" class="sidebar-split-handle" role="separator" aria-label="调整对话侧栏宽度" aria-orientation="vertical" aria-valuemin="240" aria-valuenow="350" tabindex="0"></div>
+      <div id="sidebar-split-handle" class="sidebar-split-handle" role="separator" aria-label="调整对话侧栏宽度" aria-orientation="vertical" aria-valuemin="320" aria-valuenow="350" tabindex="0"></div>
 
       <aside class="ai-sidebar" aria-label="文献对话">
         <div class="embedded-ai-topbar" hidden="hidden">
@@ -409,7 +409,7 @@
         <section class="settings-section translation-model-section settings-card-model">
           <h3 id="setting-model-heading">翻译模型设置</h3>
           <div class="web-mode-toggle-row">
-            <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span class="web-mode-copy"><span class="web-mode-title-line"><strong>使用DeepSeek官方网页模式</strong><button id="open-web-mode-info-button" class="settings-inline-link" type="button">使用说明</button></span><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
+            <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" checked="checked" /> <span class="web-mode-copy"><span class="web-mode-title-line"><strong>使用DeepSeek官方网页模式</strong><button id="open-web-mode-info-button" class="settings-inline-link" type="button">使用说明</button></span><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
           </div>
           <details id="setting-web-mode-advanced" class="web-mode-advanced" hidden="hidden">
             <summary>网页模式进阶配置</summary>
@@ -521,7 +521,7 @@
 
         <section class="settings-section settings-card-caj">
           <h3>CAJ 文献处理</h3>
-          <label>双击CAJ文献时<select id="setting-caj-double-click-action"><option value="default">保持Zotero默认行为</option><option value="litmtrans">使用LitMTrans打开</option><option value="ask">每次询问</option></select></label>
+          <label>双击CAJ文献时<select id="setting-caj-double-click-action"><option value="default">保持Zotero默认行为</option><option value="litmtrans">使用LitMTrans打开</option><option value="ask" selected="selected">每次询问</option></select></label>
         </section>
 
         <section class="settings-section settings-card-update">

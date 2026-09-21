@@ -6,6 +6,7 @@
   const H = LitMTrans.HTTP;
   const C = LitMTrans.Constants;
   const P = LitMTrans.PortedCore || {};
+  const DEFAULT_CHAT_ENGINE = C.DEFAULT_CHAT_ENGINE || "deepseek_web";
   const DEEPSEEK_CONCURRENCY_LIMIT = 500;
   // Layout requests are bounded by both source length and mapping count.
   // The layout service is responsible for scheduling the resulting groups.
@@ -977,9 +978,10 @@
         return true;
       }
       const isExplicitAPI = options.engine === "api" || options.aiMode === "api";
-      const chatEngine = U.getPref("chatEngine", "api");
+      const chatEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE);
       const translationProvider = U.getPref("translationProvider", "");
       if (options.purpose === "chat") {
+        if (U.isWebMachineProvider?.(options.provider)) return false;
         if (isExplicitAPI) return false;
         return chatEngine === "deepseek_web";
       }
@@ -1122,7 +1124,11 @@
     }
 
     async ensureConfiguredModel(config, signal = null) {
-      if (this.isWebEngineActive(config)) {
+      // resolveConfig 已经根据显式 API/网页模式完成路由；不要再用全局首选项
+      // 覆盖一个已经解析出的 API provider，否则用户切回 API 后仍会被拦截。
+      const resolvedProvider = String(config?.provider || "").trim();
+      if (resolvedProvider === "deepseek_web"
+          || (!resolvedProvider && this.isWebEngineActive(config))) {
         return { ...config, provider: "deepseek_web", model: "deepseek-web" };
       }
       if (config.model) return config;

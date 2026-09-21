@@ -2283,6 +2283,8 @@ flowchart LR
       if (input.label) emit?.({ type: "warning", message: `图片编辑将使用${input.label}。` });
       const result = await this.llm.generateImage(prompt, {
         purpose: "chat",
+        engine: options.engine,
+        aiMode: options.aiMode,
         imageSize: settings.chatImageSize,
         imageQuality: settings.chatImageQuality,
         imageFormat: settings.chatImageFormat,
@@ -2325,7 +2327,7 @@ flowchart LR
         settings = { ...this.llm.getSettings("chat"), provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
       } else {
         resolvedModel = await this.llm.ensureConfiguredModel(
-          this.llm.resolveConfig({ purpose: "chat" }),
+          this.llm.resolveConfig({ purpose: "chat", engine: "api", aiMode: "api" }),
           signal
         );
         settings = { ...this.llm.getSettings("chat"), model: resolvedModel.model };

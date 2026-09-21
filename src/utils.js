@@ -4,6 +4,7 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const PREF_BRANCH = "extensions.litmtrans.";
   const LEGACY_PREF_BRANCH = "extensions.ai-literature-translator.";
+  const DEFAULT_CHAT_ENGINE = "deepseek_web";
   const LANGUAGE_SUGGESTIONS = Object.freeze([
     "简体中文", "繁体中文", "英文", "日文", "韩文", "德文", "法文", "西班牙文", "意大利文", "葡萄牙文", "俄文"
   ]);
@@ -517,6 +518,23 @@
     }
   }
 
+  function migrateChatEngineWebDefault() {
+    const marker = "migration.chatEngineWebDefaultV1";
+    if (getPref(marker, false)) return;
+    try {
+      // 旧版本的默认值是 API。只在本次迁移前统一切换一次；迁移完成后，
+      // 用户再次手动切回 API 会作为正常的最新选择保留。
+      if (getPref("chatEngine", DEFAULT_CHAT_ENGINE) !== DEFAULT_CHAT_ENGINE) {
+        setPref("chatEngine", DEFAULT_CHAT_ENGINE);
+      }
+      setPref(marker, true);
+    }
+    catch (error) {
+      try { Zotero.debug(`[LitMTrans] Chat engine default migration deferred: ${error}`); }
+      catch (_) {}
+    }
+  }
+
   function repairSharedChatModelPreference() {
     const marker = "migration.sharedChatModelRepairV1";
     if (getPref(marker, false)) return;
@@ -874,6 +892,7 @@
     LANGUAGE_SUGGESTIONS,
     SUPPORTED_INPUT_EXTENSIONS,
     DEFAULT_PROMPT_LIBRARY,
+    DEFAULT_CHAT_ENGINE,
     MINERU_API_BASE: "https://mineru.net/api/v4",
     USER_AGENT: "LitMTrans/2.0.0",
     TRANSLATABLE_LAYOUT_TYPES: new Set([
@@ -909,6 +928,7 @@
     setPref,
     clearPref,
     migrateLegacyPreferences,
+    migrateChatEngineWebDefault,
     repairSharedChatModelPreference,
     normalizeProviderID,
     normalizeLanguageName,

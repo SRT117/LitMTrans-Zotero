@@ -3239,6 +3239,8 @@
         resolvedModel = await this.llm.ensureConfiguredModel(
           this.llm.resolveConfig({
             purpose: "translation",
+            engine: "api",
+            aiMode: "api",
             provider: settings.provider,
             baseURL: settings.baseURL,
             model: settings.model,
@@ -3249,6 +3251,8 @@
         settings.provider = resolvedModel.provider;
         settings.baseURL = resolvedModel.baseURL;
         settings.model = resolvedModel.model;
+        settings.engine = "api";
+        settings.aiMode = "api";
       }
       // The preference remembers the user's DeepSeek choice while they switch
       // providers. It is only an active request when DeepSeek itself is

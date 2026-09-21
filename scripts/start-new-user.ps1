@@ -13,6 +13,35 @@ $newUserRoot = Join-Path $devRoot "new-user"
 $profilePath = Join-Path $newUserRoot "profile"
 $dataPath = Join-Path $newUserRoot "data"
 $logsRoot = Join-Path $devRoot "logs\new-user"
+$stopScript = Join-Path $PSScriptRoot "stop-isolated-zotero.ps1"
+
+function Remove-NewUserRoot {
+    if (-not (Test-Path -LiteralPath $newUserRoot)) {
+        return
+    }
+
+    # 先停止可能残留的隔离实例；否则 Remove-Item 失败时，旧数据可能被
+    # -Force 静默保留下来并在下一次测试中继续使用。
+    if (Test-Path -LiteralPath $profilePath) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stopScript -ProfilePath $profilePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "无法停止上一次新用户测试实例，拒绝复用旧测试数据。"
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(10)
+    while (Test-Path -LiteralPath $newUserRoot) {
+        try {
+            Remove-Item -LiteralPath $newUserRoot -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            if ((Get-Date) -ge $deadline) {
+                throw "无法彻底清理新用户测试目录，拒绝复用可能残留的数据：$newUserRoot ($($_.Exception.Message))"
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
 
 # 获取固定的测试运行时二进制
 $testVersion = & (Join-Path $PSScriptRoot "prepare-zotero-test-version.ps1") -Major $ZoteroMajor -ErrorAction Stop
@@ -23,10 +52,9 @@ Write-Host "临时 Profile：$profilePath" -ForegroundColor DarkGray
 Write-Host "临时数据：$dataPath" -ForegroundColor DarkGray
 Write-Host "日志归档：$logsRoot" -ForegroundColor DarkGray
 
-# 启动前清理任何可能残留的上次运行数据，确保绝对纯净
-if (Test-Path -LiteralPath $newUserRoot) {
-    Remove-Item -LiteralPath $newUserRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
+# 启动前清理任何可能残留的上次运行数据，确保绝对纯净。
+# 清理不完整时直接失败，不能把旧 profile/data 当成新用户环境继续启动。
+Remove-NewUserRoot
 
 # 创建干净的目录结构
 New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
@@ -117,7 +145,6 @@ user_pref("extensions.checkCompatibility", false);
     Write-Host "[2/3] 启动隔离的新用户 Zotero 实例..." -ForegroundColor Cyan
     Write-Host "提示：这是一个全新用户环境（无历史文献、无缓存）。测试完成后请直接关闭 Zotero。" -ForegroundColor Yellow
 
-    $stopScript = Join-Path $PSScriptRoot "stop-isolated-zotero.ps1"
     $zoteroArgs = @("-profile", $profilePath, "--dataDir", $dataPath, "-purgecaches", "-no-remote")
 
     $proc = Start-Process -FilePath $testVersion.BinaryPath -ArgumentList $zoteroArgs -PassThru
@@ -170,9 +197,7 @@ finally {
 
     # 2. 彻底清理临时数据目录，不留垃圾
     if (Test-Path -LiteralPath $newUserRoot) {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "stop-isolated-zotero.ps1") -ProfilePath $profilePath
-        Start-Sleep -Milliseconds 500
-        Remove-Item -LiteralPath $newUserRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-NewUserRoot
         Write-Host "新用户临时数据与 Profile 已彻底清空，本地开发环境保持整洁。" -ForegroundColor Green
     }
     Write-Host "==================== 新用户测试会话已结束 ====================" -ForegroundColor Green

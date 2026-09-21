@@ -308,6 +308,7 @@ async function testStartupNoticeContracts() {
   const controllerSource = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
   const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   const workbenchXHTML = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  const workbenchStyles = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
   const prefs = fs.readFileSync(path.join(root, "src", "prefs.js"), "utf8");
 
   assert(bootstrap.includes('"src/release-notes.js"'), "startup content must be bundled for offline use");
@@ -316,6 +317,12 @@ async function testStartupNoticeContracts() {
   assert(workbench.includes('hostCall("get-startup-notice")'), "workbench must request the startup notice before rendering the document");
   assert(workbench.includes('hostCall("mark-startup-notice-seen"'), "workbench must acknowledge a startup notice after showModal succeeds");
   assert(workbench.includes("startupNoticeGateClosed"), "startup notices must wait before online alert modals can open");
+  assert(workbench.includes('tutorialButton.textContent = "查看新手教程"'), "welcome guide must expose a prominent beginner tutorial entry");
+  assert(workbench.includes('tutorialButton.addEventListener("click", openTokenGuide);'), "beginner tutorial entry must keep the notice open while opening the guide");
+  assert(workbench.includes('hostCall("open-token-guide")'), "beginner tutorial entry must reuse the token guide action");
+  assert(workbenchStyles.includes(".startup-notice-tutorial"), "beginner tutorial entry must have dedicated emphasis styling");
+  assert(workbench.includes("responsiveDefaultWidth") && workbench.includes("按工作区实测宽度重新计算默认值"), "responsive sidebar width must follow the actual viewport");
+  assert(workbenchStyles.includes(":root { --sidebar-width: 0px; }"), "stacked small-screen layout must release the desktop sidebar width");
   assert(workbenchXHTML.includes('id="welcome-guide-dialog"') && workbenchXHTML.includes('id="release-notes-dialog"'), "workbench must expose welcome and release-note dialogs");
   assert(prefs.includes('pref("extensions.litmtrans.startupNoticeVersion", "");'), "startup notice version must persist in the profile");
 
@@ -445,7 +452,7 @@ function testDeepSeekWebSidebarIntegration() {
   clearTimeout(runtime.deepSeekLoadTimer);
   assert.strictEqual(navigations, 2, "explicit reload must navigate again");
   assert.throws(() => host.loadDeepSeekWeb({}), /网页容器尚未就绪/);
-  assert(prefs.includes('pref("extensions.litmtrans.chatEngine", "api");'), "prefs must define chatEngine with default api");
+  assert(prefs.includes('pref("extensions.litmtrans.chatEngine", "deepseek_web");'), "prefs must define chatEngine with default web mode");
   assert(prefs.includes('pref("extensions.litmtrans.webPageImageQuality", "high");')
     && prefs.includes('pref("extensions.litmtrans.webInputMode", "auto");')
     && prefs.includes('pref("extensions.litmtrans.deleteWebTranslationSessions", true);'),
@@ -462,7 +469,7 @@ function testDeepSeekWebSidebarIntegration() {
   assert(!controller.includes("setResponseHeader"), "web sidebar must not rewrite global response headers");
   assert(!workbenchCSS.includes(".embedded-ai-topbar:has(#chat-navigator-button[hidden])"), "mode tabs must remain visible without chat history");
   assert(controller.includes('case "save-chat-engine":'), "controller must handle save-chat-engine bridge action");
-  assert(preferencesXHTML.includes('id="litmtrans-pref-chat-engine-web"'), "preferences must provide DeepSeek web checkbox");
+  assert(preferencesXHTML.includes('id="litmtrans-pref-chat-engine-web" type="checkbox" checked="checked"'), "preferences must provide a checked DeepSeek web checkbox");
   assert(preferencesXHTML.includes("要点提炼等自动注入提示词") && workbenchXHTML.includes("要点提炼等自动注入提示词")
     && !preferencesXHTML.includes("自动注入图片与提示词") && !workbenchXHTML.includes("自动注入图片与提示词"),
   "web auto mode must describe prompt injection without promising automatic page images");
@@ -472,7 +479,7 @@ function testDeepSeekWebSidebarIntegration() {
     && preferencesJS.includes('webInputMode: this.$("web-input-mode-auto").checked ? "auto" : "clipboard"')
     && preferencesJS.includes('deleteWebTranslationSessions: this.$("delete-web-translation-sessions").checked'),
   "preferences.js must load, persist, and independently expose web mode settings");
-  assert(workbenchXHTML.includes('id="ai-mode-web-button"') && workbenchXHTML.includes('id="ai-mode-api-button"'), "workbench must provide dual-mode tabs");
+  assert(workbenchXHTML.includes('id="ai-mode-web-button"') && workbenchXHTML.includes('id="ai-mode-api-button"') && workbenchXHTML.includes('id="setting-chat-engine-web" type="checkbox" checked="checked"'), "workbench must provide dual-mode tabs and a checked web default");
   assert(workbenchXHTML.includes('id="deepseek-web-container"') && workbenchXHTML.includes('id="deepseek-web-frame"'), "workbench must provide deepseek web container and frame");
   assert(workbenchJS.includes("function setAIMode") && workbenchJS.includes("function sendToDeepSeekWeb"), "workbench.js must provide mode switcher and bridge sender");
   assert(workbenchJS.includes('pageImagesGroup.hidden = !isWebEngine;')

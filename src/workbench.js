@@ -26,7 +26,7 @@
     paperAICacheDocumentID: null,
     paperAICacheStatus: {},
     syncScroll: false,
-    aiMode: "api",
+    aiMode: "web",
     aiModeInitialized: false,
     cleanReadingSnapshot: null,
     modeScrollPositions: { stream: null, layout: null },
@@ -255,9 +255,18 @@
     // Gecko can keep vh units at the tab's pre-maximize size. The host knows
     // the actual embedded-browser rectangle, so use it as a final sizing
     // authority whenever the Zotero window changes size.
-    void hostCall("viewport").then(viewport => {
+    return hostCall("viewport", {}, { timeout: 3000 }).then(viewport => {
+      const width = Number(viewport?.width || 0);
       const height = Number(viewport?.height || 0);
-      if (height > 0) els["app"].style.height = `${height}px`;
+      if (width > 0) {
+        els["app"].style.width = `${width}px`;
+        document.documentElement.style.setProperty("--litmtrans-viewport-width", `${width}px`);
+      }
+      if (height > 0) {
+        els["app"].style.height = `${height}px`;
+        document.documentElement.style.setProperty("--litmtrans-viewport-height", `${height}px`);
+      }
+      return viewport;
     }).catch(() => {});
   }
 
@@ -1085,7 +1094,7 @@
     state.settings = mergePromptLibraryDraft(data?.settings || state.settings);
     if (!state.aiModeInitialized) {
       state.aiModeInitialized = true;
-      const preferredMode = state.settings?.chatEngine === "deepseek_web" ? "web" : "api";
+      const preferredMode = (state.settings?.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
       setAIMode(preferredMode, { syncPref: false });
     }
     const isLayoutDebug = Boolean(els["debug-boxes-check"]?.checked || state.settings?.layoutDevelopmentMode);
@@ -2862,6 +2871,8 @@
     const preparingPDF = layout && sourcePDFLoading && !sourcePDFAvailable;
     const sourcePDFFailed = layout && sourcePDFFailedAttachmentID === Number(state.data?.item?.attachmentID || 0);
     const isCAJ = Boolean(state.data?.item?.isCAJ);
+    els["empty-parse-only-button"].classList.toggle("button-primary", isCAJ);
+    els["empty-parse-button"].classList.toggle("button-primary", !isCAJ);
     els["source-placeholder"].hidden = showPDF || showParsedSource;
     els["retry-source-pdf-button"].textContent = isCAJ ? "重试加载转换后的 PDF" : "重试加载原始 PDF";
     els["retry-source-pdf-button"].hidden = !sourcePDFFailed || sourcePDFRetryBlocked;
@@ -4012,6 +4023,11 @@
     }
   }
 
+  function openTokenGuide() {
+    void hostCall("open-token-guide")
+      .catch(error => toast(error.message || "无法打开令牌创建指南", "error"));
+  }
+
   function renderWelcomeGuide(notice) {
     const title = els["welcome-guide-title"];
     const body = els["welcome-guide-body"];
@@ -4031,6 +4047,22 @@
     calloutText.textContent = notice.calloutText || "";
     callout.append(calloutTitle, calloutText);
     body.appendChild(callout);
+
+    const tutorial = document.createElement("div");
+    tutorial.className = "startup-notice-tutorial";
+    const tutorialCopy = document.createElement("div");
+    const tutorialTitle = document.createElement("strong");
+    tutorialTitle.textContent = "第一次使用？";
+    const tutorialHint = document.createElement("p");
+    tutorialHint.textContent = "先查看新手教程，了解如何创建并配置MinerU令牌。";
+    tutorialCopy.append(tutorialTitle, tutorialHint);
+    const tutorialButton = document.createElement("button");
+    tutorialButton.className = "button button-primary startup-notice-tutorial-button";
+    tutorialButton.type = "button";
+    tutorialButton.textContent = "查看新手教程";
+    tutorialButton.addEventListener("click", openTokenGuide);
+    tutorial.append(tutorialCopy, tutorialButton);
+    body.appendChild(tutorial);
   }
 
   function renderReleaseNotes(notice) {
@@ -6539,7 +6571,7 @@
     els["setting-deepseek-fast-layout"].checked = Boolean(settings.deepseekFastLayoutTranslation);
     els["setting-api-key"].value = settings.apiKey || "";
     if (els["setting-chat-engine-web"]) {
-      els["setting-chat-engine-web"].checked = settings.chatEngine === "deepseek_web";
+      els["setting-chat-engine-web"].checked = (settings.chatEngine || "deepseek_web") === "deepseek_web";
     }
     const pageImageQuality = settings.webPageImageQuality;
     els["setting-web-page-image-quality"].value = (pageImageQuality && pageImageQuality !== "none") ? pageImageQuality : "high";
@@ -6562,7 +6594,7 @@
     els["setting-chat-api-key"].value = settings.chatAPIKey || "";
     els["setting-mineru-token"].value = settings.mineruToken || "";
     els["setting-mineru-model"].value = "vlm";
-    if (els["setting-caj-double-click-action"]) els["setting-caj-double-click-action"].value = settings.cajDoubleClickAction || "default";
+    if (els["setting-caj-double-click-action"]) els["setting-caj-double-click-action"].value = settings.cajDoubleClickAction || "ask";
     if (els["setting-show-native-reader-ask-ai"]) els["setting-show-native-reader-ask-ai"].checked = settings.showNativeReaderAskAI !== false;
     if (els["setting-auto-update"]) els["setting-auto-update"].checked = settings.autoUpdate !== false;
     els["setting-target-language"].value = settings.targetLanguage || "简体中文";
@@ -7182,7 +7214,7 @@
       targetLanguage: U.normalizeLanguageName(els["setting-target-language"].value, "简体中文"),
       machineSourceLanguage: U.normalizeLanguageName(els["setting-machine-source-language"].value, "英文"),
       translationMode: els["setting-translation-mode"].value,
-      cajDoubleClickAction: els["setting-caj-double-click-action"] ? els["setting-caj-double-click-action"].value : "default",
+      cajDoubleClickAction: els["setting-caj-double-click-action"] ? els["setting-caj-double-click-action"].value : "ask",
       showNativeReaderAskAI: els["setting-show-native-reader-ask-ai"]?.checked !== false,
       autoUpdate: els["setting-auto-update"] ? els["setting-auto-update"].checked !== false : true,
       translationReferencePaths: [...state.referencePaths],
@@ -7231,7 +7263,7 @@
         // prevents any duplicate generation on ordinary reopen.
         if (data?.layout?.meta?.complete) requestAnimationFrame(() => queueLayoutPDFAttachmentsAfterFinalPublication());
         void reconcileOperationState();
-        syncWorkbenchViewport();
+        await syncWorkbenchViewport();
         setStatus(data.capabilities?.hasParsed ? "已就绪" : "尚未解析", 0, data.capabilities?.hasParsed ? "success" : "neutral");
         requestAnimationFrame(() => showStartupNotice(startupNotice));
       }
@@ -7819,16 +7851,41 @@
   function bindSidebarSplitHandle() {
     const handle = els["sidebar-split-handle"];
     if (!handle) return;
-    const minimum = 240;
+    const minimum = 320;
     const minimumReaderWidth = 500;
     let dragging = false;
+    let userSized = false;
+    let requestedWidth = null;
+    const appWidth = () => Math.round(Number(els["app"].getBoundingClientRect?.().width || 0));
+    const isStacked = () => {
+      const width = appWidth();
+      return width > 0 ? width <= 860 : Boolean(window.matchMedia?.("(max-width: 860px)")?.matches);
+    };
+    const responsiveDefaultWidth = () => {
+      const width = appWidth();
+      if (width > 0) {
+        if (width <= 860) return 0;
+        if (width <= 1180) return 320;
+        if (width <= 1280) return 330;
+      }
+      return parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width")) || 350;
+    };
     const maximumWidth = () => Math.max(minimum, els["app"].getBoundingClientRect().width - minimumReaderWidth);
-    const apply = width => {
+    const updateHandleState = (width, maximum) => {
+      handle.setAttribute("aria-valuemin", String(minimum));
+      handle.setAttribute("aria-valuemax", String(Math.round(maximum)));
+      handle.setAttribute("aria-valuenow", String(Math.round(width)));
+    };
+    const apply = (width, remember = true) => {
       const maximum = maximumWidth();
-      const next = Math.max(Math.min(minimum, maximum), Math.min(maximum, Math.round(width)));
+      const requested = Number(width);
+      const next = Math.max(minimum, Math.min(maximum, Math.round(Number.isFinite(requested) ? requested : minimum)));
+      if (remember) {
+        userSized = true;
+        requestedWidth = Number.isFinite(requested) ? requested : next;
+      }
       document.documentElement.style.setProperty("--sidebar-width", `${next}px`);
-      handle.setAttribute("aria-valuemax", String(maximum));
-      handle.setAttribute("aria-valuenow", String(next));
+      updateHandleState(next, maximum);
       syncDeepSeekWebBounds();
     };
     const move = event => {
@@ -7837,7 +7894,7 @@
       apply(rect.right - event.clientX);
     };
     handle.addEventListener("pointerdown", event => {
-      if (window.matchMedia?.("(max-width: 860px)")?.matches) return;
+      if (isStacked()) return;
       dragging = true;
       handle.setPointerCapture(event.pointerId);
       event.preventDefault();
@@ -7849,6 +7906,7 @@
     });
     handle.addEventListener("keydown", event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      if (isStacked()) return;
       const current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width")) || 350;
       const next = event.key === "Home" ? minimum
         : event.key === "End" ? maximumWidth()
@@ -7856,12 +7914,32 @@
       apply(next);
       event.preventDefault();
     });
-    const clampToViewport = () => {
-      const current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width"));
-      apply(Number.isFinite(current) ? current : 350);
+    const syncResponsiveWidth = () => {
+      if (isStacked()) {
+        document.documentElement.style.setProperty("--sidebar-width", "0px");
+        handle.setAttribute("aria-valuemax", "0");
+        handle.setAttribute("aria-valuenow", "0");
+        syncDeepSeekWebBounds();
+        return;
+      }
+      if (userSized && Number.isFinite(requestedWidth)) {
+        apply(requestedWidth, false);
+        return;
+      }
+      // 按工作区实测宽度重新计算默认值，避免小窗口宽度被内联样式冻结。
+      const responsiveWidth = responsiveDefaultWidth();
+      const maximum = maximumWidth();
+      const next = Math.max(minimum, Math.min(maximum, responsiveWidth));
+      document.documentElement.style.setProperty("--sidebar-width", `${next}px`);
+      updateHandleState(next, maximum);
+      syncDeepSeekWebBounds();
     };
-    window.addEventListener("resize", clampToViewport);
-    clampToViewport();
+    window.addEventListener("resize", syncResponsiveWidth);
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(syncResponsiveWidth);
+      observer.observe(els["app"]);
+    }
+    syncResponsiveWidth();
   }
 
   function syncSplitHandleOrientation() {
@@ -8061,10 +8139,7 @@
           .catch(error => toast(error.message || "无法打开官网", "error"));
       }
     });
-    els["open-token-guide-button"].addEventListener("click", () => {
-      void hostCall("open-token-guide")
-        .catch(error => toast(error.message || "无法打开令牌创建指南", "error"));
-    });
+    els["open-token-guide-button"].addEventListener("click", openTokenGuide);
     els["close-mineru-token-link-dialog"]?.addEventListener("click", () => els["mineru-token-link-dialog"]?.close());
     els["mineru-token-link-guide"]?.addEventListener("click", () => {
       els["mineru-token-link-dialog"]?.close("guide");
@@ -9287,7 +9362,7 @@
           : Boolean(settings.streamSyncScroll ?? settings.syncScroll);
         els["sync-scroll-check"].checked = state.syncScroll;
         populateSettings(settings);
-        const preferredMode = settings.chatEngine === "deepseek_web" ? "web" : "api";
+        const preferredMode = (settings.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
         setAIMode(preferredMode, { syncPref: false });
         renderMode();
         // Connection/model settings affect future translation requests only.

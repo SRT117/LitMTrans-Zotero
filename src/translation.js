@@ -516,6 +516,8 @@
         resolvedModel = await this.llm.ensureConfiguredModel(
           this.llm.resolveConfig({
             purpose: "translation",
+            engine: "api",
+            aiMode: "api",
             provider: settings.provider,
             baseURL: settings.baseURL,
             model: settings.model,
@@ -526,6 +528,8 @@
         settings.provider = resolvedModel.provider;
         settings.baseURL = resolvedModel.baseURL;
         settings.model = resolvedModel.model;
+        settings.engine = "api";
+        settings.aiMode = "api";
       }
       const mode = String(options.mode || settings.translationMode || "full_context");
       if (mode === "layout") throw new Error("排版翻译暂时无法启动，请稍后重试");

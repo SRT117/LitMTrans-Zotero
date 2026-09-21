@@ -215,7 +215,7 @@ var LitMTransControllerPreferences = {
       this.$("chat-thinking-mode").value = settings.chatThinkingMode || "default";
       this.setSelectValue(this.$("chat-reasoning-effort"), settings.chatReasoningEffort || "default");
       this.$("chat-api-key").value = settings.chatAPIKey || "";
-      this.$("chat-engine-web").checked = settings.chatEngine === "deepseek_web";
+      this.$("chat-engine-web").checked = (settings.chatEngine || "deepseek_web") === "deepseek_web";
       const pageImageQuality = settings.webPageImageQuality;
       this.$("web-page-image-quality").value = (pageImageQuality && pageImageQuality !== "none") ? pageImageQuality : "high";
       this.$("web-input-mode-auto").checked = (settings.webInputMode || "auto") === "auto";
@@ -231,7 +231,7 @@ var LitMTransControllerPreferences = {
       this.renderReferencePaths();
       this.$("mineru-token").value = settings.mineruToken || "";
       this.$("mineru-model").value = "vlm";
-      if (this.$("caj-double-click-action")) this.$("caj-double-click-action").value = settings.cajDoubleClickAction || "default";
+      if (this.$("caj-double-click-action")) this.$("caj-double-click-action").value = settings.cajDoubleClickAction || "ask";
       this.$("show-native-reader-ask-ai").checked = settings.showNativeReaderAskAI !== false;
       if (this.$("auto-update")) this.$("auto-update").checked = settings.autoUpdate !== false;
       this.$("key-points-prompt").value = settings.effectiveKeyPointsPrompt || settings.keyPointsDefaultPrompt || "";
@@ -341,7 +341,7 @@ var LitMTransControllerPreferences = {
       chatProviderProfiles: { ...(this.settings?.chatProviderProfiles || {}), [chatProvider]: { baseURL: this.$("chat-base-url").value.trim(), model: this.$("chat-model").value.trim(), thinkingMode: this.$("chat-thinking-mode").value, reasoningEffort: this.$("chat-reasoning-effort").value } },
       mineruModel: "vlm", targetLanguage: this.$("target-language").value.trim(), machineSourceLanguage: this.$("machine-source-language").value.trim(), translationMode: this.$("translation-mode").value,
       translationReferencePaths: [...this.referencePaths], customTranslationInstruction: this.$("custom-translation-instruction").value.trim(),
-      cajDoubleClickAction: this.$("caj-double-click-action") ? this.$("caj-double-click-action").value : "default",
+      cajDoubleClickAction: this.$("caj-double-click-action") ? this.$("caj-double-click-action").value : "ask",
       showNativeReaderAskAI: this.$("show-native-reader-ask-ai").checked,
       autoUpdate: this.$("auto-update") ? this.$("auto-update").checked : true,
       keyPointsPrompt: this.$("key-points-prompt").value.trim() === String(this.settings?.keyPointsDefaultPrompt || "").trim() ? "" : this.$("key-points-prompt").value

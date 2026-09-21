@@ -298,12 +298,179 @@ async function testIndependentTranslationAndChatSettings() {
   assert.equal(restoredReasoningModel.thinkingMode, "enabled");
   assert.equal(restoredReasoningModel.reasoningEffort, "high");
   assert.equal(restoredReasoningModel.showReasoning, true);
+  const previousChatEngine = prefValues.get("extensions.litmtrans.chatEngine");
+  prefValues.set("extensions.litmtrans.chatEngine", "api");
   await assert.rejects(
     () => llm.ensureConfiguredModel({ purpose: "translation", model: "" }),
     /尚未选择翻译模型/
   );
+  if (previousChatEngine === undefined) prefValues.delete("extensions.litmtrans.chatEngine");
+  else prefValues.set("extensions.litmtrans.chatEngine", previousChatEngine);
   assert.equal(typeof ChatInternals.DEFAULT_KEY_POINTS_PROMPT, "string");
   assert(ChatInternals.DEFAULT_KEY_POINTS_PROMPT.trim().length > 0, "default key-points prompt must stay non-empty");
+}
+
+async function testExplicitAPIRoutePropagation() {
+  const prefNames = [
+    "extensions.litmtrans.chatEngine",
+    "extensions.litmtrans.chatUsesTranslationModel",
+    "extensions.litmtrans.chatProvider",
+    "extensions.litmtrans.chatBaseURL",
+    "extensions.litmtrans.chatModel"
+  ];
+  const snapshot = new Map(prefNames.map(name => [name, prefValues.get(name)]));
+  const restorePreferences = () => {
+    for (const [name, value] of snapshot) {
+      if (value === undefined) prefValues.delete(name);
+      else prefValues.set(name, value);
+    }
+  };
+  try {
+    prefValues.set("extensions.litmtrans.chatEngine", "deepseek_web");
+    prefValues.set("extensions.litmtrans.chatUsesTranslationModel", false);
+    prefValues.set("extensions.litmtrans.chatProvider", "oneapi");
+    prefValues.set("extensions.litmtrans.chatBaseURL", "https://gateway.invalid/v1");
+    prefValues.set("extensions.litmtrans.chatModel", "route-model");
+    const secrets = {
+      has: () => true,
+      llmKeyName: provider => `llm:${provider}`,
+      getLLMKey: () => "test-key"
+    };
+    const configuredLLM = new LLMService(secrets);
+    assert.equal(
+      configuredLLM.resolveConfig({ purpose: "chat" }).provider,
+      "deepseek_web",
+      "the global web default must remain active when no route is explicit"
+    );
+    const explicitAPIConfig = configuredLLM.resolveConfig({ purpose: "chat", engine: "api", aiMode: "api" });
+    assert.equal(explicitAPIConfig.provider, "oneapi", "an explicit API route must override the global web default");
+    assert.equal(explicitAPIConfig.model, "route-model");
+    const ensuredAPIConfig = await configuredLLM.ensureConfiguredModel(explicitAPIConfig);
+    assert.equal(ensuredAPIConfig.provider, "oneapi", "ensureConfiguredModel must not reapply the global web default");
+    assert.equal(ensuredAPIConfig.model, "route-model");
+
+    let chatResolveOptions = null;
+    let completionOptions = null;
+    const originalResolveConfig = configuredLLM.resolveConfig.bind(configuredLLM);
+    configuredLLM.resolveConfig = options => {
+      chatResolveOptions = { ...options };
+      return originalResolveConfig(options);
+    };
+    configuredLLM.complete = async (_messages, options) => {
+      completionOptions = { ...options };
+      options.onText?.("回答");
+      return { text: "回答", reasoning: "", model: "route-model" };
+    };
+    const chat = new ChatService(new MemoryStorage(), configuredLLM, { load: async () => ({ markdown: "" }) });
+    chat.attachCurrentDocumentToFirstTurn = async (_documentID, session) => session;
+    chat.buildContext = async () => "";
+    chat.historyMessagesForAPI = async () => [{ role: "user", content: "问题" }];
+    chat.resolveAssistantImageCitations = async () => [];
+    chat.saveSession = async (_documentID, session) => session;
+    await chat.generateReply(
+      "doc",
+      { id: "document-chat", apiCacheSessionID: "cache", messages: [{ id: "user-1", role: "user", content: "问题" }] },
+      0,
+      { engine: "api", aiMode: "api" }
+    );
+    assert.equal(chatResolveOptions.engine, "api", "chat model resolution must retain the already-selected API route");
+    assert.equal(chatResolveOptions.aiMode, "api");
+    assert.equal(completionOptions.engine, "api");
+    assert.equal(completionOptions.aiMode, "api");
+
+    const createCaptureLLM = () => {
+      const calls = [];
+      return {
+        calls,
+        getSettings: () => ({
+          provider: "oneapi",
+          baseURL: "https://gateway.invalid/v1",
+          model: "route-model",
+          apiKey: "test-key",
+          targetLanguage: "简体中文"
+        }),
+        isWebEngineActive: options => options.engine === "deepseek_web" || options.aiMode === "web",
+        resolveConfig: options => {
+          calls.push({ ...options });
+          throw new Error("route capture");
+        },
+        ensureConfiguredModel: async config => config
+      };
+    };
+    const translationLLM = createCaptureLLM();
+    await assert.rejects(
+      () => new TranslationService({}, translationLLM).translate("doc", "source", { engine: "api", aiMode: "api" }),
+      /route capture/
+    );
+    assert.equal(translationLLM.calls[0].engine, "api", "stream translation must retain the API route while resolving its model");
+    assert.equal(translationLLM.calls[0].aiMode, "api");
+
+    const layoutLLM = createCaptureLLM();
+    await assert.rejects(
+      () => new LayoutTranslationService({}, layoutLLM).translate("doc", { engine: "api", aiMode: "api" }),
+      /route capture/
+    );
+    assert.equal(layoutLLM.calls[0].engine, "api", "layout translation must retain the API route while resolving its model");
+    assert.equal(layoutLLM.calls[0].aiMode, "api");
+
+    const controller = new context.LitMTrans.Controller({ rootURI: "chrome://litmtrans/" });
+    let diagnosticRoute = null;
+    controller.llm = {
+      resolveConfig: options => {
+        diagnosticRoute = { ...options };
+        return {
+          provider: "gemini",
+          baseURL: "https://generativelanguage.googleapis.com/v1beta",
+          model: "gemini-test",
+          apiKey: "test-key"
+        };
+      },
+      ensureConfiguredModel: async config => config
+    };
+    const originalRequestJSON = H.requestJSON;
+    H.requestJSON = async () => { throw new Error("offline diagnostic"); };
+    try {
+      await controller.runGeminiTransportProbe();
+    }
+    finally {
+      H.requestJSON = originalRequestJSON;
+    }
+    assert.equal(diagnosticRoute.engine, "api", "API diagnostics must not inherit the global web default");
+    assert.equal(diagnosticRoute.aiMode, "api");
+  }
+  finally {
+    restorePreferences();
+  }
+}
+
+async function testChatImageRoutePropagation() {
+  let imageOptions = null;
+  const llm = {
+    getSettings: () => ({
+      provider: "oneapi",
+      model: "gpt-image-test",
+      chatImageSize: "1024x1024",
+      chatImageQuality: "high",
+      chatImageFormat: "png"
+    }),
+    generateImage: async (_prompt, options) => {
+      imageOptions = { ...options };
+      return { text: "图片已生成", images: [] };
+    }
+  };
+  const chat = new ChatService(new MemoryStorage(), llm, null);
+  chat.historyMessagesForAPI = async () => [{ role: "user", content: "画一张图" }];
+  chat.imageInputsForTurn = async () => ({ images: [], label: "" });
+  chat.persistGeneratedImages = async () => [];
+  chat.saveSession = async (_documentID, session) => session;
+  await chat.generateImageReply(
+    "doc",
+    { id: "document-chat", messages: [{ id: "user-1", role: "user", content: "画一张图" }] },
+    0,
+    { engine: "api", aiMode: "api" }
+  );
+  assert.equal(imageOptions.engine, "api", "image generation must retain the explicit API engine");
+  assert.equal(imageOptions.aiMode, "api", "image generation must retain the explicit API mode");
 }
 
 async function testHTTPStreaming() {
@@ -407,9 +574,13 @@ async function testGeminiQuotaCooldownUsesRetryAfter() {
     if (calls === 1) throw new H.HTTPError("HTTP 429: RESOURCE_EXHAUSTED", 429, "", 2500);
     return { text: "恢复成功", reasoning: "", usage: null };
   };
+  const previousChatEngine = prefValues.get("extensions.litmtrans.chatEngine");
+  prefValues.set("extensions.litmtrans.chatEngine", "api");
   const result = await llm.complete([], {
     onRateLimitWait: event => notices.push(event)
   });
+  if (previousChatEngine === undefined) prefValues.delete("extensions.litmtrans.chatEngine");
+  else prefValues.set("extensions.litmtrans.chatEngine", previousChatEngine);
   assert.equal(result.text, "恢复成功");
   assert.equal(calls, 2);
   assert.deepEqual(waits, [2500], "Gemini retries must respect Retry-After instead of imposing a proactive RPM limit");
@@ -437,6 +608,8 @@ async function testDeepSeekGlobalConcurrencyLimit() {
     active--;
     return { text: "ok", reasoning: "", usage: null };
   };
+  const previousChatEngine = prefValues.get("extensions.litmtrans.chatEngine");
+  prefValues.set("extensions.litmtrans.chatEngine", "api");
   try {
     const requestCount = LLMInternals.DEEPSEEK_CONCURRENCY_LIMIT + 5;
     const results = await Promise.all(
@@ -448,6 +621,8 @@ async function testDeepSeekGlobalConcurrencyLimit() {
   }
   finally {
     H.streamOpenAI = originalStreamOpenAI;
+    if (previousChatEngine === undefined) prefValues.delete("extensions.litmtrans.chatEngine");
+    else prefValues.set("extensions.litmtrans.chatEngine", previousChatEngine);
   }
 }
 
@@ -518,6 +693,7 @@ async function testImageGenerationRequest() {
   };
   try {
     const result = await llm.generateImage("draw a figure", {
+      engine: "api", provider: "oneapi", baseURL: "https://gateway.invalid/v1", model: "gpt-image-test", apiKey: "test-key",
       imageSize: "1024x1024", imageQuality: "high", imageFormat: "png"
     });
     assert.equal(request.method, "POST");
@@ -656,6 +832,8 @@ function testOneAPIRequestHeadersKeepCacheSessionStable() {
     testCacheFriendlyChatMessageOrdering,
     testReasoningRequestConstruction,
     testIndependentTranslationAndChatSettings,
+    testExplicitAPIRoutePropagation,
+    testChatImageRoutePropagation,
     testHTTPStreaming,
     testGeminiQuotaCooldownUsesRetryAfter,
     testDeepSeekGlobalConcurrencyLimit,

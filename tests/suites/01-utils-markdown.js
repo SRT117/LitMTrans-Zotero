@@ -36,6 +36,25 @@ async function testUtils() {
   prefValues.delete("extensions.litmtrans.provider");
   prefValues.delete("extensions.litmtrans.migration.legacyPreferencesV1");
 
+  // 旧版本默认 API 只迁移一次，更新后默认进入官方网页模式。
+  prefValues.set("extensions.litmtrans.chatEngine", "api");
+  U.migrateChatEngineWebDefault();
+  assert.equal(
+    prefValues.get("extensions.litmtrans.chatEngine"),
+    "deepseek_web",
+    "old chat engine default must migrate to DeepSeek web mode"
+  );
+  assert.equal(prefValues.get("extensions.litmtrans.migration.chatEngineWebDefaultV1"), true);
+  prefValues.set("extensions.litmtrans.chatEngine", "api");
+  U.migrateChatEngineWebDefault();
+  assert.equal(
+    prefValues.get("extensions.litmtrans.chatEngine"),
+    "api",
+    "a later explicit API choice must remain stable after the one-time migration"
+  );
+  prefValues.delete("extensions.litmtrans.chatEngine");
+  prefValues.delete("extensions.litmtrans.migration.chatEngineWebDefaultV1");
+
   // 老用户历史受污染的chatUsesTranslationModel修复测试
   prefValues.set("extensions.litmtrans.chatUsesTranslationModel", false);
   prefValues.set("extensions.litmtrans.translationProvider", "gemini");

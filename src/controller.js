@@ -3,6 +3,7 @@
 
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
+  const DEFAULT_CHAT_ENGINE = LitMTrans.Constants?.DEFAULT_CHAT_ENGINE || "deepseek_web";
   const CAJ_CACHE_VERSION = 5;
   const DIAGRAM_CACHE_TASK_TYPES = new Set(["key_points", "paper_mindmap", "paper_logic_flow"]);
   const DIAGRAM_CACHE_MAX_CHARS = 2 * 1024 * 1024;
@@ -1594,7 +1595,7 @@
 
     async runGeminiTransportProbe() {
       const config = await this.llm.ensureConfiguredModel(
-        this.llm.resolveConfig({ purpose: "chat" })
+        this.llm.resolveConfig({ purpose: "chat", engine: "api", aiMode: "api" })
       );
       if (String(config.provider || "") !== "gemini" || !config.apiKey) {
       throw new Error("Gemini传输检查需要先配置Gemini对话模型和API密钥");
@@ -1762,7 +1763,7 @@
         ]
       }];
       const config = await this.llm.ensureConfiguredModel(
-        this.llm.resolveConfig({ purpose: "chat" })
+        this.llm.resolveConfig({ purpose: "chat", engine: "api", aiMode: "api" })
       );
       if (!config.apiKey) throw new Error("隔离测试 profile 尚未配置聊天API密钥");
       const request = this.diagnosticPayloadSummary(config, messages);
@@ -1772,6 +1773,8 @@
       const startedAt = Date.now();
       const response = await this.llm.complete(messages, {
         purpose: "chat",
+        engine: "api",
+        aiMode: "api",
         stream: false,
         temperature: 0,
         timeout: 90000
@@ -1826,7 +1829,7 @@
       }
       const messages = [{ role: "user", content }];
       const config = await this.llm.ensureConfiguredModel(
-        this.llm.resolveConfig({ purpose: "chat" })
+        this.llm.resolveConfig({ purpose: "chat", engine: "api", aiMode: "api" })
       );
       if (!config.apiKey) throw new Error("隔离测试 profile 尚未配置聊天API密钥");
       const request = this.diagnosticPayloadSummary(config, messages);
@@ -1838,6 +1841,8 @@
       let reasoningDeltaCount = 0;
       const response = await this.llm.complete(messages, {
         purpose: "chat",
+        engine: "api",
+        aiMode: "api",
         stream,
         temperature: 0,
         timeout: 120000,
@@ -2018,6 +2023,8 @@
         if (requestedProviders.size && !requestedProviders.has(profile.provider)) continue;
         const base = {
           purpose: "chat",
+          engine: "api",
+          aiMode: "api",
           provider: profile.provider,
           baseURL: profile.baseURL,
           model: profile.model,
@@ -2222,8 +2229,8 @@
         if (itemsTree && !state.onDblClick) {
           const onDblClick = async (event) => {
             try {
-              // 默认值设为 "default"：不拦截，完全尊重原生 Zotero 和其他已安装的 CAJ 插件
-              const action = U.getPref("cajDoubleClickAction", "default");
+              // 未配置时每次询问；已有用户选择仍由首选项中的值决定。
+              const action = U.getPref("cajDoubleClickAction", "ask");
               if (action === "default" || action === "external") return;
               const selected = win.ZoteroPane?.getSelectedItems?.() || [];
               if (selected.length !== 1 || event.button !== 0) return;
@@ -2379,6 +2386,10 @@
         if (item.isAttachment?.()) {
           const fn = item.attachmentFilename || item.getFilePath?.() || "";
           if (LitMTrans.CAJConverter?.isCAJExtension(fn)) return item;
+          const title = String(item.getField?.("title") || "");
+          if (!title.includes("（LitMTrans）")) return null;
+          item = item.parentID ? Zotero.Items.get(item.parentID) : null;
+          if (!item) return null;
         }
         const ids = item.getAttachments?.() || [];
         for (const id of ids) {
@@ -2391,6 +2402,33 @@
         return null;
       }
       catch (_) { return null; }
+    }
+
+    async findCAJSourceAttachmentForGeneratedPDF(item) {
+      if (!item?.isAttachment?.()
+        || String(item.attachmentContentType || "").toLowerCase() !== "application/pdf") return null;
+      const attachmentID = Number(item.id || 0);
+      if (!attachmentID) return null;
+      try {
+        const parent = item.parentID ? Zotero.Items.get(item.parentID) : null;
+        if (parent && !this.getCAJAttachment(parent)) return null;
+        for (const directory of await this.storage.list(this.storage.documentsRoot)) {
+          const sourceMeta = await this.storage.readJSON(
+            PathUtils.join(directory, "caj-source", "source.meta.json"),
+            null
+          );
+          if (Number(sourceMeta?.generatedAttachmentID || 0) !== attachmentID
+            && Number(sourceMeta?.exportAttachmentID || 0) !== attachmentID) continue;
+          const documentID = PathUtils.filename(directory);
+          const source = this.storage.resolveDocumentItem(
+            documentID,
+            await this.storage.getDocumentMeta(documentID)
+          );
+          if (source && this.hasCAJAttachment(source)) return source;
+        }
+      }
+      catch (_) {}
+      return null;
     }
 
     async createCAJPreview(context, frame) {
@@ -3266,8 +3304,7 @@
       return [
         "【LitMTrans 运行环境与诊断信息】",
         `- 插件版本: v${pluginVersion}`,
-        `- Zotero版本: ${zoteroVersion} (${os} ${arch})`,
-        `- 导出时间: ${new Date().toLocaleString()}`
+        `- Zotero版本: ${zoteroVersion} (${os} ${arch})`
       ].join("\n");
     }
 
@@ -4187,7 +4224,7 @@
         }
       } catch (_) {}
       try {
-        return U.getPref("chatEngine", "api") === "deepseek_web";
+        return U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web";
       } catch (_) {
         return false;
       }
@@ -4267,7 +4304,12 @@
         : itemOrID;
       // 选中文献条目时优先使用 CAJ 子附件。Zotero 的 getBestAttachment()
       // 可能在同一条目同时存在 PDF 和 CAJ 时返回 PDF，导致 CAJ 入口被绕过。
-      const attachment = this.getCAJAttachment(rawItem) || await this.resolveAttachment(rawItem);
+      const cajAttachment = this.getCAJAttachment(rawItem);
+      let attachment = cajAttachment || await this.resolveAttachment(rawItem);
+      if (!cajAttachment) {
+        const sourceAttachment = await this.findCAJSourceAttachmentForGeneratedPDF(attachment);
+        if (sourceAttachment) attachment = sourceAttachment;
+      }
       const mainWindow = Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
       const win = mainWindow?.Zotero_Tabs?.add
         ? mainWindow
@@ -4370,7 +4412,7 @@
 
       const documentID = `${attachment.libraryID}-${attachment.key}`;
       const itemTitle = String(parentItem?.getField("title") || attachment.getField("title") || "");
-      const prefChatEngine = U.getPref("chatEngine", "api");
+      const prefChatEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE);
       const runtime = {
         tabID,
         attachmentID: attachment.id,
@@ -5486,7 +5528,7 @@
         case "chat-send":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const prefEngine = U.getPref("chatEngine", "api") === "deepseek_web" ? "deepseek_web" : "api";
+            const prefEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web" ? "deepseek_web" : "api";
             const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
               ? "deepseek_web"
               : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
@@ -5513,7 +5555,7 @@
         case "chat-resend":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const prefEngine = U.getPref("chatEngine", "api") === "deepseek_web" ? "deepseek_web" : "api";
+            const prefEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web" ? "deepseek_web" : "api";
             const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
               ? "deepseek_web"
               : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
@@ -5537,7 +5579,7 @@
           const message = session.messages.find(row => row.id === payload.messageID);
           if (message?.role === "user") {
             return this.withOperation(runtime, "chat", async (signal, emit) => {
-              const prefEngine = U.getPref("chatEngine", "api") === "deepseek_web" ? "deepseek_web" : "api";
+              const prefEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web" ? "deepseek_web" : "api";
               const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
                 ? "deepseek_web"
                 : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
@@ -5811,7 +5853,7 @@
         chatThinkingMode: chat.thinkingMode,
         chatReasoningEffort: chat.reasoningEffort,
         chatUsesTranslationModel,
-        chatEngine: U.getPref("chatEngine", "api"),
+        chatEngine: U.getPref("chatEngine", DEFAULT_CHAT_ENGINE),
         translationShowReasoning: translation.showReasoning,
         chatShowReasoning: chat.showReasoning,
         translationReasoningPreferences: translation.reasoningPreferences,
@@ -5827,7 +5869,7 @@
         apiKey: this.secrets.getLLMKey(translation.provider),
         chatAPIKey: this.secrets.getLLMKey(chat.provider),
         mineruToken: this.secrets.getMinerUToken(),
-        cajDoubleClickAction: ["ask", "litmtrans"].includes(U.getPref("cajDoubleClickAction", "default")) ? U.getPref("cajDoubleClickAction", "default") : "default",
+        cajDoubleClickAction: ["ask", "litmtrans"].includes(U.getPref("cajDoubleClickAction", "ask")) ? U.getPref("cajDoubleClickAction", "ask") : "default",
         showNativeReaderAskAI: Boolean(U.getPref("showNativeReaderAskAI", true)),
         autoUpdate: Boolean(U.getPref("autoUpdate", true)),
         availableUpdate: this.availableUpdate || null,

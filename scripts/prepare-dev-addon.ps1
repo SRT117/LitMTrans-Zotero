@@ -14,16 +14,20 @@ $manifestPath = Join-Path $stage "manifest.json"
 
 if (-not $NoSync) {
     $portedCore = Join-Path $projectRoot "src\ported-core.js"
-    if (-not (Test-Path -LiteralPath $portedCore -PathType Leaf)) {
-        $localTsc = Join-Path $projectRoot "node_modules\typescript\bin\tsc"
-        if (Test-Path -LiteralPath $localTsc -PathType Leaf) {
-            & node $localTsc -p (Join-Path $projectRoot "tsconfig.core.json")
-        }
+    $localTsc = Join-Path $projectRoot "node_modules\typescript\bin\tsc"
+    if (-not (Test-Path -LiteralPath $localTsc -PathType Leaf)) {
+        throw "Cannot stage the development addon because TypeScript is missing: $localTsc"
+    }
+    & node $localTsc -p (Join-Path $projectRoot "tsconfig.core.json")
+    if ($LASTEXITCODE -ne 0) {
+        throw "TypeScript compilation failed; development addon staging was aborted."
     }
 
-    if (-not (Test-Path -LiteralPath $stage)) {
-        New-Item -ItemType Directory -Path $stage -Force | Out-Null
+    # 先清掉整个 staging，避免源码已删除的文件残留在开发安装包中。
+    if (Test-Path -LiteralPath $stage) {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop
     }
+    New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
     foreach ($entry in @("manifest.json", "src", "assets", "locale", "README.md", "CHANGELOG.md", "PRIVACY.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
         $srcPath = Join-Path $projectRoot $entry
