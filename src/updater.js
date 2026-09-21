@@ -5,9 +5,11 @@
 
   const ADDON_ID = "litmtrans@srt117.github.io";
   const REPO = "SRT117/LitMTrans-Zotero";
+  const GITEE_UPDATE_URL = `https://gitee.com/${REPO}/raw/main/update.json`;
   const OFFICIAL_UPDATE_URL = `https://github.com/${REPO}/releases/latest/download/update.json`;
 
   const UPDATE_MANIFEST_SOURCES = [
+    GITEE_UPDATE_URL,
     OFFICIAL_UPDATE_URL,
     `https://ghproxy.net/${OFFICIAL_UPDATE_URL}`,
     `https://mirror.ghproxy.com/${OFFICIAL_UPDATE_URL}`
@@ -16,14 +18,27 @@
   function getDownloadMirrors(officialUpdateLink) {
     const rawUrl = String(officialUpdateLink || "").trim();
     if (!rawUrl) return [];
-    if (!rawUrl.startsWith("https://github.com/")) {
-      return [rawUrl];
-    }
-    return [
-      `https://ghproxy.net/${rawUrl}`,
-      `https://mirror.ghproxy.com/${rawUrl}`,
-      rawUrl
+
+    const githubMirrors = githubUrl => [
+      `https://ghproxy.net/${githubUrl}`,
+      `https://mirror.ghproxy.com/${githubUrl}`,
+      githubUrl
     ];
+
+    if (rawUrl.startsWith("https://github.com/")) {
+      return githubMirrors(rawUrl);
+    }
+
+    const giteeReleasePrefix = `https://gitee.com/${REPO}/releases/download/`;
+    if (rawUrl.startsWith(giteeReleasePrefix)) {
+      const githubUrl = rawUrl.replace(
+        giteeReleasePrefix,
+        `https://github.com/${REPO}/releases/download/`
+      );
+      return [rawUrl, ...githubMirrors(githubUrl)];
+    }
+
+    return [rawUrl];
   }
 
   function getAddonManager() {
@@ -274,7 +289,7 @@
               : (data?.notice ? [data.notice] : (data?.announcement ? [data.announcement] : []));
             const announcements = normalizeAnnouncements(rawAnnouncements);
 
-            log(`Fastest manifest resolved from ${url}, latest version: ${updateItem.version}, announcements: ${announcements.length}`);
+            log(`Manifest resolved from ${url}, version: ${updateItem.version}, announcements: ${announcements.length}`);
             return {
               version: updateItem.version.trim(),
               updateLink: String(updateItem.update_link || "").trim(),
@@ -290,33 +305,30 @@
         }
       };
 
-      return new Promise((resolve, reject) => {
-        let settledCount = 0;
-        let hasResolved = false;
-        const errors = [];
+      const settled = await Promise.allSettled(
+        UPDATE_MANIFEST_SOURCES.map((url, idx) => fetchOne(url, idx))
+      );
+      const successful = [];
+      const errors = [];
 
-        UPDATE_MANIFEST_SOURCES.forEach((url, idx) => {
-          fetchOne(url, idx).then(
-            result => {
-              if (hasResolved) return;
-              hasResolved = true;
-              controllers.forEach((c, i) => {
-                if (i !== idx) {
-                  try { c?.abort("其他通道已命中更新元数据"); } catch (_) {}
-                }
-              });
-              resolve(result);
-            },
-            err => {
-              errors.push(`${url}: ${err.message || String(err)}`);
-              settledCount++;
-              if (settledCount === UPDATE_MANIFEST_SOURCES.length && !hasResolved) {
-                reject(new Error(`无法连接更新元数据服务器: 所有节点均不可达（${errors.join("; ")}）`));
-              }
-            }
-          );
-        });
+      settled.forEach((item, idx) => {
+        if (item.status === "fulfilled") {
+          successful.push(item.value);
+        }
+        else {
+          errors.push(`${UPDATE_MANIFEST_SOURCES[idx]}: ${item.reason?.message || String(item.reason)}`);
+        }
       });
+
+      if (!successful.length) {
+        throw new Error(`无法连接更新元数据服务器: 所有节点均不可达（${errors.join("; ")}）`);
+      }
+
+      // Multiple mirrors can briefly disagree while a release is propagating.
+      // Prefer the newest valid manifest instead of whichever endpoint responds first.
+      return successful.reduce((best, candidate) => (
+        compareVersions(candidate.version, best.version) > 0 ? candidate : best
+      ));
     },
 
     async checkUpdate(currentVersion, onProgress = null) {

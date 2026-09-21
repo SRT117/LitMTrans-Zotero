@@ -50,3 +50,4 @@ pref("extensions.litmtrans.requestAudit", false);
 pref("extensions.litmtrans.keyPointsPrompt", "");
 pref("extensions.litmtrans.autoUpdate", true);
 pref("extensions.litmtrans.lastUpdateCheckTime", "0");
+pref("extensions.litmtrans.startupNoticeVersion", "");

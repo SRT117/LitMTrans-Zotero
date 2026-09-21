@@ -113,6 +113,7 @@ async function startup({ id, version, rootURI }) {
     // lossless page-copy split locally; no source document is sent elsewhere.
     "assets/vendor/pdf-lib/pdf-lib.min.js",
     "src/ported-core.js",
+    "src/release-notes.js",
     "src/utils.js",
     "src/caj-converter.js",
     "src/storage.js",

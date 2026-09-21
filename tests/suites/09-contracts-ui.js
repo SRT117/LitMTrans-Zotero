@@ -282,13 +282,64 @@ function testDirectExternalLinkOpening() {
 
   assert(workbenchCode.includes("https://open.bigmodel.cn/apikey/platform"), "workbench must include Z.ai key platform link");
   assert(preferencesCode.includes("https://open.bigmodel.cn/apikey/platform"), "preferences must include Z.ai key platform link");
-  assert(workbenchCode.includes("（外网google，国内自动切换bing，bing很慢）"), "workbench must include free machine translation label hint");
-  assert(preferencesCode.includes("（外网google，国内自动切换bing，bing很慢）"), "preferences must include free machine translation label hint");
+  assert(workbenchCode.includes("（外网google，国内自动切换bing，bing较慢）"), "workbench must include free machine translation label hint");
+  assert(preferencesCode.includes("（外网google，国内自动切换bing，bing较慢）"), "preferences must include free machine translation label hint");
   assert(workbenchCode.includes("[baseURL, model, key, refresh, thinkingMode, reasoningEffort]"), "workbench must disable reasoning controls on web machine translation");
   assert(preferencesCode.includes("[baseURL, model, key, refresh, thinkingMode, reasoningEffort]"), "preferences must disable reasoning controls on web machine translation");
 
   assert.throws(() => controller.openExternalURL("javascript:alert(1)"), /只允许打开 HTTP\(S\) 官网地址/);
   assert.throws(() => controller.openExternalURL(""), /官网地址无效/);
+}
+
+function testAPIProviderDropdownsExcludeWebDriver() {
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const preferences = fs.readFileSync(path.join(root, "src", "preferences.js"), "utf8");
+
+  assert(controller.includes("webDriver: spec.webDriver === true"), "settings must identify web-driver providers separately from API providers");
+  assert(workbench.includes("if (provider.webDriver === true) continue;"), "workbench API provider lists must exclude web-driver providers");
+  assert(workbench.includes("spec.webDriver !== true && spec.supportsChat !== false"), "embedded chat provider list must exclude web-driver providers");
+  assert(workbench.includes("provider.webDriver !== true"), "provider cards must exclude web-driver providers");
+  assert(preferences.includes("spec.webDriver !== true && (!chat || spec.supportsChat !== false)"), "Zotero Preferences provider lists must exclude web-driver providers");
+}
+
+async function testStartupNoticeContracts() {
+  const bootstrap = fs.readFileSync(path.join(root, "src", "bootstrap.js"), "utf8");
+  const controllerSource = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const workbenchXHTML = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  const prefs = fs.readFileSync(path.join(root, "src", "prefs.js"), "utf8");
+
+  assert(bootstrap.includes('"src/release-notes.js"'), "startup content must be bundled for offline use");
+  assert(controllerSource.includes('case "get-startup-notice":'), "controller must expose the startup notice snapshot");
+  assert(controllerSource.includes('case "mark-startup-notice-seen":'), "controller must acknowledge startup notices only after the UI displays them");
+  assert(workbench.includes('hostCall("get-startup-notice")'), "workbench must request the startup notice before rendering the document");
+  assert(workbench.includes('hostCall("mark-startup-notice-seen"'), "workbench must acknowledge a startup notice after showModal succeeds");
+  assert(workbench.includes("startupNoticeGateClosed"), "startup notices must wait before online alert modals can open");
+  assert(workbenchXHTML.includes('id="welcome-guide-dialog"') && workbenchXHTML.includes('id="release-notes-dialog"'), "workbench must expose welcome and release-note dialogs");
+  assert(prefs.includes('pref("extensions.litmtrans.startupNoticeVersion", "");'), "startup notice version must persist in the profile");
+
+  const snapshot = new Map(prefValues);
+  try {
+    prefValues.clear();
+    const controller = context.LitMTrans.createController({ id: "litmtrans@local", version: "2.0.0", rootURI: "file:///plugin/" });
+    const welcome = await controller.getStartupNotice();
+    assert.equal(welcome.type, "welcome", "a clean profile must receive the welcome guide");
+    assert.notEqual(prefValues.get("extensions.litmtrans.startupNoticeVersion"), "2.0.0", "reading the notice must not mark it as displayed");
+    assert.equal(controller.markStartupNoticeSeen("2.0.0"), true);
+    assert.equal(prefValues.get("extensions.litmtrans.startupNoticeVersion"), "2.0.0");
+    assert.equal(await controller.getStartupNotice(), null, "the same version must not reopen after the UI acknowledges it");
+
+    prefValues.clear();
+    prefValues.set("extensions.litmtrans.promptLibraryInitialized", true);
+    const update = await controller.getStartupNotice();
+    assert.equal(update.type, "update", "an existing profile must receive release notes");
+    assert(update.entries.some(entry => String(entry).includes("首次使用指南")), "release notes must come from the bundled version entry");
+  }
+  finally {
+    prefValues.clear();
+    for (const [key, value] of snapshot) prefValues.set(key, value);
+  }
 }
 
 function testPDFPreviewLifecycle() {
@@ -725,6 +776,8 @@ async function testAnnouncementSystemContracts() {
     testWorkbenchStreamScrollUsesExclusiveImageTier,
     testConciseStructuredOperationMessages,
     testDirectExternalLinkOpening,
+    testAPIProviderDropdownsExcludeWebDriver,
+    testStartupNoticeContracts,
     testPDFPreviewLifecycle,
     testPDFExportUsesCompletePaneSources,
     testDeepSeekWebSidebarIntegration,

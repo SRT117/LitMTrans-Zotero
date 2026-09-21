@@ -81,7 +81,19 @@ https://github.com/SRT117/LitMTrans-Zotero/releases/latest/download/update.json
 
 再下载 XPI，在隔离的 Zotero profile 中完成一次安装、重启和核心功能检查。自动更新的端到端升级链路可在本地直接运行 `npm run dev:upgrade`（或按快捷键 `Ctrl+Shift+O`）进行全流程实测验证。
 
-## 4. 申请加入中文插件市场
+## 4. 同步 Gitee 国内更新渠道
+
+Gitee 公共仓库为 `https://gitee.com/SRT117/LitMTrans-Zotero`。在 GitHub 仓库 Settings → Secrets and variables → Actions 中添加 Secret：`GITEE_ACCESS_TOKEN`。
+
+正式发布 GitHub Release 后，`Publish Gitee update channel` 工作流会自动同步源码和 Tag、创建 Gitee Release、上传 XPI，并更新：
+
+```text
+https://gitee.com/SRT117/LitMTrans-Zotero/raw/main/update.json
+```
+
+发布后确认该地址返回 JSON，且 Gitee Release 中的 XPI 可以在未登录状态下载。插件会优先尝试 Gitee，GitHub 仍作为备用渠道。
+
+## 5. 申请加入中文插件市场
 
 `zotero-chinese/zotero-plugins` 已暂停接收新插件。新插件应提交到：
 
@@ -110,15 +122,16 @@ https://github.com/syt2/zotero-addons-scraper
 
 市场会读取公开仓库及 GitHub Release。提交 PR 前最好确认仓库为 Public、正式 Release 已发布、XPI 能公开下载，且 `manifest.json` 中的主页和更新地址有效；如果有一项还没准备好，也可以先开 PR 讨论。
 
-## 5. 后续发版
+## 6. 后续发版
 
 每次发布都要：
 
 1. 同步修改 `manifest.json`、`package.json` 和 `package-lock.json` 的版本号。
 2. 更新 `CHANGELOG.md`。
-3. 运行 `npm ci`、`npm run validate` 和 `npm run build:windows`。
-4. 在隔离 Zotero profile 中完成必要的手工测试。
-5. 提交并推送代码，再推送与版本一致的标签，例如 `v2.0.1`。
-6. 检查 GitHub Actions 创建的 Draft Release，确认后再正式发布。
+3. 在 `src/release-notes.js` 中更新对应版本的工作台更新条目，确保离线也能展示本次变化。
+4. 运行 `npm ci`、`npm run validate` 和 `npm run build:windows`。
+5. 在隔离 Zotero profile 中完成必要的手工测试。
+6. 提交并推送代码，再推送与版本一致的标签，例如 `v2.0.1`。
+7. 检查 GitHub Actions 创建的 Draft Release，确认后再正式发布；发布后等待 Gitee 同步工作流完成。
 
 保留旧 Release 和旧 XPI，不要覆盖已经发布的文件。发布后确认 `releases/latest/download/update.json` 指向最新正式版本。

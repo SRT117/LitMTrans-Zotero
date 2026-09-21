@@ -1,0 +1,99 @@
+name: Publish Gitee update channel
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub Release tag to mirror
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GITEE_REPOSITORY: SRT117/LitMTrans-Zotero
+      GITEE_API_BASE: https://api.gitee.com/api/v5
+      GITEE_ACCESS_TOKEN: ${{ secrets.GITEE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check Gitee token
+        run: test -n "$GITEE_ACCESS_TOKEN"
+
+      - name: Download published GitHub assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/gitee
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern '*.xpi' \
+            --pattern 'update.json' \
+            --dir dist/gitee
+          test "$(find dist/gitee -maxdepth 1 -name '*.xpi' | wc -l)" -eq 1
+
+      - name: Generate Gitee update manifest
+        run: |
+          XPI="$(find dist/gitee -maxdepth 1 -name '*.xpi' -print -quit)"
+          ANNOUNCEMENTS_ARGS=()
+          if [ -f docs/announcements.json ]; then
+            ANNOUNCEMENTS_ARGS+=(--announcements docs/announcements.json)
+          fi
+          node scripts/create-update-manifest.mjs \
+            --repository "$GITEE_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --xpi "$XPI" \
+            --out dist/gitee/update.json \
+            --download-base "https://gitee.com/$GITEE_REPOSITORY/releases/download" \
+            "${ANNOUNCEMENTS_ARGS[@]}"
+
+      - name: Sync source and tag to Gitee
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add gitee "https://gitee.com/$GITEE_REPOSITORY.git"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://gitee.com/.extraheader"
+          GITEE_OWNER="${GITEE_REPOSITORY%%/*}"
+          GITEE_BASIC="$(printf '%s:%s' "$GITEE_OWNER" "$GITEE_ACCESS_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0="Authorization: Basic $GITEE_BASIC"
+          if git ls-remote --exit-code --heads gitee main >/dev/null 2>&1; then
+            git fetch gitee main
+            git checkout -B gitee-sync FETCH_HEAD
+            git merge --no-edit --no-ff "$RELEASE_TAG"
+          else
+            git checkout -B gitee-sync "$RELEASE_TAG"
+          fi
+          git push gitee gitee-sync:main
+          if ! git ls-remote --exit-code --tags gitee "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git push gitee "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          fi
+
+      - name: Create Gitee Release and publish update manifest
+        run: |
+          XPI="$(find dist/gitee -maxdepth 1 -name '*.xpi' -print -quit)"
+          node scripts/publish-gitee-release.mjs \
+            --repository "$GITEE_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --xpi "$XPI" \
+            --update-manifest dist/gitee/update.json
+
+      - name: Verify public Gitee update manifest
+        run: |
+          curl --fail --silent --show-error \
+            "https://gitee.com/$GITEE_REPOSITORY/raw/main/update.json" \
+            | node -e 'let d=""; process.stdin.on("data", c => d += c); process.stdin.on("end", () => { const j = JSON.parse(d); if (!j?.addons) process.exit(1); })'

@@ -231,7 +231,9 @@
   <dialog id="manual-translation-dialog" class="modal manual-translation-modal">
     <form method="dialog" class="modal-card manual-translation-card">
       <header class="modal-header">
-        <div><h2>手动翻译</h2><p>将翻译命令粘贴给任意AI，将回答复制到右侧窗口渲染文献。</p></div>
+        <div class="manual-translation-heading">
+          <div><h2>手动翻译</h2><p>将翻译命令粘贴给任意AI，将回答复制到右侧窗口渲染文献。<button id="open-ai-websites-button" class="manual-website-link" type="button">点击访问各AI官网</button></p></div>
+        </div>
         <button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button>
       </header>
       <div class="manual-translation-body">
@@ -251,6 +253,63 @@
     </form>
   </dialog>
 
+  <dialog id="web-mode-info-dialog" class="modal web-mode-info-modal" aria-labelledby="web-mode-info-title">
+    <div class="modal-card compact info-card">
+      <header class="modal-header">
+        <div><h2 id="web-mode-info-title">网页模式使用说明</h2></div>
+        <button id="close-web-mode-info-button" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div class="web-mode-info-body">
+        <p>官方网页对话是免费的，但是请不要连续高频率高密度地发起巨量请求，否则有账号风控的可能性，正常使用即可。如果有非常大量的并发翻译请求，请切换到API模式。</p>
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button id="dismiss-web-mode-info-button" class="button" type="button">关闭</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="ai-websites-dialog" class="modal ai-websites-modal" aria-labelledby="ai-websites-title">
+    <div class="modal-card websites-card">
+      <header class="modal-header">
+        <div><h2 id="ai-websites-title">各AI官网</h2><p>选择官网后可直接打开对应网页。</p></div>
+        <button id="close-ai-websites-button" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div class="ai-websites-dialog-body">
+        <section class="ai-websites-section" aria-labelledby="ai-websites-domestic-title">
+          <h3 id="ai-websites-domestic-title">CN 国内服务</h3>
+          <table>
+            <thead><tr><th scope="col">AI产品</th><th scope="col">官网链接</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">DeepSeek（深度求索）</th><td><a href="https://www.deepseek.com" data-external-url="https://www.deepseek.com">https://www.deepseek.com</a></td></tr>
+              <tr><th scope="row">Kimi（月之暗面）</th><td><a href="https://kimi.com" data-external-url="https://kimi.com">https://kimi.com</a></td></tr>
+              <tr><th scope="row">通义千问（Qwen）</th><td><a href="https://tongyi.com" data-external-url="https://tongyi.com">https://tongyi.com</a></td></tr>
+              <tr><th scope="row">Qwen Studio（国际千问）</th><td><a href="https://chat.qwen.ai" data-external-url="https://chat.qwen.ai">https://chat.qwen.ai</a></td></tr>
+              <tr><th scope="row">豆包（字节跳动）</th><td><a href="https://www.doubao.com" data-external-url="https://www.doubao.com">https://www.doubao.com</a></td></tr>
+              <tr><th scope="row">文心一言（百度）</th><td><a href="https://yiyan.baidu.com" data-external-url="https://yiyan.baidu.com">https://yiyan.baidu.com</a></td></tr>
+              <tr><th scope="row">腾讯元宝（腾讯）</th><td><a href="https://yuanbao.tencent.com" data-external-url="https://yuanbao.tencent.com">https://yuanbao.tencent.com</a></td></tr>
+              <tr><th scope="row">智谱清言（智谱华章）</th><td><a href="https://chatglm.cn" data-external-url="https://chatglm.cn">https://chatglm.cn</a></td></tr>
+              <tr><th scope="row">Z.ai（国际智谱）</th><td><a href="https://chat.z.ai" data-external-url="https://chat.z.ai">https://chat.z.ai</a></td></tr>
+              <tr><th scope="row">讯飞星火（科大讯飞）</th><td><a href="https://xinghuo.xfyun.cn" data-external-url="https://xinghuo.xfyun.cn">https://xinghuo.xfyun.cn</a></td></tr>
+            </tbody>
+          </table>
+        </section>
+        <section class="ai-websites-section" aria-labelledby="ai-websites-international-title">
+          <h3 id="ai-websites-international-title">🌐 国际服务</h3>
+          <table>
+            <thead><tr><th scope="col">AI产品</th><th scope="col">官网链接</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">ChatGPT（OpenAI）</th><td><a href="https://chatgpt.com" data-external-url="https://chatgpt.com">https://chatgpt.com</a></td></tr>
+              <tr><th scope="row">Claude（Anthropic）</th><td><a href="https://claude.ai" data-external-url="https://claude.ai">https://claude.ai</a></td></tr>
+              <tr><th scope="row">Gemini（Google）</th><td><a href="https://gemini.google.com" data-external-url="https://gemini.google.com">https://gemini.google.com</a></td></tr>
+              <tr><th scope="row">Perplexity</th><td><a href="https://www.perplexity.ai" data-external-url="https://www.perplexity.ai">https://www.perplexity.ai</a></td></tr>
+              <tr><th scope="row">Grok（xAI）</th><td><a href="https://grok.com" data-external-url="https://grok.com">https://grok.com</a></td></tr>
+              <tr><th scope="row">Microsoft Copilot</th><td><a href="https://copilot.microsoft.com" data-external-url="https://copilot.microsoft.com">https://copilot.microsoft.com</a></td></tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button id="dismiss-ai-websites-button" class="button" type="button">关闭</button></footer>
+    </div>
+  </dialog>
+
   <dialog id="chat-parse-before-send-dialog" class="modal">
     <form method="dialog" class="modal-card">
       <header class="modal-header">
@@ -263,6 +322,16 @@
     </form>
   </dialog>
 
+  <dialog id="mineru-token-link-dialog" class="modal mineru-token-link-modal" aria-labelledby="mineru-token-link-dialog-title">
+    <form method="dialog" class="modal-card compact">
+      <header class="modal-header">
+        <div><h2 id="mineru-token-link-dialog-title">是否先查看创建指南？</h2></div>
+        <button id="close-mineru-token-link-dialog" class="icon-button" value="cancel" aria-label="关闭" title="关闭" type="submit">×</button>
+      </header>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button id="mineru-token-link-guide" class="button button-primary" type="button">是</button><button id="mineru-token-link-direct" class="button" type="button">直接访问创建官网</button></footer>
+    </form>
+  </dialog>
+
   <dialog id="mineru-token-dialog" class="modal mineru-token-modal">
     <form method="dialog" class="modal-card compact">
       <header class="modal-header">
@@ -271,7 +340,7 @@
       <div class="mineru-token-dialog-body">
         <label for="mineru-token-input">MinerU访问令牌</label>
         <input id="mineru-token-input" type="password" autocomplete="off" placeholder="请粘贴MinerU访问令牌" />
-        <p class="settings-note">还没有令牌？前往<a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token">MinerU令牌官网</a>获取。</p>
+        <p class="settings-note">还没有令牌？前往<a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">MinerU令牌官网</a>获取。</p>
         <p id="mineru-token-error" class="mineru-token-error" role="alert" hidden="hidden"></p>
       </div>
       <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="cancel" type="submit">稍后处理</button><button id="save-mineru-token-and-parse" class="button button-primary" type="button">保存并继续解析</button></footer>
@@ -330,7 +399,7 @@
           </div>
           <div class="mineru-settings-fields">
             <label>
-              <span class="mineru-token-label-line"><span>MinerU访问令牌</span><a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token">获取访问令牌（每天免费快速解析1000页，超量排队，但依然免费）</a></span>
+              <span class="mineru-token-label-line"><span>MinerU访问令牌</span><a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">获取访问令牌（官方免费）</a></span>
               <input id="setting-mineru-token" type="password" autocomplete="off" placeholder="未配置" />
             </label>
             <input id="setting-mineru-model" type="hidden" value="vlm" />
@@ -339,7 +408,9 @@
 
         <section class="settings-section translation-model-section settings-card-model">
           <h3 id="setting-model-heading">翻译模型设置</h3>
-          <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span><strong>使用DeepSeek官方网页模式</strong><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
+          <div class="web-mode-toggle-row">
+            <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" /> <span class="web-mode-copy"><span class="web-mode-title-line"><strong>使用DeepSeek官方网页模式</strong><button id="open-web-mode-info-button" class="settings-inline-link" type="button">使用说明</button></span><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
+          </div>
           <details id="setting-web-mode-advanced" class="web-mode-advanced" hidden="hidden">
             <summary>网页模式进阶配置</summary>
             <div class="web-mode-advanced-body">
@@ -554,6 +625,32 @@
         <button id="announcement-modal-dismiss-button" class="button" type="button">我知道了</button>
         <button id="announcement-modal-action-button" class="button button-primary" type="button">立即更新</button>
       </footer>
+    </div>
+  </dialog>
+
+  <dialog id="welcome-guide-dialog" class="modal startup-notice-modal" aria-labelledby="welcome-guide-title">
+    <div class="modal-card startup-notice-card">
+      <header class="modal-header">
+        <div><h2 id="welcome-guide-title">欢迎使用LitMTrans</h2><p>开始前了解两项必要配置</p></div>
+        <button id="welcome-guide-close" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div id="welcome-guide-body" class="startup-notice-body"></div>
+      <footer class="modal-footer">
+        <span class="modal-spacer"></span>
+        <button id="welcome-guide-settings" class="button" type="button">配置MinerU令牌</button>
+        <button id="welcome-guide-dismiss" class="button button-primary" type="button">知道了</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="release-notes-dialog" class="modal startup-notice-modal" aria-labelledby="release-notes-title">
+    <div class="modal-card startup-notice-card">
+      <header class="modal-header">
+        <div><h2 id="release-notes-title">本次更新</h2><p id="release-notes-subtitle"></p></div>
+        <button id="release-notes-close" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div id="release-notes-body" class="startup-notice-body"></div>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button id="release-notes-dismiss" class="button button-primary" type="button">知道了</button></footer>
     </div>
   </dialog>
 

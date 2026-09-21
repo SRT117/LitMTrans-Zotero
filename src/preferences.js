@@ -77,7 +77,7 @@ var LitMTransControllerPreferences = {
     if (!label) return;
     label.replaceChildren("服务商");
     if (this.isWebMachineTranslationProvider(provider) && !this.isEdgeLocalTranslationProvider(provider)) {
-      label.append("（外网google，国内自动切换bing，bing很慢）");
+      label.append("（外网google，国内自动切换bing，bing较慢）");
       return;
     }
     const providerLinks = {
@@ -182,7 +182,7 @@ var LitMTransControllerPreferences = {
   populateProviders(settings) {
     for (const [id, chat] of [["provider", false], ["chat-provider", true]]) {
       const select = this.$(id);
-      select.replaceChildren(...(settings.providers || []).filter(spec => !chat || spec.supportsChat !== false).map(spec => {
+      select.replaceChildren(...(settings.providers || []).filter(spec => spec.webDriver !== true && (!chat || spec.supportsChat !== false)).map(spec => {
         const option = this.option(spec.id, spec.name);
         option.dataset.baseURL = spec.defaultBaseURL || "";
         option.dataset.model = spec.defaultModel || "";
@@ -273,6 +273,34 @@ var LitMTransControllerPreferences = {
     document.querySelector(".litmtrans-pref-board")?.classList.toggle("litmtrans-shared-chat-model", shared);
     const formContainer = this.$("chat-form-container");
     if (formContainer) formContainer.hidden = Boolean(isWebEngine || shared);
+  },
+
+  openWebModeInfo() {
+    const overlay = this.$("web-mode-info");
+    if (!overlay) return;
+    overlay.hidden = false;
+    this.$("close-web-mode-info")?.focus();
+  },
+
+  closeWebModeInfo() {
+    const overlay = this.$("web-mode-info");
+    if (!overlay) return;
+    overlay.hidden = true;
+    this.$("chat-engine-web")?.focus();
+  },
+
+  openMineruTokenLinkInfo() {
+    const overlay = this.$("mineru-token-link-info");
+    if (!overlay) return;
+    overlay.hidden = false;
+    this.$("close-mineru-token-link-info")?.focus();
+  },
+
+  closeMineruTokenLinkInfo() {
+    const overlay = this.$("mineru-token-link-info");
+    if (!overlay) return;
+    overlay.hidden = true;
+    this.$("mineru-token")?.focus();
   },
 
   updateWebModeAdvancedControls(isWebEngine = Boolean(this.$("chat-engine-web")?.checked)) {
@@ -410,6 +438,11 @@ var LitMTransControllerPreferences = {
     document.addEventListener("click", event => {
       const link = event.target?.closest?.("a");
       if (!link) return;
+      if (link.dataset.mineruTokenLink === "true") {
+        event.preventDefault();
+        this.openMineruTokenLinkInfo();
+        return;
+      }
       const rawUrl = link.dataset.externalUrl || link.getAttribute("href") || link.href;
       if (!rawUrl || rawUrl.startsWith("#") || rawUrl.startsWith("javascript:")) return;
       let targetUrl = rawUrl;
@@ -444,6 +477,34 @@ var LitMTransControllerPreferences = {
     });
     this.$("chat-engine-web").addEventListener("change", () => {
       this.updateChatModelSectionVisibility();
+    });
+    this.$("open-web-mode-info")?.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openWebModeInfo();
+    });
+    this.$("close-web-mode-info")?.addEventListener("click", () => this.closeWebModeInfo());
+    this.$("dismiss-web-mode-info")?.addEventListener("click", () => this.closeWebModeInfo());
+    this.$("web-mode-info")?.addEventListener("click", event => {
+      if (event.target === this.$("web-mode-info")) this.closeWebModeInfo();
+    });
+    this.$("close-mineru-token-link-info")?.addEventListener("click", () => this.closeMineruTokenLinkInfo());
+    this.$("mineru-token-link-guide")?.addEventListener("click", () => {
+      this.closeMineruTokenLinkInfo();
+      this.$("open-token-guide")?.click();
+    });
+    this.$("mineru-token-link-direct")?.addEventListener("click", () => {
+      this.closeMineruTokenLinkInfo();
+      try { this.controller().openExternalURL("https://mineru.net/apiManage/token"); }
+      catch (error) { this.message(error.message || "无法打开MinerU创建官网", true); }
+    });
+    this.$("mineru-token-link-info")?.addEventListener("click", event => {
+      if (event.target === this.$("mineru-token-link-info")) this.closeMineruTokenLinkInfo();
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key !== "Escape") return;
+      if (!this.$("web-mode-info")?.hidden) this.closeWebModeInfo();
+      if (!this.$("mineru-token-link-info")?.hidden) this.closeMineruTokenLinkInfo();
     });
     this.$("web-input-mode-auto").addEventListener("change", () => this.updateWebModeAdvancedControls());
     this.$("web-input-mode-clipboard").addEventListener("change", () => this.updateWebModeAdvancedControls());

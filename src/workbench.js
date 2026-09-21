@@ -177,20 +177,22 @@
       "system-messages-button", "system-messages-badge", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
       "announcements-list", "mark-all-announcements-read-button",
       "announcement-modal", "announcement-modal-title", "close-announcement-modal", "announcement-modal-date", "announcement-modal-level", "announcement-modal-message", "announcement-modal-dismiss-button", "announcement-modal-action-button",
+      "welcome-guide-dialog", "welcome-guide-title", "welcome-guide-close", "welcome-guide-body", "welcome-guide-settings", "welcome-guide-dismiss",
+      "release-notes-dialog", "release-notes-title", "release-notes-subtitle", "release-notes-close", "release-notes-body", "release-notes-dismiss",
       "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
       "deepseek-web-container", "deepseek-web-frame",
       "chat-render-markdown", "selection-chip", "selection-text", "clear-selection-button", "chat-messages", "chat-empty", "chat-navigator-button", "chat-navigator-popup",
       "chat-form", "chat-input", "chat-session-select",
       "chat-document-preview", "chat-document-button", "remove-pending-documents-button", "chat-image-preview", "chat-image-input", "context-status", "chat-send-button",
       "chat-model-settings-dialog", "embedded-chat-provider", "embedded-provider-cards-button", "embedded-chat-base-url", "embedded-chat-model", "embedded-refresh-chat-models", "embedded-chat-api-key", "embedded-chat-thinking-mode", "embedded-chat-reasoning-effort", "embedded-chat-show-reasoning", "embedded-chat-render-markdown", "embedded-chat-api-key-state", "embedded-chat-image-group", "embedded-chat-image-note", "embedded-chat-image-size", "embedded-chat-image-quality", "embedded-chat-image-format", "save-embedded-chat-settings",
-      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "open-feedback-button", "setting-chat-engine-web", "setting-model-heading", "setting-web-mode-advanced", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-form-container", "setting-web-input-mode-auto", "setting-web-input-mode-clipboard", "setting-delete-web-translation-sessions", "setting-web-page-images-group", "setting-web-page-image-quality",
+      "settings-dialog", "settings-form", "settings-advanced", "open-token-guide-button", "open-feedback-button", "open-web-mode-info-button", "setting-chat-engine-web", "setting-model-heading", "setting-web-mode-advanced", "setting-model-form-container", "setting-provider", "setting-provider-label", "translation-provider-cards-button", "setting-base-url", "setting-model", "refresh-models-button", "setting-chat-uses-translation-model", "setting-chat-model-section", "setting-chat-form-container", "setting-web-input-mode-auto", "setting-web-input-mode-clipboard", "setting-delete-web-translation-sessions", "setting-web-page-images-group", "setting-web-page-image-quality",
       "setting-api-key", "setting-thinking-mode", "setting-reasoning-effort", "setting-deepseek-fast-layout-group", "setting-deepseek-fast-layout",
       "setting-chat-provider", "setting-chat-provider-label", "setting-chat-base-url", "setting-chat-model", "refresh-chat-models-button",
       "setting-chat-api-key", "setting-chat-thinking-mode", "setting-chat-reasoning-effort", "provider-cards-button",
       "setting-chat-image-group", "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
       "setting-mineru-token", "setting-mineru-model",
       "setting-target-language", "setting-target-language-picker", "setting-machine-source-language-group", "setting-machine-source-language", "setting-machine-source-language-picker", "setting-translation-mode",
-      "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation",
+      "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-link-dialog", "mineru-token-link-dialog-title", "close-mineru-token-link-dialog", "mineru-token-link-guide", "mineru-token-link-direct", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation", "open-ai-websites-button", "ai-websites-dialog", "close-ai-websites-button", "dismiss-ai-websites-button", "web-mode-info-dialog", "close-web-mode-info-button", "dismiss-web-mode-info-button",
       "export-dialog", "export-dialog-close", "export-dialog-cancel", "export-dialog-confirm", "export-option-list", "export-empty",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
@@ -3955,6 +3957,8 @@
 
   let currentAlertAnnouncement = null;
   const shownAlertNoticeIds = new Set();
+  let activeStartupNotice = null;
+  let startupNoticeGateClosed = false;
 
   async function triggerPluginUpdate(updateInfo = null) {
     const target = updateInfo || pendingUpdateInfo;
@@ -3995,6 +3999,8 @@
       els["system-messages-badge"].hidden = unread <= 0;
     }
 
+    if (!startupNoticeGateClosed) return;
+
     const modal = els["announcement-modal"];
     if (currentAlertAnnouncement || modal?.open) return;
 
@@ -4003,6 +4009,123 @@
       if (showAnnouncementAlert(pending)) {
         shownAlertNoticeIds.add(pending.id);
       }
+    }
+  }
+
+  function renderWelcomeGuide(notice) {
+    const title = els["welcome-guide-title"];
+    const body = els["welcome-guide-body"];
+    if (!body) return;
+    if (title) title.textContent = notice.title || "欢迎使用LitMTrans";
+    body.replaceChildren();
+    for (const paragraph of Array.isArray(notice.paragraphs) ? notice.paragraphs : []) {
+      const node = document.createElement("p");
+      node.textContent = String(paragraph || "");
+      if (node.textContent) body.appendChild(node);
+    }
+    const callout = document.createElement("div");
+    callout.className = "startup-notice-callout";
+    const calloutTitle = document.createElement("strong");
+    calloutTitle.textContent = notice.calloutTitle || "开始使用";
+    const calloutText = document.createElement("p");
+    calloutText.textContent = notice.calloutText || "";
+    callout.append(calloutTitle, calloutText);
+    body.appendChild(callout);
+  }
+
+  function renderReleaseNotes(notice) {
+    const title = els["release-notes-title"];
+    const subtitle = els["release-notes-subtitle"];
+    const body = els["release-notes-body"];
+    if (!body) return;
+    if (title) title.textContent = notice.title || "本次更新";
+    if (subtitle) subtitle.textContent = notice.date ? `版本 v${notice.version} · ${notice.date}` : `版本 v${notice.version}`;
+    body.replaceChildren();
+    const intro = document.createElement("p");
+    intro.textContent = "感谢继续使用LitMTrans，以下是本次版本的主要变化：";
+    body.appendChild(intro);
+    const list = document.createElement("ul");
+    list.className = "startup-notice-list";
+    for (const entry of Array.isArray(notice.entries) ? notice.entries : []) {
+      const item = document.createElement("li");
+      if (typeof entry === "string") {
+        item.textContent = entry;
+      }
+      else {
+        const entryTitle = String(entry?.title || "").trim();
+        const detail = String(entry?.detail || "").trim();
+        if (entryTitle) {
+          const strong = document.createElement("strong");
+          strong.textContent = entryTitle;
+          item.appendChild(strong);
+        }
+        if (detail) item.append(`${entryTitle ? "：" : ""}${detail}`);
+      }
+      if (item.textContent) list.appendChild(item);
+    }
+    body.appendChild(list);
+  }
+
+  function finishStartupNotice(options = {}) {
+    const active = activeStartupNotice;
+    if (!active) return;
+    activeStartupNotice = null;
+    active.dialog.close();
+    if (options.openSettings) {
+      void openSettingsDialog("setting-mineru-token")
+        .then(() => {
+          const settingsDialog = els["settings-dialog"];
+          if (!settingsDialog?.open) {
+            startupNoticeGateClosed = true;
+            updateAnnouncementUI();
+            return;
+          }
+          settingsDialog.addEventListener("close", () => {
+            startupNoticeGateClosed = true;
+            updateAnnouncementUI();
+          }, { once: true });
+        })
+        .catch(error => {
+          startupNoticeGateClosed = true;
+          updateAnnouncementUI();
+          toast(error.message || "无法打开设置", "error");
+        });
+      return;
+    }
+    startupNoticeGateClosed = true;
+    updateAnnouncementUI();
+  }
+
+  function handleStartupNoticeClosed(dialog) {
+    if (activeStartupNotice?.dialog !== dialog) return;
+    activeStartupNotice = null;
+    startupNoticeGateClosed = true;
+    updateAnnouncementUI();
+  }
+
+  function showStartupNotice(notice) {
+    if (!notice || !notice.type) {
+      startupNoticeGateClosed = true;
+      updateAnnouncementUI();
+      return;
+    }
+    const isWelcome = notice.type === "welcome";
+    const dialog = els[isWelcome ? "welcome-guide-dialog" : "release-notes-dialog"];
+    if (!dialog) {
+      startupNoticeGateClosed = true;
+      updateAnnouncementUI();
+      return;
+    }
+    if (isWelcome) renderWelcomeGuide(notice);
+    else renderReleaseNotes(notice);
+    try {
+      dialog.showModal();
+      activeStartupNotice = { dialog, notice };
+      void hostCall("mark-startup-notice-seen", { version: notice.version }).catch(() => {});
+    }
+    catch (_) {
+      startupNoticeGateClosed = true;
+      updateAnnouncementUI();
     }
   }
 
@@ -6331,7 +6454,7 @@
     if (!label) return;
     label.replaceChildren("服务商");
     if (isWebMachineTranslationProvider(provider) && !isEdgeLocalTranslationProvider(provider)) {
-      label.append("（外网google，国内自动切换bing，bing很慢）");
+      label.append("（外网google，国内自动切换bing，bing较慢）");
       return;
     }
     const providerLinks = {
@@ -6396,6 +6519,7 @@
       const providerSelect = els[selectID];
       providerSelect.replaceChildren();
       for (const provider of settings.providers || []) {
+        if (provider.webDriver === true) continue;
         if (chat && provider.supportsChat === false) continue;
         const option = document.createElement("option");
         option.value = provider.id;
@@ -6591,7 +6715,7 @@
   function populateEmbeddedChatSettings(settings) {
     if (!settings) return;
     const provider = els["embedded-chat-provider"];
-    provider.replaceChildren(...(settings.providers || []).filter(spec => spec.supportsChat !== false).map(spec => {
+    provider.replaceChildren(...(settings.providers || []).filter(spec => spec.webDriver !== true && spec.supportsChat !== false).map(spec => {
       const option = document.createElement("option");
       option.value = spec.id;
       option.textContent = spec.name;
@@ -6755,7 +6879,8 @@
     state.providerCardPurpose = purpose === "translation" ? "translation" : "chat";
     const providerSelect = els["provider-card-provider"];
     providerSelect.replaceChildren(...(state.settings?.providers || [])
-      .filter(provider => state.providerCardPurpose === "translation" || provider.supportsChat !== false)
+      .filter(provider => provider.webDriver !== true
+        && (state.providerCardPurpose === "translation" || provider.supportsChat !== false))
       .map(provider => {
       const option = document.createElement("option");
       option.value = provider.id;
@@ -7097,6 +7222,7 @@
     initializePromise = (async () => {
       try {
         setStatus("正在读取文献状态…", 0, "running");
+        const startupNotice = await hostCall("get-startup-notice").catch(() => null);
         const data = await hostCall("initialize");
         setData(data);
         initializeCompleted = true;
@@ -7107,8 +7233,10 @@
         void reconcileOperationState();
         syncWorkbenchViewport();
         setStatus(data.capabilities?.hasParsed ? "已就绪" : "尚未解析", 0, data.capabilities?.hasParsed ? "success" : "neutral");
+        requestAnimationFrame(() => showStartupNotice(startupNotice));
       }
       catch (error) {
+        startupNoticeGateClosed = true;
         if (!error.cancelled) {
           setStatus(error.message, 0, "error");
           toast(error.message, "error");
@@ -7918,6 +8046,11 @@
     document.addEventListener("click", event => {
       const link = event.target?.closest?.("a");
       if (!link) return;
+      if (link.dataset.mineruTokenLink === "true") {
+        event.preventDefault();
+        if (!els["mineru-token-link-dialog"]?.open) els["mineru-token-link-dialog"]?.showModal();
+        return;
+      }
       const rawUrl = link.dataset.externalUrl || link.getAttribute("href") || link.href;
       if (!rawUrl || rawUrl.startsWith("#") || rawUrl.startsWith("javascript:")) return;
       let targetUrl = rawUrl;
@@ -7932,11 +8065,33 @@
       void hostCall("open-token-guide")
         .catch(error => toast(error.message || "无法打开令牌创建指南", "error"));
     });
+    els["close-mineru-token-link-dialog"]?.addEventListener("click", () => els["mineru-token-link-dialog"]?.close());
+    els["mineru-token-link-guide"]?.addEventListener("click", () => {
+      els["mineru-token-link-dialog"]?.close("guide");
+      els["open-token-guide-button"]?.click();
+    });
+    els["mineru-token-link-direct"]?.addEventListener("click", () => {
+      els["mineru-token-link-dialog"]?.close("direct");
+      void hostCall("open-external-url", { url: "https://mineru.net/apiManage/token" })
+        .catch(error => toast(error.message || "无法打开MinerU创建官网", "error"));
+    });
     els["open-feedback-button"]?.addEventListener("click", () => {
       void hostCall("open-feedback")
         .then(() => toast("已复制运行环境信息到剪贴板，可在表单中直接粘贴 (Ctrl+V)", "success"))
         .catch(error => toast(error.message || "无法打开反馈页面", "error"));
     });
+    els["open-web-mode-info-button"]?.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!els["web-mode-info-dialog"]?.open) els["web-mode-info-dialog"]?.showModal();
+    });
+    els["close-web-mode-info-button"]?.addEventListener("click", () => els["web-mode-info-dialog"]?.close());
+    els["dismiss-web-mode-info-button"]?.addEventListener("click", () => els["web-mode-info-dialog"]?.close());
+    els["open-ai-websites-button"]?.addEventListener("click", () => {
+      if (!els["ai-websites-dialog"]?.open) els["ai-websites-dialog"]?.showModal();
+    });
+    els["close-ai-websites-button"]?.addEventListener("click", () => els["ai-websites-dialog"]?.close());
+    els["dismiss-ai-websites-button"]?.addEventListener("click", () => els["ai-websites-dialog"]?.close());
     bindLanguagePicker(els["setting-target-language"], els["setting-target-language-picker"]);
     bindLanguagePicker(els["setting-machine-source-language"], els["setting-machine-source-language-picker"]);
     window.addEventListener("focus", () => { void reconcileOperationState(); });
@@ -8467,6 +8622,7 @@
       els["settings-dialog"].style.height = "auto";
       els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
       requestAnimationFrame(() => syncDeepSeekWebBounds());
+      updateAnnouncementUI();
     });
 
     if (els["ai-mode-api-button"]) {
@@ -8579,6 +8735,13 @@
       void showPersistentTranslationLogs();
     });
     els["close-system-messages"].addEventListener("click", () => els["system-messages-dialog"].close());
+    els["welcome-guide-close"]?.addEventListener("click", () => finishStartupNotice());
+    els["welcome-guide-dismiss"]?.addEventListener("click", () => finishStartupNotice());
+    els["welcome-guide-settings"]?.addEventListener("click", () => finishStartupNotice({ openSettings: true }));
+    els["welcome-guide-dialog"]?.addEventListener("close", event => handleStartupNoticeClosed(event.currentTarget));
+    els["release-notes-close"]?.addEventListener("click", () => finishStartupNotice());
+    els["release-notes-dismiss"]?.addEventListener("click", () => finishStartupNotice());
+    els["release-notes-dialog"]?.addEventListener("close", event => handleStartupNoticeClosed(event.currentTarget));
     els["close-announcement-modal"]?.addEventListener("click", () => void dismissCurrentAnnouncementAlert());
     els["announcement-modal-dismiss-button"]?.addEventListener("click", () => void dismissCurrentAnnouncementAlert());
     els["announcement-modal-action-button"]?.addEventListener("click", () => void handleAnnouncementAlertAction());

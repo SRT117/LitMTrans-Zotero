@@ -404,6 +404,88 @@
       };
     }
 
+    async hasExistingUserState() {
+      if (this.secrets.getMinerUToken()) return true;
+      const providers = Object.values(LitMTrans.Constants?.PROVIDERS || {});
+      if (providers.some(provider => this.secrets.getLLMKey(provider.id))) return true;
+
+      try {
+        for (const child of await this.storage.list(this.storage.documentsRoot)) {
+          if ((await this.storage.stat(child))?.type === "directory") return true;
+        }
+      }
+      catch (_) {}
+
+      const generatedPrefs = new Set([
+        "announcementHistory",
+        "dismissedAnnouncementIds",
+        "lastUpdateCheckTime",
+        "nonMultimodalModelMarks",
+        "startupNoticeVersion"
+      ]);
+      try {
+        const branchName = LitMTrans.Constants?.PREF_BRANCH || "extensions.litmtrans.";
+        const branch = Services.prefs.getBranch(branchName);
+        const names = branch.getChildList("");
+        return names.some(name => {
+          if (generatedPrefs.has(name) || String(name).startsWith("migration.")) return false;
+          return Services.prefs.prefHasUserValue(`${branchName}${name}`);
+        });
+      }
+      catch (_) {
+        return false;
+      }
+    }
+
+    async getStartupNotice() {
+      const version = String(this.version || "").trim();
+      const previousVersion = String(U.getPref("startupNoticeVersion", "") || "").trim();
+      if (!version) return null;
+      if (previousVersion) {
+        const compare = LitMTrans.Updater?.compareVersions;
+        if (typeof compare === "function" && compare(version, previousVersion) <= 0) return null;
+        if (typeof compare !== "function" && version === previousVersion) return null;
+      }
+
+      const guide = LitMTrans.StartupContent?.welcome || {
+        title: "欢迎使用LitMTrans",
+        paragraphs: [],
+        calloutTitle: "开始使用",
+        calloutText: "新用户只需先配置免费的MinerU令牌；默认网页模式无需配置API。"
+      };
+      const notes = LitMTrans.ReleaseNotes?.[version] || {};
+      const entries = (Array.isArray(notes.entries) ? notes.entries : [])
+        .map(item => typeof item === "string"
+          ? item.trim()
+          : { title: String(item?.title || "").trim(), detail: String(item?.detail || "").trim() })
+        .filter(item => typeof item === "string" ? item : item.title || item.detail);
+      if (!previousVersion && !await this.hasExistingUserState()) {
+        return {
+          type: "welcome",
+          version,
+          title: String(guide.title || "欢迎使用LitMTrans"),
+          paragraphs: Array.isArray(guide.paragraphs) ? guide.paragraphs.map(String) : [],
+          calloutTitle: String(guide.calloutTitle || "开始使用"),
+          calloutText: String(guide.calloutText || "")
+        };
+      }
+
+      return {
+        type: "update",
+        version,
+        title: String(notes.title || `本次更新 · v${version}`),
+        date: String(notes.date || ""),
+        entries: entries.length ? entries : ["本版本暂无额外更新说明。"]
+      };
+    }
+
+    markStartupNoticeSeen(version = "") {
+      const currentVersion = String(this.version || "").trim();
+      if (!currentVersion || String(version || "").trim() !== currentVersion) return false;
+      U.setPref("startupNoticeVersion", currentVersion);
+      return true;
+    }
+
     async diagramDocumentID(attachmentID) {
       const attachment = await this.resolveAttachment(attachmentID);
       return this.storage.documentID(attachment);
@@ -5535,6 +5617,10 @@
 
         case "get-settings":
           return this.getSettings();
+        case "get-startup-notice":
+          return this.getStartupNotice();
+        case "mark-startup-notice-seen":
+          return this.markStartupNoticeSeen(payload.version);
         case "clipboard-read-text":
           return { text: this.readClipboardText() };
         case "clipboard-write-text":
@@ -5756,7 +5842,8 @@
           defaultModel: spec.defaultModel,
           chatDefaultModel: "",
           supportsImages: spec.supportsImages !== false,
-          supportsChat: spec.supportsChat !== false && !U.isWebMachineProvider(spec.id)
+          supportsChat: spec.supportsChat !== false && !U.isWebMachineProvider(spec.id),
+          webDriver: spec.webDriver === true
         }))
       };
     }
@@ -6047,7 +6134,8 @@
           defaultModel: spec.defaultModel,
           chatDefaultModel: "",
           supportsImages: spec.supportsImages !== false,
-          supportsChat: spec.supportsChat !== false && !U.isWebMachineProvider(spec.id)
+          supportsChat: spec.supportsChat !== false && !U.isWebMachineProvider(spec.id),
+          webDriver: spec.webDriver === true
         }))
       };
     }

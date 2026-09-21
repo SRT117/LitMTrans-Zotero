@@ -260,6 +260,7 @@ function createTestContext() {
   load("src/ported-core.js");
 
   for (const file of [
+    "src/release-notes.js",
     "src/utils.js",
     "src/storage.js",
     "src/secrets.js",

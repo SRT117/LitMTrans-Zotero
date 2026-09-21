@@ -17,7 +17,7 @@
           </html:div>
           <html:div class="litmtrans-pref-form-stack">
             <html:label>
-              <html:span class="litmtrans-mineru-token-label-line"><html:span>MinerU访问令牌</html:span><html:a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token">获取访问令牌（每天免费快速解析1000页，超量排队，但依然免费）</html:a></html:span>
+              <html:span class="litmtrans-mineru-token-label-line"><html:span>MinerU访问令牌</html:span><html:a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">获取访问令牌（官方免费）</html:a></html:span>
               <html:input id="litmtrans-pref-mineru-token" type="password" autocomplete="off" placeholder="未配置"/>
             </html:label>
             <html:input id="litmtrans-pref-mineru-model" type="hidden" value="vlm"/>
@@ -29,9 +29,11 @@
             <html:span class="litmtrans-pref-card-mark">模型</html:span>
             <html:div><html:h2 id="litmtrans-pref-model-heading">翻译模型设置</html:h2><html:p>用于全文翻译和排版翻译。</html:p></html:div>
           </html:div>
-          <html:div class="litmtrans-shared-toggle litmtrans-web-mode-toggle">
-            <html:input id="litmtrans-pref-chat-engine-web" type="checkbox"/>
-            <html:label for="litmtrans-pref-chat-engine-web"><html:strong>使用DeepSeek官方网页模式</html:strong><html:span>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</html:span></html:label>
+          <html:div class="litmtrans-web-mode-toggle-row">
+            <html:div class="litmtrans-shared-toggle litmtrans-web-mode-toggle">
+              <html:input id="litmtrans-pref-chat-engine-web" type="checkbox"/>
+              <html:label for="litmtrans-pref-chat-engine-web"><html:span class="litmtrans-web-mode-copy"><html:span class="litmtrans-web-mode-title-line"><html:strong>使用DeepSeek官方网页模式</html:strong><html:button id="litmtrans-pref-open-web-mode-info" class="litmtrans-inline-link" type="button">使用说明</html:button></html:span><html:span>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</html:span></html:span></html:label>
+            </html:div>
           </html:div>
           <html:details id="litmtrans-pref-web-mode-advanced" class="litmtrans-web-mode-advanced" hidden="hidden">
             <html:summary>网页模式进阶配置</html:summary>
@@ -164,6 +166,29 @@
         </html:div>
       </html:details>
     </html:main>
+
+    <html:div id="litmtrans-pref-web-mode-info" class="litmtrans-pref-info-overlay" hidden="hidden" role="dialog" aria-modal="true" aria-labelledby="litmtrans-pref-web-mode-info-title">
+      <html:div class="litmtrans-pref-info-card">
+        <html:header class="litmtrans-pref-info-header">
+          <html:h2 id="litmtrans-pref-web-mode-info-title">网页模式使用说明</html:h2>
+          <html:button id="litmtrans-pref-close-web-mode-info" type="button" aria-label="关闭" title="关闭">×</html:button>
+        </html:header>
+        <html:div class="litmtrans-pref-info-body">
+          <html:p>官方网页对话是免费的，但是请不要连续高频率高密度地发起巨量请求，否则有账号风控的可能性，正常使用即可。如果有非常大量的并发翻译请求，请切换到API模式。</html:p>
+        </html:div>
+        <html:footer class="litmtrans-pref-info-footer"><html:button id="litmtrans-pref-dismiss-web-mode-info" type="button">关闭</html:button></html:footer>
+      </html:div>
+    </html:div>
+
+    <html:div id="litmtrans-pref-mineru-token-link-info" class="litmtrans-pref-info-overlay" hidden="hidden" role="dialog" aria-modal="true" aria-labelledby="litmtrans-pref-mineru-token-link-info-title">
+      <html:div class="litmtrans-pref-info-card">
+        <html:header class="litmtrans-pref-info-header">
+          <html:h2 id="litmtrans-pref-mineru-token-link-info-title">是否先查看创建指南？</html:h2>
+          <html:button id="litmtrans-pref-close-mineru-token-link-info" type="button" aria-label="关闭" title="关闭">×</html:button>
+        </html:header>
+        <html:footer class="litmtrans-pref-info-footer"><html:button id="litmtrans-pref-mineru-token-link-guide" type="button">是</html:button><html:button id="litmtrans-pref-mineru-token-link-direct" type="button">直接访问创建官网</html:button></html:footer>
+      </html:div>
+    </html:div>
 
   </html:div>
 </vbox>

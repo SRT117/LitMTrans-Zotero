@@ -61,3 +61,4 @@ native/caj-backend/target/
 !native/dist/
 !native/dist/caj2pdf/
 !native/dist/caj2pdf/*
+docs/token-guide.pptx

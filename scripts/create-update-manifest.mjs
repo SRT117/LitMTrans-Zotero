@@ -148,8 +148,10 @@ const tag = value("tag");
 const xpiPath = value("xpi");
 const outputPath = value("out");
 const announcementsArg = optionalValue("announcements");
+const downloadBase = (optionalValue("download-base") || `https://github.com/${repository}/releases/download`).replace(/\/+$/, "");
 if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) throw new Error("--repository must be owner/repository");
 if (!tag.trim()) throw new Error("--tag must not be empty");
+validateHttpUrl(downloadBase, "--download-base");
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
@@ -197,7 +199,7 @@ const update = {
     [zotero.id]: {
       updates: [{
         version: manifest.version,
-        update_link: `https://github.com/${repository}/releases/download/${tag}/${path.basename(xpiPath)}`,
+        update_link: `${downloadBase}/${encodeURIComponent(tag)}/${encodeURIComponent(path.basename(xpiPath))}`,
         update_hash: `sha256:${createHash("sha256").update(xpi).digest("hex")}`,
         applications: {
           zotero: {
