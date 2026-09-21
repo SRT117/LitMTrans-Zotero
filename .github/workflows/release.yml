@@ -36,7 +36,8 @@ jobs:
             throw "Expected exactly one XPI, found $($xpis.Count)."
           }
           $xpi = $xpis[0].FullName
-          node scripts/create-update-manifest.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --xpi $xpi --out dist/update.json
+          $announcementParams = if (Test-Path "docs/announcements.json") { @("--announcements", "docs/announcements.json") } else { @() }
+          node scripts/create-update-manifest.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --xpi $xpi --out dist/update.json @announcementParams
       - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -153,9 +153,85 @@
     throw new Error("当前环境缺少 SHA-256 密码学哈希支持");
   }
 
+  function compareVersions(v1, v2) {
+    try {
+      if (typeof Services !== "undefined" && Services.vc?.compare) {
+        return Services.vc.compare(String(v1), String(v2));
+      }
+    } catch (_) {}
+    return String(v1).localeCompare(String(v2), undefined, { numeric: true });
+  }
+
+  function normalizeAnnouncements(items) {
+    if (!Array.isArray(items)) return [];
+    const normalized = [];
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const id = String(item.id || "").trim();
+      const title = String(item.title || "").trim();
+      const message = String(item.message || "").trim();
+      if (!id || !title || !message) continue;
+
+      const level = ["alert", "warning", "info"].includes(item.level) ? item.level : "info";
+      const date = typeof item.date === "string" ? item.date.trim() : "";
+      const targetMaxVersion = typeof item.targetMaxVersion === "string" ? item.targetMaxVersion.trim() : "";
+      const targetMinVersion = typeof item.targetMinVersion === "string" ? item.targetMinVersion.trim() : "";
+      const expireAt = typeof item.expireAt === "string" ? item.expireAt.trim() : "";
+      if (expireAt && Number.isNaN(Date.parse(expireAt))) {
+        continue;
+      }
+
+      let action = null;
+      if (item.action && typeof item.action === "object") {
+        const type = ["update", "url", "dismiss"].includes(item.action.type) ? item.action.type : "update";
+        const text = String(item.action.text || (type === "update" ? "立即更新" : "查看详情")).trim();
+        const url = typeof item.action.url === "string" ? item.action.url.trim() : "";
+        action = { type, text, url };
+      }
+
+      normalized.push({
+        id,
+        title,
+        message,
+        level,
+        date,
+        targetMaxVersion,
+        targetMinVersion,
+        expireAt,
+        action,
+        cancelText: String(item.cancelText || "我知道了").trim()
+      });
+    }
+    return normalized;
+  }
+
+  function isAnnouncementApplicable(item, currentVersion, dismissedSet = new Set()) {
+    if (!item || !item.id) return false;
+    if (dismissedSet && typeof dismissedSet.has === "function" && dismissedSet.has(item.id)) {
+      return false;
+    }
+    if (item.expireAt) {
+      const exp = Date.parse(item.expireAt);
+      if (Number.isNaN(exp) || Date.now() > exp) return false;
+    }
+    const current = String(currentVersion || "").trim();
+    if (current) {
+      if (item.targetMaxVersion && compareVersions(current, item.targetMaxVersion) > 0) {
+        return false;
+      }
+      if (item.targetMinVersion && compareVersions(current, item.targetMinVersion) < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   const Updater = {
     stagedVersion: null,
     isUpdating: false,
+    compareVersions,
+    normalizeAnnouncements,
+    isAnnouncementApplicable,
 
     async fetchUpdateManifest(timeoutMs = 8000, onProgress = null) {
       if (typeof onProgress === "function") {
@@ -193,12 +269,18 @@
             if (!/^[a-f0-9]{64}$/.test(rawHash)) {
               throw new Error("更新元数据中的哈希格式非法或缺失，已终止解析");
             }
-            log(`Fastest manifest resolved from ${url}, latest version: ${updateItem.version}`);
+            const rawAnnouncements = Array.isArray(data?.announcements)
+              ? data.announcements
+              : (data?.notice ? [data.notice] : (data?.announcement ? [data.announcement] : []));
+            const announcements = normalizeAnnouncements(rawAnnouncements);
+
+            log(`Fastest manifest resolved from ${url}, latest version: ${updateItem.version}, announcements: ${announcements.length}`);
             return {
               version: updateItem.version.trim(),
               updateLink: String(updateItem.update_link || "").trim(),
               updateHash: rawHash,
               sourceUrl: url,
+              announcements,
               raw: data
             };
           }
@@ -242,25 +324,17 @@
       const remoteVersion = String(manifestInfo.version || "").trim();
       const current = String(currentVersion || "").trim();
       if (!remoteVersion || !current) {
-        return { hasUpdate: false, version: current };
+        return { hasUpdate: false, version: current, announcements: manifestInfo?.announcements || [] };
       }
 
-      let cmp = 0;
-      try {
-        if (typeof Services !== "undefined" && Services.vc?.compare) {
-          cmp = Services.vc.compare(remoteVersion, current);
-        } else {
-          cmp = remoteVersion.localeCompare(current, undefined, { numeric: true });
-        }
-      } catch (_) {
-        cmp = remoteVersion !== current ? 1 : 0;
-      }
+      const cmp = compareVersions(remoteVersion, current);
 
       return {
         hasUpdate: cmp > 0,
         version: remoteVersion,
         updateLink: manifestInfo.updateLink,
-        updateHash: manifestInfo.updateHash
+        updateHash: manifestInfo.updateHash,
+        announcements: manifestInfo.announcements || []
       };
     },
 

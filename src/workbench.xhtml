@@ -44,7 +44,7 @@
         <span class="toolbar-divider" aria-hidden="true"></span>
         <button id="export-pdf-button" class="icon-button" type="button" title="选择要导出的对象" aria-label="选择要导出的对象">导出</button>
         <button id="clean-reader-button" class="icon-button" type="button" title="隐藏对话侧栏" aria-label="隐藏对话侧栏">专注阅读</button>
-        <button id="system-messages-button" class="icon-button" type="button" title="查看任务和系统消息" aria-label="查看消息">消息</button>
+        <button id="system-messages-button" class="icon-button system-messages-btn" type="button" title="查看任务和系统消息" aria-label="查看消息"><span class="button-label">消息</span><span id="system-messages-badge" class="badge-dot" hidden="hidden" aria-label="有未读公告"></span></button>
         <button id="settings-button" class="icon-button" type="button" title="设置" aria-label="设置"><svg class="settings-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.37-.31-.6-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98L14.5 2.42C14.47 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.5.42L9.12 5.07c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.08-.48 0-.6.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65c-.19.15-.25.42-.12.64l2 3.46c.12.22.37.31.6.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1c.23.08.48 0 .6-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z" fill="currentColor" fill-rule="evenodd"></path></svg></button>
       </div>
     </header>
@@ -512,8 +512,15 @@
 
   <dialog id="system-messages-dialog" class="modal chat-menu-modal">
     <div class="modal-card compact system-messages-card">
-      <header class="modal-header"><h2>消息</h2><button id="close-system-messages" class="icon-button" type="button">×</button></header>
+      <header class="modal-header"><h2>消息中心</h2><button id="close-system-messages" class="icon-button" type="button">×</button></header>
       <div class="system-messages-body">
+        <section class="message-section announcement-section">
+          <div class="announcement-section-header">
+            <h3>系统公告与说明</h3>
+            <button id="mark-all-announcements-read-button" class="link-button small" type="button">全部已读</button>
+          </div>
+          <div id="announcements-list" class="announcements-list"></div>
+        </section>
         <section class="message-section">
           <h3>任务进度</h3>
           <div id="task-messages-list" class="task-messages-list"></div>
@@ -523,6 +530,30 @@
           <div id="system-messages-list" class="system-messages-list"></div>
         </section>
       </div>
+    </div>
+  </dialog>
+
+  <dialog id="announcement-modal" class="modal announcement-modal" aria-label="重要系统通知">
+    <div class="modal-card compact announcement-card-modal">
+      <header class="modal-header">
+        <div class="announcement-header-title">
+          <span class="announcement-badge-icon" aria-hidden="true">⚠️</span>
+          <h2 id="announcement-modal-title">重要通知</h2>
+        </div>
+        <button id="close-announcement-modal" class="icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div class="announcement-modal-body">
+        <div class="announcement-meta-line">
+          <span id="announcement-modal-date" class="announcement-date"></span>
+          <span id="announcement-modal-level" class="announcement-level-badge">重要提醒</span>
+        </div>
+        <div id="announcement-modal-message" class="announcement-message-content"></div>
+      </div>
+      <footer class="modal-footer">
+        <span class="modal-spacer"></span>
+        <button id="announcement-modal-dismiss-button" class="button" type="button">我知道了</button>
+        <button id="announcement-modal-action-button" class="button button-primary" type="button">立即更新</button>
+      </footer>
     </div>
   </dialog>
 

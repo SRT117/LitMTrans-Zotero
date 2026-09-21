@@ -665,6 +665,138 @@ body.layout-translated
 #system-messages-dialog { width: min(720px, calc(100vw - 30px)); }
 .system-messages-card { width: 100%; }
 
+.system-messages-btn { position: relative; }
+.system-messages-btn .badge-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger, #d9383a);
+  box-shadow: 0 0 0 1.5px var(--surface-1, #fff);
+  pointer-events: none;
+}
+
+.announcement-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+.announcements-list {
+  max-height: 220px;
+  overflow: auto;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.announcement-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.announcement-item:last-child {
+  border-bottom: none;
+}
+.announcement-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.announcement-item-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.announcement-level-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.announcement-level-badge.alert {
+  background: color-mix(in srgb, var(--danger, #d9383a) 15%, transparent);
+  color: var(--danger, #d9383a);
+  border: 1px solid color-mix(in srgb, var(--danger, #d9383a) 35%, transparent);
+}
+.announcement-level-badge.warning {
+  background: color-mix(in srgb, var(--warning, #e68a00) 15%, transparent);
+  color: var(--warning, #e68a00);
+  border: 1px solid color-mix(in srgb, var(--warning, #e68a00) 35%, transparent);
+}
+.announcement-level-badge.info {
+  background: color-mix(in srgb, var(--link, #1a73e8) 15%, transparent);
+  color: var(--link, #1a73e8);
+  border: 1px solid color-mix(in srgb, var(--link, #1a73e8) 35%, transparent);
+}
+.announcement-item-date {
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+.announcement-item-message {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0 6px;
+}
+.announcement-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.announcement-status-text {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Announcement Modal Dialog */
+#announcement-modal {
+  width: min(540px, calc(100vw - 32px));
+  border: 1px solid color-mix(in srgb, var(--danger, #d9383a) 40%, var(--line));
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+.announcement-card-modal {
+  width: 100%;
+}
+.announcement-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.announcement-badge-icon {
+  font-size: 16px;
+}
+.announcement-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.announcement-date {
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.announcement-modal-body {
+  padding: 14px 18px;
+}
+.announcement-message-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+
 @media print {
   :root { color-scheme: light; }
   html, body { width: auto !important; height: auto !important; overflow: visible !important; background: #fff !important; color: #111 !important; }

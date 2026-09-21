@@ -611,6 +611,113 @@ function testDeepSeekWebDriverSessionActionAndRetryContracts() {
   );
 }
 
+async function testAnnouncementSystemContracts() {
+  const updaterCode = fs.readFileSync(path.join(root, "src", "updater.js"), "utf8");
+  const controllerCode = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const workbenchXhtml = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
+  const workbenchJs = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+
+  // 1. 结构与 UI 契约断言
+  assert(workbenchXhtml.includes('id="announcement-modal"'), "workbench.xhtml must declare announcement-modal dialog");
+  assert(workbenchXhtml.includes('id="announcements-list"'), "workbench.xhtml must declare announcements-list container");
+  assert(workbenchXhtml.includes('id="system-messages-badge"'), "workbench.xhtml must declare system-messages-badge element");
+  assert(workbenchJs.includes('"announcement-modal"'), "workbench.js must register announcement-modal element");
+  assert(workbenchJs.includes('renderAnnouncementsList'), "workbench.js must implement renderAnnouncementsList");
+  assert(workbenchJs.includes('updateAnnouncementUI'), "workbench.js must implement updateAnnouncementUI");
+  assert(workbenchJs.includes('shownAlertNoticeIds'), "workbench.js must track shown announcements per ID rather than single boolean");
+  assert(workbenchJs.includes('type === "announcements-updated"'), "workbench.js must handle announcements-updated host event");
+  assert(workbenchJs.includes('els["announcement-modal"]?.addEventListener("cancel"'), "workbench.js must handle Esc cancel on announcement-modal");
+  assert(workbenchJs.includes('if (currentAlertAnnouncement || modal?.open) return;'), "workbench.js must not replace an already open announcement modal");
+
+  // 2. Controller 契约与广播断言
+  assert(controllerCode.includes('getDismissedAnnouncementIds'), "controller must implement getDismissedAnnouncementIds");
+  assert(controllerCode.includes('dismissAnnouncement'), "controller must implement dismissAnnouncement");
+  assert(controllerCode.includes('dismissAnnouncements'), "controller must implement dismissAnnouncements for batch updates");
+  assert(controllerCode.includes('broadcastAnnouncements'), "controller must broadcast announcements to open workbenches");
+  assert(controllerCode.includes('getAnnouncementsForWorkbench'), "controller must implement getAnnouncementsForWorkbench");
+  assert(controllerCode.includes('case "dismiss-announcement":'), "controller must handle dismiss-announcement action");
+  assert(controllerCode.includes('case "mark-all-announcements-read":'), "controller must handle mark-all-announcements-read action");
+
+  // 3. 安全性断言：绝不能对远程公告字段使用 innerHTML
+  assert(!workbenchJs.includes('.innerHTML = alertItem.message'), "must not inject alertItem.message with innerHTML");
+  assert(!workbenchJs.includes('.innerHTML = item.message'), "must not inject item.message with innerHTML");
+  assert(workbenchJs.includes('els["announcement-modal-message"].textContent = alertItem.message'), "modal message must be set using textContent");
+  assert(workbenchJs.includes('msg.textContent = item.message'), "list message must be set using textContent");
+
+  // 4. 状态机断言：更新失败不得标记已读，支持 dismiss 动作
+  assert(
+    workbenchJs.includes('const success = await triggerPluginUpdate()') &&
+    workbenchJs.includes('if (success && item.id)') &&
+    workbenchJs.includes('if (res?.success && state.announcements?.history)'),
+    "workbench.js modal must only dismiss announcement when update succeeds"
+  );
+  assert(
+    workbenchJs.includes('const updateSuccess = await triggerPluginUpdate()') &&
+    workbenchJs.includes('if (updateSuccess && !item.isDismissed)'),
+    "workbench.js list must only dismiss announcement when update succeeds"
+  );
+  assert(
+    workbenchJs.includes('const opened = await hostCall("open-external-url", { url: item.action.url })') &&
+    workbenchJs.includes('if (!opened?.opened || item.isDismissed) return;'),
+    "workbench.js list URL action must dismiss only after the external URL opens"
+  );
+  assert(
+    workbenchJs.includes('item.action.type === "dismiss"'),
+    "workbench.js must support action.type: dismiss"
+  );
+
+  // 5. CI / CD Release 流程契约断言
+  const releaseWorkflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+  assert(releaseWorkflow.includes("--announcements"), "release.yml must pass --announcements to create-update-manifest");
+
+  // 5. 运行环境沙箱内验证 normalizeAnnouncements 与 isAnnouncementApplicable 算法
+  const sandbox = { module: {}, exports: {}, require, LitMTrans: {}, TextEncoder };
+  vm.runInNewContext(updaterCode, sandbox);
+  const Updater = sandbox.LitMTrans.Updater;
+  assert(typeof Updater.normalizeAnnouncements === "function", "normalizeAnnouncements must be exposed on Updater");
+  assert(typeof Updater.isAnnouncementApplicable === "function", "isAnnouncementApplicable must be exposed on Updater");
+
+  // 验证非法数据过滤与清洗，以及无效 expireAt 防御（NaN 日期必须被丢弃）
+  const rawList = [
+    null,
+    {},
+    { id: "valid-1", title: "MinerU 4.0 升级预警", message: "协议已升级", level: "alert", targetMaxVersion: "2.1.0" },
+    { id: "invalid-missing-msg", title: "测试" },
+    { id: "invalid-expire", title: "坏日期", message: "测试", expireAt: "not-a-valid-date" },
+    { id: "valid-2", title: "普通公告", message: "日常说明", level: "unknown_level", expireAt: "2020-01-01T00:00:00Z" }
+  ];
+  const normalized = Updater.normalizeAnnouncements(rawList);
+  assert.equal(normalized.length, 2, "Only valid announcements with valid date should be preserved");
+  assert.equal(normalized[0].level, "alert", "Level alert should be preserved");
+  assert.equal(normalized[1].level, "info", "Unknown level should default to info");
+  assert.equal(normalized[0].cancelText, "我知道了", "Default cancelText should be provided");
+
+  // 验证版本号与时效判定
+  const item1 = normalized[0]; // targetMaxVersion: 2.1.0
+  const item2 = normalized[1]; // expireAt: 2020-01-01 (已过期)
+
+  assert(Updater.isAnnouncementApplicable(item1, "2.0.0"), "Should apply to version 2.0.0 (<= 2.1.0)");
+  assert(Updater.isAnnouncementApplicable(item1, "2.1.0"), "Should apply to version 2.1.0 (<= 2.1.0)");
+  assert(!Updater.isAnnouncementApplicable(item1, "2.2.0"), "Should NOT apply to version 2.2.0 (> 2.1.0)");
+
+  // 验证已忽略/已读过滤
+  const dismissed = new Set(["valid-1"]);
+  assert(!Updater.isAnnouncementApplicable(item1, "2.0.0", dismissed), "Should NOT apply if id is already dismissed");
+
+  // 验证过期过滤
+  assert(!Updater.isAnnouncementApplicable(item2, "2.0.0"), "Expired announcement should not be applicable");
+
+  // 6. 验证 create-update-manifest.mjs 的 fail-closed 逻辑
+  const manifestScript = fs.readFileSync(path.join(root, "scripts", "create-update-manifest.mjs"), "utf8");
+  assert(!manifestScript.includes("console.warn"), "create-update-manifest.mjs must NOT fail-open with console.warn");
+  assert(manifestScript.includes("throw new Error"), "create-update-manifest.mjs must throw on invalid announcements");
+  assert(manifestScript.includes("ANNOUNCEMENT_LEVELS"), "manifest generation must validate announcement levels");
+  assert(manifestScript.includes("ANNOUNCEMENT_ACTION_TYPES"), "manifest generation must validate action types");
+  assert(manifestScript.includes("validateHttpUrl"), "manifest generation must validate announcement URLs");
+  assert(manifestScript.includes("ids.has(id)"), "manifest generation must reject duplicate announcement IDs");
+  assert(manifestScript.includes("compareVersionBounds"), "manifest generation must validate announcement version bounds");
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -626,6 +733,6 @@ function testDeepSeekWebDriverSessionActionAndRetryContracts() {
     testCAJFontContractAndWorkerGuard,
     testUpdaterContractsAndSafety,
     testDeepSeekWebDriverSessionActionAndRetryContracts,
+    testAnnouncementSystemContracts,
   };
 };
-

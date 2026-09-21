@@ -33,6 +33,7 @@
     readerSyncPage: 0,
     readerSyncPageRatio: 0,
     readerSyncUntil: 0,
+    announcements: null,
     nativePDFSelection: null,
     swapped: false,
     selectedText: "",
@@ -173,7 +174,9 @@
       "copy-source-markdown-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-actions", "empty-parse-only-button", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
-      "system-messages-button", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
+      "system-messages-button", "system-messages-badge", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
+      "announcements-list", "mark-all-announcements-read-button",
+      "announcement-modal", "announcement-modal-title", "close-announcement-modal", "announcement-modal-date", "announcement-modal-level", "announcement-modal-message", "announcement-modal-dismiss-button", "announcement-modal-action-button",
       "ai-mode-api-button", "ai-mode-web-button", "ai-api-view",
       "deepseek-web-container", "deepseek-web-frame",
       "chat-render-markdown", "selection-chip", "selection-text", "clear-selection-button", "chat-messages", "chat-empty", "chat-navigator-button", "chat-navigator-popup",
@@ -832,6 +835,12 @@
       if (label && label.classList.contains("busy") && event.message) {
         label.textContent = event.message;
       }
+      return;
+    }
+    if (type === "announcements-updated") {
+      state.announcements = event.announcements || null;
+      updateAnnouncementUI();
+      renderAnnouncementsList();
       return;
     }
     if (type === "deepseek-web-cache-warning") {
@@ -3938,9 +3947,285 @@
       }).slice(-300);
       renderTaskMessages();
       renderSystemMessages();
+      renderAnnouncementsList();
       els["system-messages-dialog"].showModal();
     }
     catch (error) { toast(`无法读取翻译日志：${error.message}`, "error"); }
+  }
+
+  let currentAlertAnnouncement = null;
+  const shownAlertNoticeIds = new Set();
+
+  async function triggerPluginUpdate(updateInfo = null) {
+    const target = updateInfo || pendingUpdateInfo;
+    if (target && target.version) {
+      toast(`正在启动更新 (v${target.version})...`);
+      try {
+        await hostCall("apply-update", { updateInfo: target });
+        toast(`已成功更新至 v${target.version}！`, "success");
+        return true;
+      } catch (error) {
+        toast(`更新失败: ${error.message || error}`, "error");
+        return false;
+      }
+    } else {
+      toast("正在检查可用更新...", "info");
+      try {
+        const result = await hostCall("check-for-updates");
+        if (result?.hasUpdate) {
+          pendingUpdateInfo = result;
+          toast(`发现新版本 v${result.version}，正在下载...`, "info");
+          await hostCall("apply-update", { updateInfo: result });
+          toast(`已成功更新至 v${result.version}！`, "success");
+          return true;
+        } else {
+          toast("当前已是最新版本", "info");
+          return false;
+        }
+      } catch (error) {
+        toast(`检查更新失败: ${error.message || error}`, "error");
+        return false;
+      }
+    }
+  }
+
+  function updateAnnouncementUI() {
+    const unread = Number(state.announcements?.unreadCount || 0);
+    if (els["system-messages-badge"]) {
+      els["system-messages-badge"].hidden = unread <= 0;
+    }
+
+    const modal = els["announcement-modal"];
+    if (currentAlertAnnouncement || modal?.open) return;
+
+    const pending = state.announcements?.pendingAlert;
+    if (pending && pending.id && !shownAlertNoticeIds.has(pending.id)) {
+      if (showAnnouncementAlert(pending)) {
+        shownAlertNoticeIds.add(pending.id);
+      }
+    }
+  }
+
+  function showAnnouncementAlert(alertItem) {
+    const modal = els["announcement-modal"];
+    if (!alertItem || !modal || currentAlertAnnouncement || modal.open) return false;
+    if (els["announcement-modal-title"]) els["announcement-modal-title"].textContent = alertItem.title || "重要系统通知";
+    if (els["announcement-modal-date"]) els["announcement-modal-date"].textContent = alertItem.date || "";
+    const levelMap = { alert: "重要提醒", warning: "注意", info: "通知" };
+    if (els["announcement-modal-level"]) {
+      els["announcement-modal-level"].textContent = levelMap[alertItem.level] || "重要提醒";
+      els["announcement-modal-level"].className = `announcement-level-badge ${alertItem.level || "alert"}`;
+    }
+    if (els["announcement-modal-message"]) els["announcement-modal-message"].textContent = alertItem.message || "";
+
+    if (alertItem.action && alertItem.action.text) {
+      if (els["announcement-modal-action-button"]) {
+        els["announcement-modal-action-button"].hidden = false;
+        els["announcement-modal-action-button"].textContent = alertItem.action.text;
+      }
+    } else if (els["announcement-modal-action-button"]) {
+      els["announcement-modal-action-button"].hidden = true;
+    }
+    if (els["announcement-modal-dismiss-button"]) {
+      els["announcement-modal-dismiss-button"].textContent = alertItem.cancelText || "我知道了";
+    }
+
+    try {
+      modal.showModal();
+      currentAlertAnnouncement = alertItem;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function dismissCurrentAnnouncementAlert() {
+    const item = currentAlertAnnouncement;
+    currentAlertAnnouncement = null;
+    els["announcement-modal"]?.close();
+    if (item?.id) {
+      try {
+        const res = await hostCall("dismiss-announcement", { id: item.id });
+        if (res?.success && state.announcements?.history) {
+          const target = state.announcements.history.find(entry => entry.id === item.id);
+          if (target) target.isDismissed = true;
+          state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+          updateAnnouncementUI();
+        }
+      } catch (_) {}
+    }
+    updateAnnouncementUI();
+  }
+
+  async function handleAnnouncementAlertAction() {
+    const item = currentAlertAnnouncement;
+    currentAlertAnnouncement = null;
+    els["announcement-modal"]?.close();
+    if (!item?.action) return;
+
+    if (item.action.type === "update") {
+      // 只有更新成功时才标记为已读！更新失败保持未读，下次仍可提醒
+      const success = await triggerPluginUpdate();
+      if (success && item.id) {
+        const res = await hostCall("dismiss-announcement", { id: item.id }).catch(() => null);
+        if (res?.success && state.announcements?.history) {
+          const target = state.announcements.history.find(entry => entry.id === item.id);
+          if (target) target.isDismissed = true;
+          state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+        }
+      }
+    } else if (item.action.type === "url" && item.action.url) {
+      const opened = await hostCall("open-external-url", { url: item.action.url })
+        .catch(err => {
+          toast(err.message || "无法打开链接", "error");
+          return null;
+        });
+      if (opened?.opened && item.id) {
+        const res = await hostCall("dismiss-announcement", { id: item.id }).catch(() => null);
+        if (res?.success && state.announcements?.history) {
+          const target = state.announcements.history.find(entry => entry.id === item.id);
+          if (target) target.isDismissed = true;
+          state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+        }
+      }
+    } else if (item.action.type === "dismiss") {
+      if (item.id) {
+        await hostCall("dismiss-announcement", { id: item.id }).catch(() => {});
+      }
+    }
+    updateAnnouncementUI();
+  }
+
+  function renderAnnouncementsList() {
+    const list = els["announcements-list"];
+    if (!list) return;
+    list.replaceChildren();
+    const history = Array.isArray(state.announcements?.history) ? state.announcements.history : [];
+    if (!history.length) {
+      const empty = document.createElement("p");
+      empty.className = "system-message-empty";
+      empty.textContent = "暂无系统公告。";
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const item of history) {
+      const card = document.createElement("div");
+      card.className = "announcement-item";
+
+      const top = document.createElement("div");
+      top.className = "announcement-item-top";
+
+      const title = document.createElement("div");
+      title.className = "announcement-item-title";
+      const badge = document.createElement("span");
+      badge.className = `announcement-level-badge ${item.level || "info"}`;
+      badge.textContent = ({ alert: "重要提醒", warning: "注意", info: "通知" })[item.level] || "通知";
+      const titleSpan = document.createElement("span");
+      titleSpan.textContent = item.title;
+      title.append(badge, titleSpan);
+
+      const date = document.createElement("time");
+      date.className = "announcement-item-date";
+      date.textContent = item.date || "";
+      top.append(title, date);
+
+      const msg = document.createElement("div");
+      msg.className = "announcement-item-message";
+      msg.textContent = item.message;
+
+      const actions = document.createElement("div");
+      actions.className = "announcement-item-actions";
+
+      if (item.isDismissed) {
+        const readText = document.createElement("span");
+        readText.className = "announcement-status-text";
+        readText.textContent = "已读";
+        actions.appendChild(readText);
+      } else if (!item.isApplicable) {
+        const inactiveText = document.createElement("span");
+        inactiveText.className = "announcement-status-text";
+        inactiveText.textContent = "已失效";
+        actions.appendChild(inactiveText);
+      } else {
+        const markReadBtn = document.createElement("button");
+        markReadBtn.className = "link-button small";
+        markReadBtn.type = "button";
+        markReadBtn.textContent = "标为已读";
+        markReadBtn.addEventListener("click", async () => {
+          const res = await hostCall("dismiss-announcement", { id: item.id }).catch(() => null);
+          if (res?.success) {
+            item.isDismissed = true;
+            state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+            updateAnnouncementUI();
+            renderAnnouncementsList();
+          }
+        });
+        actions.appendChild(markReadBtn);
+      }
+
+      if (item.action && item.action.type === "update") {
+        const actBtn = document.createElement("button");
+        actBtn.className = "button small button-primary";
+        actBtn.type = "button";
+        actBtn.textContent = item.action.text || "立即更新";
+        actBtn.addEventListener("click", async () => {
+          els["system-messages-dialog"]?.close();
+          const updateSuccess = await triggerPluginUpdate();
+          if (updateSuccess && !item.isDismissed) {
+            const res = await hostCall("dismiss-announcement", { id: item.id }).catch(() => null);
+            if (res?.success) {
+              item.isDismissed = true;
+              state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+              updateAnnouncementUI();
+              renderAnnouncementsList();
+            }
+          }
+        });
+        actions.appendChild(actBtn);
+      } else if (item.action && item.action.type === "url" && item.action.url) {
+        const actBtn = document.createElement("button");
+        actBtn.className = "button small";
+        actBtn.type = "button";
+        actBtn.textContent = item.action.text || "查看链接";
+        actBtn.addEventListener("click", async () => {
+          const opened = await hostCall("open-external-url", { url: item.action.url })
+            .catch(err => {
+              toast(err.message || "无法打开链接", "error");
+              return null;
+            });
+          if (!opened?.opened || item.isDismissed) return;
+          const res = await hostCall("dismiss-announcement", { id: item.id }).catch(() => null);
+          if (res?.success) {
+            item.isDismissed = true;
+            state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+            updateAnnouncementUI();
+            renderAnnouncementsList();
+          }
+        });
+        actions.appendChild(actBtn);
+      } else if (item.action && item.action.type === "dismiss") {
+        const actBtn = document.createElement("button");
+        actBtn.className = "button small";
+        actBtn.type = "button";
+        actBtn.textContent = item.action.text || "知道了";
+        actBtn.addEventListener("click", async () => {
+          if (!item.isDismissed) {
+            const res = await hostCall("dismiss-announcement", { id: item.id }).catch(() => null);
+            if (res?.success) {
+              item.isDismissed = true;
+              state.announcements.unreadCount = Math.max(0, (state.announcements.unreadCount || 1) - 1);
+              updateAnnouncementUI();
+              renderAnnouncementsList();
+            }
+          }
+        });
+        actions.appendChild(actBtn);
+      }
+
+      card.append(top, msg, actions);
+      list.appendChild(card);
+    }
   }
 
   function exportToolbarPane() {
@@ -6180,6 +6465,8 @@
         els["check-update-button"].textContent = "检查更新";
       }
     }
+    state.announcements = settings.announcements || null;
+    updateAnnouncementUI();
   }
 
   function updateWebMachineTranslationSettings({ previousProvider = null, syncChatMode = false } = {}) {
@@ -8292,6 +8579,25 @@
       void showPersistentTranslationLogs();
     });
     els["close-system-messages"].addEventListener("click", () => els["system-messages-dialog"].close());
+    els["close-announcement-modal"]?.addEventListener("click", () => void dismissCurrentAnnouncementAlert());
+    els["announcement-modal-dismiss-button"]?.addEventListener("click", () => void dismissCurrentAnnouncementAlert());
+    els["announcement-modal-action-button"]?.addEventListener("click", () => void handleAnnouncementAlertAction());
+    els["announcement-modal"]?.addEventListener("cancel", () => void dismissCurrentAnnouncementAlert());
+    els["mark-all-announcements-read-button"]?.addEventListener("click", async () => {
+      const res = await hostCall("mark-all-announcements-read").catch(() => null);
+      if (!res?.success) return;
+      if (state.announcements?.history) {
+        for (const item of state.announcements.history) {
+          item.isDismissed = true;
+        }
+      }
+      if (state.announcements) {
+        state.announcements.unreadCount = 0;
+        state.announcements.pendingAlert = null;
+      }
+      updateAnnouncementUI();
+      renderAnnouncementsList();
+    });
     els["clear-chat-button"].addEventListener("click", async () => {
       if (!window.confirm("确定清空当前文献的对话记录吗？\n\n解析结果和译文不会被删除。")) return;
       try {
@@ -8878,6 +9184,12 @@
         } else {
           label.className = "update-status-label success";
           label.textContent = `已是最新版本 (v${result?.version || state.settings?.version || ""})`;
+        }
+        const freshSettings = await hostCall("get-settings").catch(() => null);
+        if (freshSettings?.announcements) {
+          state.announcements = freshSettings.announcements;
+          updateAnnouncementUI();
+          renderAnnouncementsList();
         }
       } catch (error) {
         label.className = "update-status-label error";

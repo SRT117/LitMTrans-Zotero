@@ -248,10 +248,160 @@
       this.diagnosticTimer = null;
       this.diagnosticBusy = false;
       this._initialized = false;
+      this.availableUpdate = null;
+      this.announcements = [];
     }
 
     log(message) {
       if (U.getPref("debug", false)) Zotero.debug(`[LitMTrans] ${message}`);
+    }
+
+    getDismissedAnnouncementIds() {
+      try {
+        const raw = U.getPref("dismissedAnnouncementIds", "[]");
+        const list = JSON.parse(raw);
+        return new Set(Array.isArray(list) ? list.map(String) : []);
+      } catch (_) {
+        return new Set();
+      }
+    }
+
+    dismissAnnouncement(id, broadcast = true) {
+      if (!id) return false;
+      try {
+        const set = this.getDismissedAnnouncementIds();
+        set.add(String(id));
+        U.setPref("dismissedAnnouncementIds", JSON.stringify([...set].slice(-200)));
+        if (broadcast) this.broadcastAnnouncements();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    dismissAnnouncements(ids) {
+      if (!Array.isArray(ids) || !ids.length) return true;
+      try {
+        const set = this.getDismissedAnnouncementIds();
+        let changed = false;
+        for (const id of ids) {
+          if (id) {
+            set.add(String(id));
+            changed = true;
+          }
+        }
+        if (changed) {
+          U.setPref("dismissedAnnouncementIds", JSON.stringify([...set].slice(-200)));
+          this.broadcastAnnouncements();
+        }
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    getAnnouncementHistory() {
+      try {
+        const raw = U.getPref("announcementHistory", "[]");
+        const list = JSON.parse(raw);
+        return Array.isArray(list) ? list : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    saveAnnouncementHistory(list) {
+      try {
+        const dismissed = this.getDismissedAnnouncementIds();
+        const items = Array.isArray(list) ? list : [];
+        if (items.length > 30) {
+          // Keep all applicable unread alerts, then fill up to 30 with most recent items
+          const unreadAlerts = items.filter(it => {
+            if (!it || it.level !== "alert" || dismissed.has(String(it.id))) return false;
+            return !LitMTrans.Updater?.isAnnouncementApplicable
+              || LitMTrans.Updater.isAnnouncementApplicable(it, this.version, new Set());
+          });
+          const unreadAlertRefs = new Set(unreadAlerts);
+          const others = items.filter(it => !unreadAlertRefs.has(it));
+          const remainingSlots = Math.max(0, 30 - unreadAlerts.length);
+          const finalItems = [...unreadAlerts, ...others.slice(0, remainingSlots)];
+          finalItems.sort((a, b) => {
+            const tA = Date.parse(a.date || a.expireAt || 0) || 0;
+            const tB = Date.parse(b.date || b.expireAt || 0) || 0;
+            return tB - tA;
+          });
+          U.setPref("announcementHistory", JSON.stringify(finalItems));
+          return;
+        }
+        U.setPref("announcementHistory", JSON.stringify(items));
+      } catch (_) {}
+    }
+
+    mergeAnnouncements(incoming) {
+      if (!Array.isArray(incoming) || !incoming.length) return;
+      const history = this.getAnnouncementHistory();
+      const map = new Map();
+      for (const item of history) {
+        if (item && item.id) map.set(item.id, item);
+      }
+      for (const item of incoming) {
+        if (item && item.id) {
+          map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+        }
+      }
+      const merged = [...map.values()];
+      merged.sort((a, b) => {
+        const tA = Date.parse(a.date || a.expireAt || 0) || 0;
+        const tB = Date.parse(b.date || b.expireAt || 0) || 0;
+        return tB - tA;
+      });
+      this.saveAnnouncementHistory(merged);
+      this.broadcastAnnouncements();
+    }
+
+    broadcastAnnouncements() {
+      const data = this.getAnnouncementsForWorkbench();
+      if (this.tabs instanceof Map) {
+        for (const runtime of this.tabs.values()) {
+          try { this.emit(runtime, { type: "announcements-updated", announcements: data }); } catch (_) {}
+        }
+      }
+    }
+
+    getAnnouncementsForWorkbench() {
+      const history = this.getAnnouncementHistory();
+      const dismissed = this.getDismissedAnnouncementIds();
+      let pendingAlert = null;
+      let unreadCount = 0;
+
+      for (const item of history) {
+        const isDismissed = dismissed.has(item.id);
+        const isApplicable = LitMTrans.Updater?.isAnnouncementApplicable
+          ? LitMTrans.Updater.isAnnouncementApplicable(item, this.version, new Set())
+          : true;
+
+        if (!isDismissed && isApplicable) {
+          unreadCount++;
+          if (!pendingAlert && item.level === "alert") {
+            pendingAlert = item;
+          }
+        }
+      }
+
+      return {
+        pendingAlert,
+        unreadCount,
+        history: history.map(item => {
+          const isApplicable = LitMTrans.Updater?.isAnnouncementApplicable
+            ? LitMTrans.Updater.isAnnouncementApplicable(item, this.version, new Set())
+            : true;
+          return {
+            ...item,
+            isDismissed: dismissed.has(item.id),
+            isApplicable
+          };
+        })
+      };
     }
 
     async diagramDocumentID(attachmentID) {
@@ -298,6 +448,10 @@
               this.availableUpdate = result;
               this.log(`发现可用新版本: v${result.version}`);
             }
+            if (Array.isArray(result?.announcements)) {
+              this.announcements = result.announcements;
+              this.mergeAnnouncements(result.announcements);
+            }
           }
         } catch (_) {}
       };
@@ -316,6 +470,10 @@
       const result = await LitMTrans.Updater.checkUpdate(this.version, progressHandler);
       if (result && result.hasUpdate) {
         this.availableUpdate = result;
+      }
+      if (Array.isArray(result?.announcements)) {
+        this.announcements = result.announcements;
+        this.mergeAnnouncements(result.announcements);
       }
       return result;
     }
@@ -5393,6 +5551,14 @@
           return this.checkForUpdates({ manual: true, runtime });
         case "apply-update":
           return this.applyUpdate(payload, null, runtime);
+        case "dismiss-announcement":
+          return { success: this.dismissAnnouncement(payload.id) };
+        case "mark-all-announcements-read": {
+          const history = this.getAnnouncementHistory();
+          const ids = history.map(item => item?.id).filter(Boolean);
+          const success = this.dismissAnnouncements(ids);
+          return { success };
+        }
         case "save-prompt-library":
           return this.savePromptLibrary(payload.library);
         case "list-models":
@@ -5579,6 +5745,7 @@
         showNativeReaderAskAI: Boolean(U.getPref("showNativeReaderAskAI", true)),
         autoUpdate: Boolean(U.getPref("autoUpdate", true)),
         availableUpdate: this.availableUpdate || null,
+        announcements: this.getAnnouncementsForWorkbench(),
         layoutReaderFonts,
         promptLibrary: this.promptLibrary(),
         hasChatAPIKey: chat.hasAPIKey,
