@@ -14,6 +14,7 @@
   <script src="chrome://litmtrans/content/src/mindmap-v2.js"></script>
   <script src="chrome://litmtrans/content/src/flowchart.js"></script>
   <script src="chrome://litmtrans/content/src/diagram-viewer.js"></script>
+  <script src="chrome://litmtrans/content/src/settings-view-model.js"></script>
   <script defer="defer" src="chrome://litmtrans/content/src/workbench.js"></script>
 </head>
 <body>
@@ -531,6 +532,29 @@
             <button id="check-update-button" class="button" type="button">检查更新</button>
             <span id="update-status-label" class="update-status-label"></span>
           </div>
+        </section>
+
+        <section class="settings-section settings-card-agent">
+          <div class="settings-section-heading">
+            <div><h3>AI助手连接</h3><p>连接后，你常用的AI助手可以帮你查找、整理和处理Zotero文献。</p></div>
+            <span id="setting-agent-status" class="settings-note"></span>
+          </div>
+          <label class="inline-check"><input id="setting-agent-enabled" type="checkbox" /> 允许AI助手访问Zotero</label>
+          <p id="setting-agent-hint" class="settings-note">打开后，AI助手可以帮你查找和整理Zotero文献。</p>
+          <button id="copy-agent-bootstrap" class="button button-primary" type="button">复制给智能体</button>
+          <details id="setting-agent-advanced" class="agent-advanced">
+            <summary>开发者设置</summary>
+            <div class="agent-advanced-body">
+              <label>访问权限<select id="setting-agent-access-mode"><option value="read">只读</option><option value="full" selected="selected">科研访问（默认）</option><option value="developer">开发者诊断</option></select></label>
+              <label class="inline-check"><input id="setting-agent-allow-configured-services" type="checkbox" checked="checked" /> 允许使用已配置的解析和翻译服务</label>
+          <label class="inline-check"><input id="setting-agent-allow-chat-history" type="checkbox" checked="checked" /> 允许读取LitMTrans对话历史</label>
+              <label>后台AI<select id="setting-agent-background-provider"><option value="auto">自动选择已配置API</option><option value="deepseek">DeepSeek API</option><option value="oneapi">OneAPI / NewAPI</option><option value="openai_compatible">OpenAI兼容接口</option><option value="gemini">Gemini API</option><option value="siliconflow">SiliconFlow</option><option value="zai">Z.ai</option><option value="openrouter">OpenRouter</option></select></label>
+              <div class="field-with-action agent-client-config">
+                <label>客户端配置<select id="setting-agent-client"><option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option><option value="cline">Cline</option><option value="continue">Continue</option><option value="cursor">Cursor</option><option value="cherry-studio">Cherry Studio</option><option value="gemini-cli">Gemini CLI</option><option value="chatbox">Chatbox</option><option value="workbuddy">WorkBuddy</option><option value="trae-ai">Trae</option><option value="qwen-code">Qwen Code</option><option value="custom-http">通用 HTTP 客户端</option></select></label>
+                <button id="copy-agent-client-config" class="button" type="button">复制开发者配置</button>
+              </div>
+            </div>
+          </details>
         </section>
           </div>
         </details>

@@ -438,6 +438,10 @@
     }
 
     async findDocumentIDsForItemIDs(itemIDs) {
+      return (await this.findDocumentRecordsForItemIDs(itemIDs)).map(record => record.documentID);
+    }
+
+    async findDocumentRecordsForItemIDs(itemIDs) {
       const deleted = new Set((Array.isArray(itemIDs) ? itemIDs : [itemIDs])
         .map(value => Number(value))
         .filter(Number.isFinite));
@@ -450,7 +454,13 @@
         const identities = [meta?.itemID, meta?.parentItemID]
           .map(value => Number(value))
           .filter(Number.isFinite);
-        if (identities.some(id => deleted.has(id))) matches.push(PathUtils.filename(directory));
+        const matchedItemIDs = identities.filter(id => deleted.has(id));
+        if (matchedItemIDs.length) matches.push({
+          documentID: PathUtils.filename(directory),
+          itemID: Number(meta?.itemID || 0) || null,
+          parentItemID: Number(meta?.parentItemID || 0) || null,
+          matchedItemIDs
+        });
       }
       return matches;
     }

@@ -2310,13 +2310,14 @@ flowchart LR
     }
 
     async generateReply(documentID, session, userIndex, options = {}, emit = null, signal = null) {
+      const forceAPI = options.forceAPI === true || options.agentExternal === true;
       const isWebSession = session?.id === this.documentSessionID("web")
         || session?.id === "web-document-chat"
         || session?.messages?.[userIndex]?.transport?.engine === "deepseek_web";
-      const isWeb = isWebSession
+      const isWeb = !forceAPI && (isWebSession
         || options.engine === "deepseek_web"
         || options.aiMode === "web"
-        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options }));
       const replyOptions = isWeb
         ? { ...options, engine: "deepseek_web", aiMode: "web", provider: "deepseek_web" }
         : options;
@@ -2327,10 +2328,21 @@ flowchart LR
         settings = { ...this.llm.getSettings("chat"), provider: "deepseek_web", model: "deepseek-web", baseURL: "" };
       } else {
         resolvedModel = await this.llm.ensureConfiguredModel(
-          this.llm.resolveConfig({ purpose: "chat", engine: "api", aiMode: "api" }),
+          this.llm.resolveConfig({
+            purpose: "chat",
+            engine: "api",
+            aiMode: "api",
+            provider: options.provider,
+            baseURL: options.baseURL,
+            model: options.model,
+            apiKey: options.apiKey
+          }),
           signal
         );
-        settings = { ...this.llm.getSettings("chat"), model: resolvedModel.model };
+        const storedSettings = this.llm.getSettings("chat");
+        settings = options.provider
+          ? { ...storedSettings, ...resolvedModel }
+          : { ...storedSettings, model: resolvedModel.model };
       }
       this.updateSessionModel(session, emit, replyOptions);
       const insertIndex = userIndex + 1;
@@ -2476,6 +2488,9 @@ flowchart LR
         documentID,
         sessionID: session.id,
         provider: settings.provider,
+        baseURL: settings.baseURL,
+        model: settings.model,
+        apiKey: options.apiKey,
         engine: isWeb ? "deepseek_web" : options.engine,
         aiMode: isWeb ? "web" : options.aiMode,
         promptCacheKey: session.apiCacheSessionID,
@@ -2618,13 +2633,14 @@ flowchart LR
         throw new Error("只能从用户消息所在的轮次重新生成回答");
       }
       const storedEngine = session.messages[range.start]?.transport?.engine;
-      const isWeb = session.id === this.documentSessionID("web")
+      const forceAPI = options.forceAPI === true || options.agentExternal === true;
+      const isWeb = !forceAPI && (session.id === this.documentSessionID("web")
         || session.id === "web-document-chat"
         || storedEngine === "deepseek_web"
         || session.messages[range.start]?.transport?.aiMode === "web"
         || options.engine === "deepseek_web"
         || options.aiMode === "web"
-        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options });
+        || this.llm.isWebEngineActive?.({ purpose: "chat", ...options }));
       const transport = isWeb
         ? { ...options, engine: "deepseek_web", aiMode: "web", provider: "deepseek_web" }
         : (options.engine || options.aiMode
@@ -2652,6 +2668,14 @@ flowchart LR
         session.messages[range.start].transport = {
           ...(session.messages[range.start].transport || {}),
           engine: "deepseek_web"
+        };
+      }
+      else if (forceAPI) {
+        session.messages[range.start].transport = {
+          ...(session.messages[range.start].transport || {}),
+          engine: "api",
+          aiMode: "api",
+          provider: String(options.provider || session.messages[range.start]?.transport?.provider || "")
         };
       }
       session.messages.splice(range.start + 1, range.end - range.start - 1);

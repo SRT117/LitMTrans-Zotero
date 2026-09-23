@@ -3,7 +3,8 @@ param(
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
     [switch]$PrepareOnly,
-    [switch]$Validate
+    [switch]$Validate,
+    [switch]$McpTestStub
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +26,17 @@ Write-Host "数据：$($testVersion.DataPath)" -ForegroundColor DarkGray
 
 if ($PrepareOnly) {
     return
+}
+
+$testStubPrefPath = Join-Path $testVersion.ProfilePath "prefs.js"
+$testStubPrefLine = 'user_pref("extensions.litmtrans.agentTestNetworkStub", true);'
+$testStubPrefAdded = $false
+if ($McpTestStub) {
+    $prefText = if (Test-Path -LiteralPath $testStubPrefPath) { Get-Content -LiteralPath $testStubPrefPath -Raw } else { "" }
+    if ($prefText -notmatch [regex]::Escape($testStubPrefLine)) {
+        Add-Content -LiteralPath $testStubPrefPath -Value $testStubPrefLine -Encoding UTF8
+        $testStubPrefAdded = $true
+    }
 }
 
 # The scaffold otherwise uses taskkill /im zotero.exe on Ctrl+C, which can
@@ -51,5 +63,10 @@ try {
     & (Join-Path $projectRoot "node_modules\.bin\zotero-plugin.cmd") serve
 }
 finally {
+    if ($testStubPrefAdded -and (Test-Path -LiteralPath $testStubPrefPath)) {
+        $prefText = Get-Content -LiteralPath $testStubPrefPath -Raw
+        $cleaned = [regex]::Replace($prefText, "(?m)^" + [regex]::Escape($testStubPrefLine) + "\r?\n?", "")
+        [System.IO.File]::WriteAllText($testStubPrefPath, $cleaned, [System.Text.UTF8Encoding]::new($false))
+    }
     Pop-Location
 }

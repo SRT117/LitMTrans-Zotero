@@ -5,49 +5,20 @@
   const U = LitMTrans.Utils;
   const DEFAULT_CHAT_ENGINE = LitMTrans.Constants?.DEFAULT_CHAT_ENGINE || "deepseek_web";
   const CAJ_CACHE_VERSION = 5;
-  const DIAGRAM_CACHE_TASK_TYPES = new Set(["key_points", "paper_mindmap", "paper_logic_flow"]);
-  const DIAGRAM_CACHE_MAX_CHARS = 2 * 1024 * 1024;
+  const DIAGRAM_CACHE_TASK_TYPES = LitMTrans.DiagramCache.TASK_TYPES;
+  const DIAGRAM_CACHE_MAX_CHARS = LitMTrans.DiagramCache.MAX_CHARS;
   LitMTrans.FEEDBACK_FORM_URL = "https://acnndsd03tis.feishu.cn/share/base/form/shrcn3I4qD4YIyhM6H1KAEQ59zb";
 
   function diagramCacheTaskType(value) {
-    const taskType = String(value || "").trim();
-    return DIAGRAM_CACHE_TASK_TYPES.has(taskType) ? taskType : "";
+    return LitMTrans.DiagramCache.taskType(value);
   }
 
   function diagramCacheMode(value, taskType) {
-    const mode = String(value || "").trim();
-    const expected = taskType === "paper_logic_flow" ? "flowchart" : "mindmap";
-    if (!mode) return expected;
-    return mode === expected ? mode : "";
+    return LitMTrans.DiagramCache.mode(value, taskType);
   }
 
   function isDiagramCacheShape(diagram, mode) {
-    if (!diagram || typeof diagram !== "object" || Array.isArray(diagram)) return false;
-    if (!Array.isArray(diagram.nodes) || diagram.nodes.length < 1 || diagram.nodes.length > 64) return false;
-    if (mode === "mindmap") {
-      if (!diagram.root || typeof diagram.root !== "object" || !Array.isArray(diagram.root.children)) return false;
-      const seenIDs = new Set();
-      for (const node of diagram.nodes) {
-        const id = String(node?.id || "");
-        if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id) || seenIDs.has(id) || !String(node?.label || "").trim()) return false;
-        if (!Array.isArray(node?.evidence) || node.evidence.length > 6) return false;
-        seenIDs.add(id);
-      }
-      const seenNodes = new Set();
-      const visit = (node, depth) => {
-        if (!node || typeof node !== "object" || seenNodes.has(node) || depth > 5) return false;
-        if (!seenIDs.has(String(node.id || "")) || !String(node.label || "").trim()) return false;
-        if (!Array.isArray(node.children) || node.children.length > 64) return false;
-        seenNodes.add(node);
-        return node.children.every(child => visit(child, depth + 1));
-      };
-      return diagram.root.parentId == null && visit(diagram.root, 0) && seenNodes.size === diagram.nodes.length;
-    }
-    if (!Array.isArray(diagram.edges) || diagram.edges.length > 112) return false;
-    const nodeIDs = new Set(diagram.nodes.map(node => String(node?.id || "")));
-    if ([...nodeIDs].some(id => !/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id)) || nodeIDs.size !== diagram.nodes.length) return false;
-    if (diagram.nodes.some(node => !String(node?.label || "").trim())) return false;
-    return diagram.edges.every(edge => nodeIDs.has(String(edge?.from || "")) && nodeIDs.has(String(edge?.to || "")));
+    return LitMTrans.DiagramCache.validate(diagram, mode);
   }
 
   function localize(zh, en) {
@@ -251,6 +222,8 @@
       this._initialized = false;
       this.availableUpdate = null;
       this.announcements = [];
+      const AgentBackend = LitMTrans.Agent?.AgentBackend || LitMTrans.AgentBackend;
+      this.agent = AgentBackend ? new AgentBackend(this) : null;
     }
 
     log(message) {
@@ -576,6 +549,8 @@
       this._cajShuttingDown = false;
       if (this._initialized) return;
       await this.storage.init();
+      try { await this.agent?.init?.(); }
+      catch (error) { this.log(`Agent backend 初始化失败: ${error?.message || error}`); }
       this.registerItemDeletionObserver();
       // Item-pane section labels are resolved in the shared Zotero window.
       // Insert the plugin Fluent resource before registering that section.
@@ -590,6 +565,8 @@
 
     async shutdown() {
       this._cajShuttingDown = true;
+      try { await this.agent?.shutdown?.(); }
+      catch (error) { this.log(`Agent backend 关闭失败: ${error?.message || error}`); }
       for (const cancel of this._cajWorkerTasks || []) cancel();
       if (this.itemNotifierID !== null) {
         try { Zotero.Notifier.unregisterObserver(this.itemNotifierID); } catch (_) {}
@@ -1172,7 +1149,7 @@
           // is emitted when it is later erased permanently. Both must clear
           // this plugin's independently stored document data.
           if (!["trash", "delete"].includes(event) || type !== "item") return;
-          void this.clearCachesForDeletedItems(ids).catch(error => Zotero.logError(error));
+          void this.clearCachesForDeletedItems(ids, event).catch(error => Zotero.logError(error));
         }
       };
       try {
@@ -1185,7 +1162,7 @@
       }
     }
 
-    async clearCachesForDeletedItems(itemIDs) {
+    async clearCachesForDeletedItems(itemIDs, event = "delete") {
       const deleted = new Set((Array.isArray(itemIDs) ? itemIDs : [itemIDs])
         .map(value => Number(value))
         .filter(Number.isFinite));
@@ -1194,7 +1171,8 @@
         this.stopOperations(this.tabIDForAttachment(itemID));
         this.cleanupTab(this.tabIDForAttachment(itemID));
       }
-      const relatedDocumentIDs = new Set(await this.storage.findDocumentIDsForItemIDs?.([...deleted]) || []);
+      const relatedRecords = await this.storage.findDocumentRecordsForItemIDs?.([...deleted]) || [];
+      const relatedDocumentIDs = new Set(relatedRecords.map(record => record?.documentID).filter(Boolean));
       for (const itemID of deleted) {
         try {
           const item = Zotero.Items.get(itemID);
@@ -1211,7 +1189,18 @@
         }
       }
       const cleared = await this.storage.clearDocumentsForDeletedItemIDs([...deleted]);
-      if (cleared.length) this.log(`Cleared ${cleared.length} document cache(s) for deleted Zotero item(s)`);
+      const clearedDocumentIDs = Array.isArray(cleared) ? cleared : (cleared?.clearedDocumentIDs || []);
+      const index = this.agent?.facade?.literature?.index;
+      for (const documentID of clearedDocumentIDs) {
+        try {
+          const record = relatedRecords.find(row => String(row?.documentID || "") === String(documentID)) || null;
+          const parentDeleted = Boolean(record?.parentItemID && deleted.has(Number(record.parentItemID)));
+          if (event === "delete" && parentDeleted) await index?.removeDocument?.(documentID);
+          else await index?.removeDocumentStatus?.(documentID, { documentID });
+        }
+        catch (error) { Zotero.logError?.(error); }
+      }
+      if (clearedDocumentIDs.length) this.log(`Cleared ${clearedDocumentIDs.length} document cache(s) for deleted Zotero item(s)`);
       return cleared;
     }
 
@@ -5475,19 +5464,19 @@
           const filePath = this.storage.path(documentID, "diagrams", `${taskType}.json`);
           return this.withDiagramCacheLock(filePath, async () => {
             const data = await this.storage.readJSON(filePath, null);
-            const mode = String(data?.mode || "");
+            const normalized = LitMTrans.DiagramCache.normalize(data, taskType);
+            const mode = String(normalized?.mode || "");
             const sourceFingerprint = await this.diagramSourceFingerprint(documentID);
-            const serialized = data?.diagram ? JSON.stringify(data.diagram) : "";
+            const serialized = normalized?.diagram ? JSON.stringify(normalized.diagram) : "";
             if (
-              !data
-              || data.taskType !== taskType
+              !normalized
               || !sourceFingerprint
-              || data.sourceFingerprint !== sourceFingerprint
+              || normalized.sourceFingerprint !== sourceFingerprint
               || diagramCacheMode(mode, taskType) !== mode
-              || !isDiagramCacheShape(data.diagram, mode)
+              || !isDiagramCacheShape(normalized.diagram, mode)
               || serialized.length > DIAGRAM_CACHE_MAX_CHARS
             ) return { cached: false };
-            return { cached: true, data };
+            return { cached: true, data: normalized };
           });
         }
 
@@ -5502,15 +5491,9 @@
           return this.withDiagramCacheLock(filePath, async () => {
             const sourceFingerprint = await this.diagramSourceFingerprint(documentID);
             if (!sourceFingerprint) return { saved: false };
-            await this.storage.writeJSON(filePath, {
-              version: 1,
-              taskType,
-              mode,
-              title: String(payload.title || "图形").trim().slice(0, 120) || "图形",
-              sourceFingerprint,
-              diagram: payload.diagram,
-              updatedAt: new Date().toISOString()
-            });
+            const data = LitMTrans.DiagramCache.build({ taskType, mode, title: payload.title, sourceFingerprint, diagram: payload.diagram });
+            if (!data) return { saved: false };
+            await this.storage.writeJSON(filePath, data);
             return { saved: true };
           });
         }
@@ -5659,6 +5642,12 @@
 
         case "get-settings":
           return this.getSettings();
+        case "get-agent-status":
+          return this.getAgentStatusSnapshot();
+        case "get-agent-client-config":
+          return this.getAgentClientConfig(payload.client);
+        case "get-agent-bootstrap-instruction":
+          return this.getAgentBootstrapInstruction(payload.client);
         case "get-startup-notice":
           return this.getStartupNotice();
         case "mark-startup-notice-seen":
@@ -5874,6 +5863,14 @@
         autoUpdate: Boolean(U.getPref("autoUpdate", true)),
         availableUpdate: this.availableUpdate || null,
         announcements: this.getAnnouncementsForWorkbench(),
+        agent: this.agent?.settingsSnapshot?.() || {
+          enabled: Boolean(U.getPref("agentEnabled", false)),
+          mode: String(U.getPref("agentAccessMode", "full") || "full"),
+          allowConfiguredServices: Boolean(U.getPref("agentAllowConfiguredServices", true)),
+          allowChatHistory: Boolean(U.getPref("agentAllowChatHistory", true)),
+          backgroundProvider: String(U.getPref("agentBackgroundProvider", "auto") || "auto"),
+          server: { running: false, url: "" }
+        },
         layoutReaderFonts,
         promptLibrary: this.promptLibrary(),
         hasChatAPIKey: chat.hasAPIKey,
@@ -5887,6 +5884,33 @@
           supportsChat: spec.supportsChat !== false && !U.isWebMachineProvider(spec.id),
           webDriver: spec.webDriver === true
         }))
+      };
+    }
+
+    async getAgentClientConfig(client) {
+      if (!this.agent?.facade) throw new Error("LitMTrans智能体尚未初始化");
+      return this.agent.facade.invoke("get_client_config", { client });
+    }
+
+    async getAgentStatusSnapshot() {
+      return this.agent?.settingsSnapshot?.() || {
+        enabled: Boolean(U.getPref("agentEnabled", false)),
+        mode: String(U.getPref("agentAccessMode", "full") || "full"),
+        server: { running: false, url: "" },
+        connection: { connected: false, clientName: "", clients: [] }
+      };
+    }
+
+    getAgentBootstrapInstruction(_client = "") {
+      const snapshot = this.agent?.settingsSnapshot?.() || {};
+      const endpoint = String(snapshot.server?.url || "").trim();
+      if (!endpoint) return { ready: false, endpoint: "", instruction: "请先启用智能体连接，等待服务准备好后再复制。" };
+      const tools = this.agent?.facade?.visibleTools?.() || [];
+      return {
+        ready: true,
+        endpoint,
+        serverName: "litmtrans",
+        instruction: LitMTrans.Agent.buildAgentBootstrapInstruction(endpoint, "litmtrans", { toolCount: tools.length })
       };
     }
 
@@ -6092,6 +6116,28 @@
       if (Object.prototype.hasOwnProperty.call(values || {}, "autoUpdate")) {
         U.setPref("autoUpdate", values.autoUpdate === true);
       }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "agentEnabled")) {
+        U.setPref("agentEnabled", values.agentEnabled === true);
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "agentAccessMode")) {
+        const mode = ["read", "full", "developer"].includes(String(values.agentAccessMode)) ? String(values.agentAccessMode) : "full";
+        U.setPref("agentAccessMode", mode);
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "agentAllowConfiguredServices")) {
+        U.setPref("agentAllowConfiguredServices", values.agentAllowConfiguredServices === true);
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "agentAllowChatHistory")) {
+        U.setPref("agentAllowChatHistory", values.agentAllowChatHistory === true);
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "agentBackgroundProvider")) {
+        const provider = String(values.agentBackgroundProvider || "auto").trim().toLowerCase();
+        const allowed = new Set(["auto", "deepseek", "oneapi", "openai_compatible", "gemini", "siliconflow", "zai", "openrouter"]);
+        U.setPref("agentBackgroundProvider", allowed.has(provider) ? provider : "auto");
+      }
+      if (Object.prototype.hasOwnProperty.call(values || {}, "agentPort")) {
+        const port = Math.max(0, Math.min(65535, Number(values.agentPort) || 0));
+        U.setPref("agentPort", port);
+      }
       if (values && values.layoutReaderFonts && typeof values.layoutReaderFonts === "object" && !Array.isArray(values.layoutReaderFonts)) {
         const fonts = {};
         for (const [documentID, value] of Object.entries(values.layoutReaderFonts)) {
@@ -6166,6 +6212,7 @@
         };
         this.llm.saveSettings(chatValues, "chat");
       }
+      void this.agent?.applySettings?.();
       return {
         ...translation,
         ...this.getSettings(),

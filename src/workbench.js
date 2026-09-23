@@ -8,6 +8,8 @@
   const Layout = window.LitMTrans?.LayoutHelpers;
   const P = window.LitMTrans?.PortedCore || {};
   const pending = new Map();
+  let agentStatusTimer = null;
+  let agentStatusRefreshing = false;
   const state = {
     data: null,
     settings: null,
@@ -197,6 +199,7 @@
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "setting-auto-update", "check-update-button", "update-status-label",
+      "setting-agent-enabled", "setting-agent-access-mode", "setting-agent-allow-configured-services", "setting-agent-allow-chat-history", "setting-agent-background-provider", "setting-agent-status", "setting-agent-hint", "setting-agent-client", "copy-agent-bootstrap", "copy-agent-client-config",
       "open-storage-manager-button", "clear-document-button", "save-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
       "storage-chart-card", "storage-donut-chart", "storage-chart-legend",
@@ -6605,6 +6608,15 @@
     renderReferencePaths();
     renderCustomTranslationInstructionPreview();
     els["setting-key-points-prompt"].value = settings.effectiveKeyPointsPrompt || settings.keyPointsDefaultPrompt || "";
+    const agent = settings.agent || {};
+    if (els["setting-agent-enabled"]) els["setting-agent-enabled"].checked = agent.enabled === true;
+    if (els["setting-agent-access-mode"]) els["setting-agent-access-mode"].value = ["read", "full", "developer"].includes(agent.mode) ? agent.mode : "full";
+    if (els["setting-agent-allow-configured-services"]) els["setting-agent-allow-configured-services"].checked = agent.allowConfiguredServices !== false;
+    if (els["setting-agent-allow-chat-history"]) els["setting-agent-allow-chat-history"].checked = agent.allowChatHistory !== false;
+    if (els["setting-agent-background-provider"]) els["setting-agent-background-provider"].value = ["auto", "deepseek", "oneapi", "openai_compatible", "gemini", "siliconflow", "zai", "openrouter"].includes(agent.backgroundProvider) ? agent.backgroundProvider : "auto";
+    const agentViewModel = window.LitMTrans?.AgentSettingsViewModel;
+    if (els["setting-agent-status"]) els["setting-agent-status"].textContent = agentViewModel?.statusText?.(agent) || (agent.enabled ? "等待智能体连接" : "未启用");
+    if (els["setting-agent-hint"]) els["setting-agent-hint"].textContent = agentViewModel?.statusHint?.(agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
     updateWebMachineTranslationSettings();
     updateDeepSeekFastLayoutControl();
     updateProviderLabel();
@@ -7222,6 +7234,11 @@
       keyPointsPrompt: els["setting-key-points-prompt"].value.trim() === String(state.settings?.keyPointsDefaultPrompt || "").trim()
         ? ""
         : els["setting-key-points-prompt"].value,
+      agentEnabled: els["setting-agent-enabled"]?.checked === true,
+      agentAccessMode: ["read", "full", "developer"].includes(els["setting-agent-access-mode"]?.value) ? els["setting-agent-access-mode"].value : "full",
+      agentAllowConfiguredServices: els["setting-agent-access-mode"]?.value === "developer" ? els["setting-agent-allow-configured-services"]?.checked !== false : true,
+      agentAllowChatHistory: els["setting-agent-access-mode"]?.value === "developer" ? els["setting-agent-allow-chat-history"]?.checked !== false : true,
+      agentBackgroundProvider: els["setting-agent-access-mode"]?.value === "developer" ? (els["setting-agent-background-provider"]?.value || "auto") : "auto",
       showLayoutRestoration: true,
       layoutDevelopmentMode: Boolean(els["debug-boxes-check"]?.checked ?? state.settings?.layoutDevelopmentMode),
       showReasoning: true,
@@ -7287,6 +7304,29 @@
     return data;
   }
 
+  async function refreshAgentStatus() {
+    if (agentStatusRefreshing || !els["settings-dialog"]?.open) return;
+    agentStatusRefreshing = true;
+    try {
+      const agent = await hostCall("get-agent-status", {}, { timeout: 5000 });
+      const viewModel = window.LitMTrans?.AgentSettingsViewModel;
+      if (els["setting-agent-status"]) els["setting-agent-status"].textContent = viewModel?.statusText?.(agent) || (agent?.enabled ? "等待智能体连接" : "未启用");
+      if (els["setting-agent-hint"]) els["setting-agent-hint"].textContent = viewModel?.statusHint?.(agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
+    }
+    catch (_) {}
+    finally { agentStatusRefreshing = false; }
+  }
+
+  function startAgentStatusPolling() {
+    if (agentStatusTimer) return;
+    agentStatusTimer = window.setInterval(() => void refreshAgentStatus(), 2500);
+  }
+
+  function stopAgentStatusPolling() {
+    if (agentStatusTimer) window.clearInterval(agentStatusTimer);
+    agentStatusTimer = null;
+  }
+
   function translationConfigurationField(message) {
     const text = String(message || "");
     const missing = /(?:尚未配置|尚未选择|请先(?:在.*设置中)?(?:配置|填写|选择))/.test(text);
@@ -7307,6 +7347,8 @@
     els["settings-dialog"].style.height = "auto";
     els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
     if (!els["settings-dialog"].open) els["settings-dialog"].showModal();
+    startAgentStatusPolling();
+    void refreshAgentStatus();
     requestAnimationFrame(() => {
       syncDeepSeekWebBounds();
       fitSettingsDialog(els["settings-dialog"]);
@@ -8690,10 +8732,30 @@
         syncDeepSeekWebBounds();
       });
     });
+    els["copy-agent-client-config"]?.addEventListener("click", async () => {
+      try {
+        const client = els["setting-agent-client"]?.value || "generic";
+        const result = await hostCall("get-agent-client-config", { client }, { timeout: 5000 });
+        const value = String(result?.displayText || "");
+        if (!value) throw new Error("Agent MCP 服务尚未启动，请先启用后再复制配置");
+        await copyText(value, "配置已复制");
+      }
+      catch (error) { toast(error.message || "配置复制失败", "error"); }
+    });
+    els["copy-agent-bootstrap"]?.addEventListener("click", async () => {
+      try {
+        const result = await hostCall("get-agent-bootstrap-instruction", {}, { timeout: 5000 });
+        const value = String(result?.instruction || "");
+        if (!result?.ready || !value) throw new Error("请先启用连接，等待服务准备好后再复制。");
+        await copyText(value, "已复制给智能体");
+      }
+      catch (error) { toast(error.message || "复制失败", "error"); }
+    });
     els["setting-web-mode-advanced"].addEventListener("toggle", () => {
       requestAnimationFrame(() => fitSettingsDialog(els["settings-dialog"]));
     });
     els["settings-dialog"].addEventListener("close", () => {
+      stopAgentStatusPolling();
       els["settings-dialog"].style.height = "auto";
       els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
       requestAnimationFrame(() => syncDeepSeekWebBounds());

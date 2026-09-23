@@ -12,7 +12,8 @@ const suites = [
   { name: "06-chat-multimodal", file: "./suites/06-chat-multimodal" },
   { name: "07-mineru-storage", file: "./suites/07-mineru-storage" },
   { name: "08-ported-core", file: "./suites/08-ported-core" },
-  { name: "09-contracts-ui", file: "./suites/09-contracts-ui" }
+  { name: "09-contracts-ui", file: "./suites/09-contracts-ui" },
+  { name: "10-agent-mcp", file: "./suites/10-agent-mcp" }
 ];
 
 (async () => {
