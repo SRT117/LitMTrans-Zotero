@@ -284,5 +284,6 @@ LitMTrans-Zotero 的实现离不开以下开源项目与工具的启发和支持
 - 维护者：[SRT117](https://github.com/SRT117)
 - 许可证：[MIT License](LICENSE)
 - 第三方组件许可：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- Bundled / managed third-party components retain their respective licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [docs/licensing/](docs/licensing/).
 
 *LitMTrans是独立开源项目，与Zotero、MinerU或相关模型提供商不存在隶属或合作关系。*
