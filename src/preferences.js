@@ -174,10 +174,16 @@ var LitMTransControllerPreferences = {
   async init() {
     const root = document.getElementById("litmtrans-preferences-root");
     if (!root) return;
-    if (root.dataset.initialized === "true") return this.load();
+    if (root.dataset.initialized === "true") {
+      await this.flushAutoSave(true);
+      return this.load();
+    }
     root.dataset.initialized = "true";
     this.bind();
-    root.addEventListener("showing", () => void this.load());
+    root.addEventListener("showing", () => {
+      void this.flushAutoSave(true).then(() => this.load())
+        .catch(error => this.message(error.message || String(error), true));
+    });
     window.addEventListener("unload", () => this.stopAgentStatusPolling(), { once: true });
     await this.load();
   },
@@ -265,6 +271,8 @@ var LitMTransControllerPreferences = {
           this.$("check-update").textContent = "检查更新";
         }
       }
+      this.autoSaveBaseline = this.payload();
+      this.autoSavedRevision = this.autoSaveRevision;
       this.message("");
       this.startAgentStatusPolling();
     }
@@ -395,13 +403,99 @@ var LitMTransControllerPreferences = {
     };
   },
 
-  async save() {
-    try { this.settings = this.controller().saveSettings(this.payload()); await this.load(); this.message("设置已保存"); }
-    catch (error) { this.message(error.message || String(error), true); }
+  autoSaveTimer: null,
+  autoSaveBaseline: null,
+  autoSaveRevision: 0,
+  autoSavedRevision: 0,
+
+  changedPayload(payload) {
+    const baseline = this.autoSaveBaseline || {};
+    const changed = {};
+    for (const [key, value] of Object.entries(payload)) {
+      if (JSON.stringify(value) === JSON.stringify(baseline[key])) continue;
+      if (key === "translationProviderProfiles" || key === "chatProviderProfiles") {
+        const previous = baseline[key] || {};
+        const profiles = Object.fromEntries(Object.entries(value).filter(([provider, profile]) =>
+          JSON.stringify(profile) !== JSON.stringify(previous[provider])));
+        if (Object.keys(profiles).length) changed[key] = profiles;
+      } else changed[key] = value;
+    }
+    return changed;
+  },
+
+  flushAutoSaveWithFeedback() {
+    void this.flushAutoSave(true).catch(error => this.message(error.message || String(error), true));
+  },
+
+  scheduleAutoSave(delay = 400) {
+    this.autoSaveRevision += 1;
+    if (this.autoSaveTimer) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    if (delay <= 0) {
+      this.flushAutoSaveWithFeedback();
+      return;
+    }
+    this.autoSaveTimer = setTimeout(() => {
+      this.autoSaveTimer = null;
+      this.flushAutoSaveWithFeedback();
+    }, delay);
+  },
+
+  async flushAutoSave(silent = true) {
+    if (this.autoSaveTimer) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    while (this.autoSavedRevision < this.autoSaveRevision) {
+      const revision = this.autoSaveRevision;
+      let savedSettings;
+      const payload = this.payload();
+      const changed = this.changedPayload(payload);
+      if (!Object.keys(changed).length) {
+        this.autoSavedRevision = revision;
+        return this.settings;
+      }
+      try {
+        savedSettings = this.controller().saveSettings(changed);
+      } catch (error) {
+        if (revision !== this.autoSaveRevision) {
+          if (this.autoSaveTimer) return;
+          continue;
+        }
+        throw error;
+      }
+      if (revision !== this.autoSaveRevision) {
+        if (this.autoSaveTimer) return;
+        continue;
+      }
+      this.settings = savedSettings;
+      this.autoSaveBaseline = payload;
+      this.autoSavedRevision = revision;
+      if (savedSettings?.agent) {
+        const viewModel = window.LitMTrans?.AgentSettingsViewModel;
+        const agentStatus = this.$("agent-status");
+        const agentHint = this.$("agent-hint");
+        if (agentStatus) agentStatus.textContent = viewModel?.statusText?.(savedSettings.agent) || (savedSettings.agent.enabled ? "等待智能体连接" : "未启用");
+        if (agentHint) agentHint.textContent = viewModel?.statusHint?.(savedSettings.agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
+      }
+      if (silent) {
+        this.message("已自动保存", false);
+      } else {
+        this.message("设置已保存", false);
+      }
+      return savedSettings;
+    }
+    return this.settings;
   },
 
   async copyAgentClientConfig() {
     try {
+      const isChecked = this.$("agent-enabled")?.checked === true;
+      if (isChecked && (!this.settings?.agent?.server?.running || this.autoSaveRevision !== this.autoSavedRevision)) {
+        await this.flushAutoSave(true);
+      }
       const client = this.$("agent-client")?.value || "generic";
       const result = await this.controller().getAgentClientConfig(client);
       const value = String(result?.displayText || "");
@@ -415,8 +509,17 @@ var LitMTransControllerPreferences = {
 
   async copyAgentBootstrap() {
     try {
-      const result = await this.controller().getAgentBootstrapInstruction("");
-      const value = String(result?.instruction || "");
+      const isChecked = this.$("agent-enabled")?.checked === true;
+      if (isChecked && (!this.settings?.agent?.server?.running || this.autoSaveRevision !== this.autoSavedRevision)) {
+        await this.flushAutoSave(true);
+      }
+      let result = await this.controller().getAgentBootstrapInstruction("");
+      let value = String(result?.instruction || "");
+      if (!result?.ready || !value) {
+        await this.flushAutoSave(true);
+        result = await this.controller().getAgentBootstrapInstruction("");
+        value = String(result?.instruction || "");
+      }
       if (!result?.ready || !value) throw new Error("请先启用连接，等待服务准备好后再复制。");
       if (this.controller().writeClipboardText) this.controller().writeClipboardText(value);
       else await navigator.clipboard?.writeText?.(value);
@@ -538,7 +641,6 @@ var LitMTransControllerPreferences = {
       }
       catch (error) { this.message(error.message || "无法打开反馈页面", true); }
     });
-    this.$("save").addEventListener("click", () => this.save());
     this.$("copy-agent-bootstrap")?.addEventListener("click", () => this.copyAgentBootstrap());
     this.$("copy-agent-client-config")?.addEventListener("click", () => this.copyAgentClientConfig());
     this.$("refresh-models").addEventListener("click", () => this.refreshModels("translation"));
@@ -548,9 +650,11 @@ var LitMTransControllerPreferences = {
         this.$("chat-uses-translation-model").checked = false;
       }
       this.updateChatModelSectionVisibility();
+      this.scheduleAutoSave(50);
     });
     this.$("chat-engine-web").addEventListener("change", () => {
       this.updateChatModelSectionVisibility();
+      this.scheduleAutoSave(50);
     });
     this.$("open-web-mode-info")?.addEventListener("click", event => {
       event.preventDefault();
@@ -580,20 +684,98 @@ var LitMTransControllerPreferences = {
       if (!this.$("web-mode-info")?.hidden) this.closeWebModeInfo();
       if (!this.$("mineru-token-link-info")?.hidden) this.closeMineruTokenLinkInfo();
     });
-    this.$("web-input-mode-auto").addEventListener("change", () => this.updateWebModeAdvancedControls());
-    this.$("web-input-mode-clipboard").addEventListener("change", () => this.updateWebModeAdvancedControls());
-    this.$("provider").addEventListener("change", () => this.providerChanged(""));
-    this.$("base-url").addEventListener("input", () => this.updateDeepSeekFastLayoutControl());
-    this.$("deepseek-fast-layout").addEventListener("change", () => this.updateDeepSeekFastLayoutControl());
-    this.$("chat-provider").addEventListener("change", () => this.providerChanged("chat-"));
+    this.$("web-input-mode-auto").addEventListener("change", () => {
+      this.updateWebModeAdvancedControls();
+      this.scheduleAutoSave(50);
+    });
+    this.$("web-input-mode-clipboard").addEventListener("change", () => {
+      this.updateWebModeAdvancedControls();
+      this.scheduleAutoSave(50);
+    });
+    this.$("provider").addEventListener("change", () => {
+      this.providerChanged("");
+      this.scheduleAutoSave(50);
+    });
+    this.$("base-url").addEventListener("input", () => {
+      this.updateDeepSeekFastLayoutControl();
+      this.scheduleAutoSave(400);
+    });
+    this.$("base-url").addEventListener("blur", () => this.flushAutoSaveWithFeedback());
+    this.$("deepseek-fast-layout").addEventListener("change", () => {
+      this.updateDeepSeekFastLayoutControl();
+      this.scheduleAutoSave(50);
+    });
+    this.$("chat-provider").addEventListener("change", () => {
+      this.providerChanged("chat-");
+      this.scheduleAutoSave(50);
+    });
     for (const [id, provider] of [["api-key", "provider"], ["chat-api-key", "chat-provider"]]) this.$(id).addEventListener("change", () => this.controller().saveProviderAPIKey(this.$(provider).value, this.$(id).value.trim()));
     this.$("mineru-token").addEventListener("change", () => this.controller().saveMinerUToken(this.$("mineru-token").value.trim()));
-    this.$("restore-key-points-prompt").addEventListener("click", () => { this.$("key-points-prompt").value = this.settings?.keyPointsDefaultPrompt || ""; });
-    this.$("add-reference").addEventListener("click", async () => { try { this.referencePaths = await this.controller().selectReferenceFiles(window, this.referencePaths); this.renderReferencePaths(); } catch (error) { this.message(error.message || String(error), true); } });
-    this.$("remove-reference").addEventListener("click", () => { const selected = new Set([...this.$("reference-list").selectedOptions].map(option => option.value)); this.referencePaths = this.referencePaths.filter(path => !selected.has(path)); this.renderReferencePaths(); });
+    this.$("restore-key-points-prompt").addEventListener("click", () => {
+      this.$("key-points-prompt").value = this.settings?.keyPointsDefaultPrompt || "";
+      this.scheduleAutoSave(0);
+    });
+    this.$("add-reference").addEventListener("click", async () => {
+      try {
+        this.referencePaths = await this.controller().selectReferenceFiles(window, this.referencePaths);
+        this.renderReferencePaths();
+        this.scheduleAutoSave(0);
+      } catch (error) { this.message(error.message || String(error), true); }
+    });
+    this.$("remove-reference").addEventListener("click", () => {
+      const selected = new Set([...this.$("reference-list").selectedOptions].map(option => option.value));
+      this.referencePaths = this.referencePaths.filter(path => !selected.has(path));
+      this.renderReferencePaths();
+      this.scheduleAutoSave(0);
+    });
     this.$("edit-custom-translation-instruction").addEventListener("click", () => { this.updateCustomTranslationInstruction(true); this.$("custom-translation-instruction").focus(); });
-    this.$("custom-translation-instruction").addEventListener("input", () => this.updateCustomTranslationInstruction(true));
-    this.$("clear-reference").addEventListener("click", () => { this.referencePaths = []; this.$("custom-translation-instruction").value = ""; this.renderReferencePaths(); this.updateCustomTranslationInstruction(); });
+    this.$("custom-translation-instruction").addEventListener("input", () => {
+      this.updateCustomTranslationInstruction(true);
+      this.scheduleAutoSave(400);
+    });
+    this.$("custom-translation-instruction").addEventListener("blur", () => this.flushAutoSaveWithFeedback());
+    this.$("clear-reference").addEventListener("click", () => {
+      this.referencePaths = [];
+      this.$("custom-translation-instruction").value = "";
+      this.renderReferencePaths();
+      this.updateCustomTranslationInstruction();
+      this.scheduleAutoSave(0);
+    });
+
+    // 自动保存绑定：各类离散开关与下拉选项
+    const discreteControls = [
+      "target-language", "machine-source-language", "translation-mode",
+      "thinking-mode", "reasoning-effort", "show-reasoning",
+      "delete-web-translation-sessions",
+      "chat-thinking-mode", "chat-reasoning-effort", "chat-show-reasoning",
+      "web-page-image-quality",
+      "caj-double-click-action", "show-native-reader-ask-ai", "auto-update",
+      "agent-access-mode", "agent-allow-configured-services",
+      "agent-allow-chat-history", "agent-background-provider"
+    ];
+    for (const id of discreteControls) {
+      this.$(id)?.addEventListener("change", () => this.scheduleAutoSave(50));
+    }
+
+    const textControls = ["model", "chat-base-url", "chat-model", "key-points-prompt"];
+    for (const id of textControls) {
+      const el = this.$(id);
+      if (el) {
+        el.addEventListener("input", () => this.scheduleAutoSave(400));
+        el.addEventListener("blur", () => this.flushAutoSaveWithFeedback());
+      }
+    }
+
+    this.$("agent-enabled")?.addEventListener("change", () => {
+      const checked = this.$("agent-enabled").checked;
+      const agentStatus = this.$("agent-status");
+      const agentHint = this.$("agent-hint");
+      if (agentStatus) agentStatus.textContent = checked ? "正在启动..." : "未启用";
+      if (agentHint) agentHint.textContent = checked ? "正在启动服务，完成后即可复制给智能体。" : "打开后，AI助手可以帮你查找和整理Zotero文献。";
+      this.scheduleAutoSave(0);
+    });
+
+    window.addEventListener("pagehide", () => this.flushAutoSaveWithFeedback());
     this.$("check-update")?.addEventListener("click", async () => {
       const button = this.$("check-update");
       const status = this.$("update-status");

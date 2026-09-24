@@ -32,7 +32,7 @@
     settings() {
       const U = LitMTrans.Utils;
       return {
-        enabled: Boolean(U?.getPref?.("agentEnabled", false)),
+        enabled: Boolean(U?.getPref?.("agentEnabled", true)),
         mode: normalizeMode(U?.getPref?.("agentAccessMode", "full")),
         allowConfiguredServices: Boolean(U?.getPref?.("agentAllowConfiguredServices", true)),
         allowChatHistory: Boolean(U?.getPref?.("agentAllowChatHistory", true)),

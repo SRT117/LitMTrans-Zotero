@@ -5864,7 +5864,7 @@
         availableUpdate: this.availableUpdate || null,
         announcements: this.getAnnouncementsForWorkbench(),
         agent: this.agent?.settingsSnapshot?.() || {
-          enabled: Boolean(U.getPref("agentEnabled", false)),
+          enabled: Boolean(U.getPref("agentEnabled", true)),
           mode: String(U.getPref("agentAccessMode", "full") || "full"),
           allowConfiguredServices: Boolean(U.getPref("agentAllowConfiguredServices", true)),
           allowChatHistory: Boolean(U.getPref("agentAllowChatHistory", true)),
@@ -5889,21 +5889,31 @@
 
     async getAgentClientConfig(client) {
       if (!this.agent?.facade) throw new Error("LitMTrans智能体尚未初始化");
+      if (!this.agent?.server?.socket && Boolean(U.getPref("agentEnabled", true))) {
+        try { await this.agent?.applySettings?.(); } catch (_) {}
+      }
       return this.agent.facade.invoke("get_client_config", { client });
     }
 
     async getAgentStatusSnapshot() {
       return this.agent?.settingsSnapshot?.() || {
-        enabled: Boolean(U.getPref("agentEnabled", false)),
+        enabled: Boolean(U.getPref("agentEnabled", true)),
         mode: String(U.getPref("agentAccessMode", "full") || "full"),
         server: { running: false, url: "" },
         connection: { connected: false, clientName: "", clients: [] }
       };
     }
 
-    getAgentBootstrapInstruction(_client = "") {
-      const snapshot = this.agent?.settingsSnapshot?.() || {};
-      const endpoint = String(snapshot.server?.url || "").trim();
+    async getAgentBootstrapInstruction(_client = "") {
+      let snapshot = this.agent?.settingsSnapshot?.() || {};
+      let endpoint = String(snapshot.server?.url || "").trim();
+      if (!endpoint && Boolean(U.getPref("agentEnabled", true))) {
+        try {
+          await this.agent?.applySettings?.();
+          snapshot = this.agent?.settingsSnapshot?.() || {};
+          endpoint = String(snapshot.server?.url || "").trim();
+        } catch (_) {}
+      }
       if (!endpoint) return { ready: false, endpoint: "", instruction: "请先启用智能体连接，等待服务准备好后再复制。" };
       const tools = this.agent?.facade?.visibleTools?.() || [];
       return {

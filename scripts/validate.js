@@ -178,7 +178,8 @@ if (!preferencesScript.includes('event.target?.id !== "litmtrans-preferences-roo
     || !preferencesScript.includes('document.addEventListener("load", initializeLitMTransPreferences, true)')) {
   fail("preferences.js must capture Zotero's dynamically inserted pane root load event");
 }
-if (!preferencesScript.includes('root.addEventListener("showing", () => void this.load())')) {
+if (!preferencesScript.includes('root.addEventListener("showing", () => {')
+    || !preferencesScript.includes('this.flushAutoSave(true).then(() => this.load())')) {
   fail("preferences.js must reload the canonical settings snapshot whenever the pane is shown");
 }
 if (/DOMContentLoaded|pageshow|window\.addEventListener\(["']load|onload=/.test(preferencesScript)) {

@@ -200,7 +200,7 @@
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "setting-auto-update", "check-update-button", "update-status-label",
       "setting-agent-enabled", "setting-agent-access-mode", "setting-agent-allow-configured-services", "setting-agent-allow-chat-history", "setting-agent-background-provider", "setting-agent-status", "setting-agent-hint", "setting-agent-client", "copy-agent-bootstrap", "copy-agent-client-config",
-      "open-storage-manager-button", "clear-document-button", "save-settings-button",
+      "open-storage-manager-button", "clear-document-button", "close-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
       "storage-chart-card", "storage-donut-chart", "storage-chart-legend",
       "storage-cache-warning-banner", "storage-warning-banner-text", "storage-warning-clean-button", "storage-warning-dismiss-button", "storage-warning-close-button",
@@ -7264,6 +7264,153 @@
     return payload;
   }
 
+  let settingsAutoSaveTimer = null;
+  let settingsAutoSavePromise = null;
+  let settingsAutoSaveRevision = 0;
+  let settingsAutoSavedRevision = 0;
+  let settingsAutoSaveBaseline = null;
+  let settingsClosePromise = null;
+  const settingsCredentialWrites = new Map();
+
+  function queueSettingsCredentialWrite(method, payload, key) {
+    const previous = settingsCredentialWrites.get(key);
+    const entry = { method, payload, failed: false, promise: null };
+    entry.promise = Promise.resolve(previous?.promise).catch(() => {}).then(() => hostCall(method, payload)).then(() => {
+      if (settingsCredentialWrites.get(key) === entry) settingsCredentialWrites.delete(key);
+    }, error => {
+      entry.failed = true;
+      throw error;
+    });
+    settingsCredentialWrites.set(key, entry);
+    void entry.promise.catch(error => {
+      if (!settingsClosePromise) toast(error.message || String(error), "error");
+    });
+  }
+
+  function changedSettingsPayload(payload) {
+    const baseline = settingsAutoSaveBaseline || {};
+    const changed = {};
+    for (const [key, value] of Object.entries(payload)) {
+      if (JSON.stringify(value) === JSON.stringify(baseline[key])) continue;
+      if (key === "translationProviderProfiles" || key === "chatProviderProfiles") {
+        const previous = baseline[key] || {};
+        const profiles = Object.fromEntries(Object.entries(value).filter(([provider, profile]) =>
+          JSON.stringify(profile) !== JSON.stringify(previous[provider])));
+        if (Object.keys(profiles).length) changed[key] = profiles;
+      } else changed[key] = value;
+    }
+    return changed;
+  }
+
+  function flushSettingsAutoSaveWithFeedback() {
+    void flushSettingsAutoSave(true).catch(error => toast(error.message || String(error), "error"));
+  }
+
+  function scheduleSettingsAutoSave(delay = 400) {
+    settingsAutoSaveRevision += 1;
+    if (settingsAutoSaveTimer) {
+      clearTimeout(settingsAutoSaveTimer);
+      settingsAutoSaveTimer = null;
+    }
+    if (delay <= 0) {
+      flushSettingsAutoSaveWithFeedback();
+      return;
+    }
+    settingsAutoSaveTimer = setTimeout(() => {
+      settingsAutoSaveTimer = null;
+      flushSettingsAutoSaveWithFeedback();
+    }, delay);
+  }
+
+  async function flushSettingsAutoSave(silent = true) {
+    if (settingsAutoSaveTimer) {
+      clearTimeout(settingsAutoSaveTimer);
+      settingsAutoSaveTimer = null;
+    }
+    while (true) {
+      if (settingsAutoSavedRevision >= settingsAutoSaveRevision) return state.settings;
+      if (settingsAutoSavePromise) {
+        try { await settingsAutoSavePromise; } catch (_) {}
+        if (settingsAutoSavedRevision >= settingsAutoSaveRevision) return;
+        if (settingsAutoSaveTimer) {
+          if (silent) return;
+          clearTimeout(settingsAutoSaveTimer);
+          settingsAutoSaveTimer = null;
+        }
+      }
+      const revision = settingsAutoSaveRevision;
+      const payload = settingsPayload();
+      const changed = changedSettingsPayload(payload);
+      if (!Object.keys(changed).length) {
+        settingsAutoSavedRevision = revision;
+        return state.settings;
+      }
+      const savePromise = hostCall("save-settings", changed);
+      settingsAutoSavePromise = savePromise;
+      let savedSettings;
+      try {
+        savedSettings = await savePromise;
+      } catch (error) {
+        if (revision !== settingsAutoSaveRevision) {
+          if (settingsAutoSaveTimer) {
+            if (silent) return;
+            clearTimeout(settingsAutoSaveTimer);
+            settingsAutoSaveTimer = null;
+          }
+          continue;
+        }
+        throw error;
+      } finally {
+        if (settingsAutoSavePromise === savePromise) settingsAutoSavePromise = null;
+      }
+      if (revision !== settingsAutoSaveRevision) {
+        if (settingsAutoSaveTimer) {
+          if (silent) return;
+          clearTimeout(settingsAutoSaveTimer);
+          settingsAutoSaveTimer = null;
+        }
+        continue;
+      }
+      state.settings = mergePromptLibraryDraft(savedSettings);
+      settingsAutoSaveBaseline = payload;
+      settingsAutoSavedRevision = revision;
+      if (Object.prototype.hasOwnProperty.call(changed, "chatEngine")) {
+        const preferredMode = savedSettings.chatEngine === "deepseek_web" ? "web" : "api";
+        if (state.aiMode !== preferredMode) setAIMode(preferredMode, { syncPref: false });
+        renderMode();
+      }
+      if (savedSettings?.agent) {
+        const viewModel = window.LitMTrans?.AgentSettingsViewModel;
+        if (els["setting-agent-status"]) els["setting-agent-status"].textContent = viewModel?.statusText?.(savedSettings.agent) || (savedSettings.agent.enabled ? "等待智能体连接" : "未启用");
+        if (els["setting-agent-hint"]) els["setting-agent-hint"].textContent = viewModel?.statusHint?.(savedSettings.agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
+      }
+      return savedSettings;
+    }
+  }
+
+  async function closeSettingsDialog() {
+    if (settingsClosePromise) {
+      try { await settingsClosePromise; } catch (_) {}
+      return;
+    }
+    settingsClosePromise = (async () => {
+      if (!els["settings-dialog"].open) return;
+      const focused = document.activeElement;
+      if (focused?.closest?.("#settings-dialog")) focused.blur?.();
+      for (const [key, entry] of [...settingsCredentialWrites]) {
+        if (entry.failed) queueSettingsCredentialWrite(entry.method, entry.payload, key);
+      }
+      while (settingsCredentialWrites.size) {
+        await Promise.all([...settingsCredentialWrites.values()].map(entry => entry.promise));
+      }
+      if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
+      els["settings-dialog"].close();
+    })();
+    try { await settingsClosePromise; }
+    catch (error) { toast(error.message || String(error), "error"); }
+    finally { settingsClosePromise = null; }
+  }
+
   async function initialize() {
     if (!hostFunction()) return;
     if (initializeCompleted) return;
@@ -7341,8 +7488,11 @@
     // Always fetch the canonical settings snapshot when this entry opens.
     // The Zotero preference pane and this workbench must never render two
     // independently cached versions of the configuration.
+    if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
     state.settings = mergePromptLibraryDraft(await hostCall("get-settings"));
     populateSettings(state.settings);
+    settingsAutoSaveBaseline = settingsPayload();
+    settingsAutoSavedRevision = settingsAutoSaveRevision;
     els["settings-advanced"].open = false;
     els["settings-dialog"].style.height = "auto";
     els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
@@ -8734,9 +8884,18 @@
     });
     els["copy-agent-client-config"]?.addEventListener("click", async () => {
       try {
+        const isChecked = els["setting-agent-enabled"]?.checked === true;
+        if (isChecked && (settingsAutoSaveTimer || settingsAutoSavePromise || !state.settings?.agent?.server?.running)) {
+          await flushSettingsAutoSave(false);
+        }
         const client = els["setting-agent-client"]?.value || "generic";
-        const result = await hostCall("get-agent-client-config", { client }, { timeout: 5000 });
-        const value = String(result?.displayText || "");
+        let result = await hostCall("get-agent-client-config", { client }, { timeout: 5000 });
+        let value = String(result?.displayText || "");
+        if (!value) {
+          await flushSettingsAutoSave(false);
+          result = await hostCall("get-agent-client-config", { client }, { timeout: 5000 });
+          value = String(result?.displayText || "");
+        }
         if (!value) throw new Error("Agent MCP 服务尚未启动，请先启用后再复制配置");
         await copyText(value, "配置已复制");
       }
@@ -8744,8 +8903,17 @@
     });
     els["copy-agent-bootstrap"]?.addEventListener("click", async () => {
       try {
-        const result = await hostCall("get-agent-bootstrap-instruction", {}, { timeout: 5000 });
-        const value = String(result?.instruction || "");
+        const isChecked = els["setting-agent-enabled"]?.checked === true;
+        if (isChecked && (settingsAutoSaveTimer || settingsAutoSavePromise || !state.settings?.agent?.server?.running)) {
+          await flushSettingsAutoSave(false);
+        }
+        let result = await hostCall("get-agent-bootstrap-instruction", {}, { timeout: 5000 });
+        let value = String(result?.instruction || "");
+        if (!result?.ready || !value) {
+          await flushSettingsAutoSave(false);
+          result = await hostCall("get-agent-bootstrap-instruction", {}, { timeout: 5000 });
+          value = String(result?.instruction || "");
+        }
         if (!result?.ready || !value) throw new Error("请先启用连接，等待服务准备好后再复制。");
         await copyText(value, "已复制给智能体");
       }
@@ -8754,7 +8922,13 @@
     els["setting-web-mode-advanced"].addEventListener("toggle", () => {
       requestAnimationFrame(() => fitSettingsDialog(els["settings-dialog"]));
     });
+    els["close-settings-button"].addEventListener("click", () => void closeSettingsDialog());
+    els["settings-dialog"].addEventListener("cancel", event => {
+      event.preventDefault();
+      void closeSettingsDialog();
+    });
     els["settings-dialog"].addEventListener("close", () => {
+      flushSettingsAutoSaveWithFeedback();
       stopAgentStatusPolling();
       els["settings-dialog"].style.height = "auto";
       els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
@@ -9283,25 +9457,33 @@
         }
         updateProviderLabel(chat ? "setting-chat-" : "setting-");
         if (chat) updateChatImageSettingsVisibility();
+        scheduleSettingsAutoSave(50);
       });
     }
     els["setting-chat-model"].addEventListener("change", () => {
       restoreChatReasoningPreference("setting-chat");
       updateChatImageSettingsVisibility();
+      scheduleSettingsAutoSave(50);
     });
-    const saveCredential = async (inputID, providerID = "") => {
+    const saveCredential = (inputID, providerID = "") => {
       const value = els[inputID].value.trim();
-      try {
-        if (providerID) await hostCall("save-provider-api-key", { provider: els[providerID].value, apiKey: value });
-        else await hostCall("save-mineru-token", { token: value });
-      }
-      catch (error) { toast(error.message, "error"); }
+      if (providerID) {
+        const provider = els[providerID].value;
+        queueSettingsCredentialWrite("save-provider-api-key", { provider, apiKey: value }, `${inputID}:${provider}`);
+      } else queueSettingsCredentialWrite("save-mineru-token", { token: value }, inputID);
     };
-    els["setting-api-key"].addEventListener("change", () => { void saveCredential("setting-api-key", "setting-provider"); });
-    els["setting-base-url"].addEventListener("input", () => updateDeepSeekFastLayoutControl());
-    els["setting-deepseek-fast-layout"].addEventListener("change", () => updateDeepSeekFastLayoutControl());
-    els["setting-chat-api-key"].addEventListener("change", () => { void saveCredential("setting-chat-api-key", "setting-chat-provider"); });
-    els["setting-mineru-token"].addEventListener("change", () => { void saveCredential("setting-mineru-token"); });
+    els["setting-api-key"].addEventListener("change", () => saveCredential("setting-api-key", "setting-provider"));
+    els["setting-base-url"].addEventListener("input", () => {
+      updateDeepSeekFastLayoutControl();
+      scheduleSettingsAutoSave(400);
+    });
+    els["setting-base-url"].addEventListener("blur", () => flushSettingsAutoSaveWithFeedback());
+    els["setting-deepseek-fast-layout"].addEventListener("change", () => {
+      updateDeepSeekFastLayoutControl();
+      scheduleSettingsAutoSave(50);
+    });
+    els["setting-chat-api-key"].addEventListener("change", () => saveCredential("setting-chat-api-key", "setting-chat-provider"));
+    els["setting-mineru-token"].addEventListener("change", () => saveCredential("setting-mineru-token"));
     const refreshModels = async (purpose) => {
       const chat = purpose === "chat";
       const button = els[chat ? "refresh-chat-models-button" : "refresh-models-button"];
@@ -9365,14 +9547,22 @@
         els["setting-chat-uses-translation-model"].checked = false;
       }
       updateChatModelSectionVisibility();
+      scheduleSettingsAutoSave(50);
     });
     if (els["setting-chat-engine-web"]) {
       els["setting-chat-engine-web"].addEventListener("change", () => {
         updateChatModelSectionVisibility();
+        scheduleSettingsAutoSave(50);
       });
     }
-    els["setting-web-input-mode-auto"].addEventListener("change", () => updateWebModeAdvancedControls());
-    els["setting-web-input-mode-clipboard"].addEventListener("change", () => updateWebModeAdvancedControls());
+    els["setting-web-input-mode-auto"].addEventListener("change", () => {
+      updateWebModeAdvancedControls();
+      scheduleSettingsAutoSave(50);
+    });
+    els["setting-web-input-mode-clipboard"].addEventListener("change", () => {
+      updateWebModeAdvancedControls();
+      scheduleSettingsAutoSave(50);
+    });
     els["provider-card-api-key"].addEventListener("input", () => {
       const hasValue = Boolean(els["provider-card-api-key"].value.trim());
       const existing = providerCardByID(state.editingProviderCardID);
@@ -9382,11 +9572,13 @@
     });
     els["restore-key-points-prompt"].addEventListener("click", () => {
       els["setting-key-points-prompt"].value = state.settings?.keyPointsDefaultPrompt || "";
+      scheduleSettingsAutoSave(0);
     });
     els["add-reference-button"].addEventListener("click", async () => {
       try {
         state.referencePaths = await hostCall("select-reference-files", { paths: state.referencePaths });
         renderReferencePaths();
+        scheduleSettingsAutoSave(0);
       }
       catch (error) {
         toast(error.message, "error");
@@ -9396,12 +9588,14 @@
       const selected = new Set([...els["setting-reference-list"].selectedOptions].map(option => option.value));
       state.referencePaths = state.referencePaths.filter(path => !selected.has(path));
       renderReferencePaths();
+      scheduleSettingsAutoSave(0);
     });
     els["clear-reference-button"].addEventListener("click", () => {
       state.referencePaths = [];
       els["custom-translation-instruction-input"].value = "";
       renderReferencePaths();
       renderCustomTranslationInstructionPreview();
+      scheduleSettingsAutoSave(0);
     });
     els["edit-custom-translation-instruction"].addEventListener("click", () => {
       els["custom-translation-instruction-dialog"].showModal();
@@ -9409,38 +9603,53 @@
     els["save-custom-translation-instruction"].addEventListener("click", () => {
       els["custom-translation-instruction-dialog"].close();
       renderCustomTranslationInstructionPreview();
+      scheduleSettingsAutoSave(0);
     });
     els["edit-custom-translation-instruction-preview"].addEventListener("click", () => {
       els["custom-translation-instruction-dialog"].showModal();
     });
-    els["save-settings-button"].addEventListener("click", async () => {
-      try {
-        const settings = await hostCall("save-settings", settingsPayload());
-        state.settings = mergePromptLibraryDraft(settings);
-        document.body.classList.toggle("layout-debug", false);
-        state.chatRenderMarkdown = settings.chatRenderMarkdown !== false;
-        state.syncScroll = state.mode === "layout"
-          ? true
-          : Boolean(settings.streamSyncScroll ?? settings.syncScroll);
-        els["sync-scroll-check"].checked = state.syncScroll;
-        populateSettings(settings);
-        const preferredMode = (settings.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
-        setAIMode(preferredMode, { syncPref: false });
-        renderMode();
-        // Connection/model settings affect future translation requests only.
-        // Rebuilding an already fitted layout here discards its stable DOM and
-        // can re-measure it while the settings dialog is still changing the
-        // workbench geometry. Keep the completed reading view intact.
-        els["settings-dialog"].close();
-        toast("设置已保存");
+
+    // 自动保存绑定：工作台离散设置控件
+    const discreteSettingIDs = [
+      "setting-thinking-mode", "setting-reasoning-effort",
+      "setting-chat-thinking-mode", "setting-chat-reasoning-effort",
+      "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
+      "setting-web-page-image-quality", "setting-delete-web-translation-sessions",
+      "setting-caj-double-click-action", "setting-show-native-reader-ask-ai", "setting-auto-update",
+      "setting-target-language", "setting-machine-source-language", "setting-translation-mode",
+      "setting-agent-access-mode", "setting-agent-allow-configured-services",
+      "setting-agent-allow-chat-history", "setting-agent-background-provider"
+    ];
+    for (const id of discreteSettingIDs) {
+      els[id]?.addEventListener("change", () => scheduleSettingsAutoSave(50));
+    }
+
+    const textSettingIDs = [
+      "setting-model", "setting-chat-base-url", "setting-chat-model", "setting-key-points-prompt"
+    ];
+    for (const id of textSettingIDs) {
+      const el = els[id];
+      if (el) {
+        el.addEventListener("input", () => scheduleSettingsAutoSave(400));
+        el.addEventListener("blur", () => flushSettingsAutoSaveWithFeedback());
       }
-      catch (error) { toast(error.message, "error"); }
+    }
+
+    els["setting-agent-enabled"]?.addEventListener("change", () => {
+      const checked = els["setting-agent-enabled"].checked;
+      const statusEl = els["setting-agent-status"];
+      const hintEl = els["setting-agent-hint"];
+      if (statusEl) statusEl.textContent = checked ? "正在启动..." : "未启用";
+      if (hintEl) hintEl.textContent = checked ? "正在启动服务，完成后即可复制给智能体。" : "打开后，AI助手可以帮你查找和整理Zotero文献。";
+      scheduleSettingsAutoSave(0);
     });
+
     els["clear-document-button"].addEventListener("click", async () => {
       if (!window.confirm("确定清除这篇文献的解析结果、译文和对话记录吗？\n\nZotero中的原始附件不会被修改。")) return;
       try {
+        if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
         setData(await hostCall("clear-document"));
-        els["settings-dialog"].close();
+        await closeSettingsDialog();
         toast("这篇文献的数据已清除");
       }
       catch (error) { toast(error.message, "error"); }

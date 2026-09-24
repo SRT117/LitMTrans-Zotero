@@ -46,8 +46,6 @@
 .litmtrans-pref-header { display: flex; align-items: center; gap: 10px; margin: 0 0 9px; padding: 0 2px; }
 .litmtrans-pref-header h1 { margin: 0; font-size: 1.12em; letter-spacing: -.01em; white-space: nowrap; }
 .litmtrans-pref-header button { flex: 0 0 auto; min-height: 32px; padding: 4px 16px; font: inherit; font-weight: 600; }
-.litmtrans-pref-header button.primary,
-.litmtrans-pref-header #litmtrans-pref-save { margin-left: auto; background: #000; color: #fff; border-color: #000; }
 .litmtrans-pref-header .litmtrans-pref-header-links { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; white-space: nowrap; }
 .litmtrans-pref-header button.litmtrans-token-guide-link { min-height: 0; padding: 0; border: 0; background: transparent; color: var(--litmtrans-link); font-size: .88em; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .litmtrans-pref-header button.litmtrans-token-guide-link:hover { color: var(--litmtrans-link-hover); text-decoration: underline; }

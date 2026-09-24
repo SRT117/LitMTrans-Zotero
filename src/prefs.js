@@ -52,7 +52,7 @@ pref("extensions.litmtrans.keyPointsPrompt", "");
 pref("extensions.litmtrans.autoUpdate", true);
 pref("extensions.litmtrans.lastUpdateCheckTime", "0");
 pref("extensions.litmtrans.startupNoticeVersion", "");
-pref("extensions.litmtrans.agentEnabled", false);
+pref("extensions.litmtrans.agentEnabled", true);
 pref("extensions.litmtrans.agentAccessMode", "full");
 pref("extensions.litmtrans.agentAllowConfiguredServices", true);
 pref("extensions.litmtrans.agentAllowChatHistory", true);

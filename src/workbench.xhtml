@@ -385,10 +385,10 @@
   </dialog>
 
   <dialog id="settings-dialog" class="modal settings-modal">
-    <form method="dialog" class="modal-card" id="settings-form">
+    <div class="modal-card" id="settings-form">
       <header class="modal-header">
         <div><h2>LitMTrans设置</h2><span class="settings-header-links"><button id="open-token-guide-button" class="token-guide-link" type="button">点击查看令牌创建指南</button><button id="open-feedback-button" class="token-guide-link" type="button">问题反馈与建议</button><a class="github-link" href="https://github.com/SRT117/LitMTrans-Zotero" data-external-url="https://github.com/SRT117/LitMTrans-Zotero">访问GitHub官网</a></span></div>
-        <button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button>
+        <button id="close-settings-button" class="icon-button" aria-label="关闭" type="button">×</button>
       </header>
       <div class="settings-grid">
         <section class="settings-section mineru-settings-section settings-card-mineru">
@@ -539,7 +539,7 @@
             <div><h3>AI助手连接</h3><p>连接后，你常用的AI助手可以帮你查找、整理和处理Zotero文献。</p></div>
             <span id="setting-agent-status" class="settings-note"></span>
           </div>
-          <label class="inline-check"><input id="setting-agent-enabled" type="checkbox" /> 允许AI助手访问Zotero</label>
+          <label class="inline-check"><input id="setting-agent-enabled" type="checkbox" checked="checked" /> 允许AI助手访问Zotero</label>
           <p id="setting-agent-hint" class="settings-note">打开后，AI助手可以帮你查找和整理Zotero文献。</p>
           <button id="copy-agent-bootstrap" class="button button-primary" type="button">复制给智能体</button>
           <details id="setting-agent-advanced" class="agent-advanced">
@@ -562,11 +562,8 @@
       <footer class="modal-footer">
         <button id="open-storage-manager-button" class="button" type="button" title="展开插件数据管理树，直观查看所有文献与临时存储占用">存储数据管理</button>
         <button id="clear-document-button" class="button button-danger-quiet" type="button">清除本文献数据</button>
-        <span class="modal-spacer"></span>
-        <button class="button" value="cancel" type="submit">取消</button>
-        <button id="save-settings-button" class="button button-primary" value="default" type="button">保存</button>
       </footer>
-    </form>
+    </div>
   </dialog>
 
   <dialog id="custom-translation-instruction-dialog" class="modal custom-translation-instruction-modal">
