@@ -538,7 +538,7 @@
         </details>
         <section class="settings-section settings-card-agent">
           <div class="settings-section-heading">
-            <div><h3>AI助手连接</h3><p>连接后，你常用的AI助手可以通过MCP协议查找、整理和处理Zotero文献。</p></div>
+            <div><h3>AI助手连接（实验性MCP功能）</h3><p>连接后，你常用的AI助手可以通过MCP协议查找、整理和处理Zotero文献。</p></div>
             <span id="setting-agent-status" class="settings-note"></span>
           </div>
           <label class="inline-check"><input id="setting-agent-enabled" type="checkbox" checked="checked" /> 允许AI助手访问Zotero</label>
@@ -784,6 +784,11 @@
               <span class="storage-summary-label">临时与碎片缓存</span>
               <strong id="storage-temp-bytes" class="storage-summary-value">-</strong>
               <span id="storage-temp-count" class="storage-summary-sub">0 个文件</span>
+            </div>
+            <div class="storage-summary-card" id="storage-runtime-card" hidden="hidden">
+              <span class="storage-summary-label">文献采集运行时</span>
+              <strong id="storage-runtime-bytes" class="storage-summary-value">-</strong>
+              <span id="storage-runtime-count" class="storage-summary-sub">ScanSci 运行时</span>
             </div>
             <div class="storage-summary-card" id="storage-orphaned-card" hidden="hidden">
               <span class="storage-summary-label">失效文献残留</span>

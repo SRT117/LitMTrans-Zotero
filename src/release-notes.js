@@ -18,6 +18,16 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.0": Object.freeze({
+      title: "LitMTrans 2.1.0",
+      entries: Object.freeze([
+        "新增 AI 助手连接，可协助搜索和整理 Zotero 文献、查找并导入可获取的论文，以及整理文献证据和综述资料。",
+        "新增 DeepSeek 官方网页模式，登录后即可翻译和问答，无需配置 API 密钥。",
+        "扩展对 CAJ、KDH、HN、C8 等知网文献格式的阅读与转换支持。",
+        "优化长文献翻译、图片处理和 PDF 导出体验，修复公式显示、英文重译和手动翻译粘贴等问题。",
+        "新增插件数据管理，可查看和清理缓存；改进更新下载流程，并增加首次使用引导。"
+      ])
+    }),
     "2.0.0": Object.freeze({
       title: "LitMTrans 2.0.0",
       entries: Object.freeze([

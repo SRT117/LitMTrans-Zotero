@@ -206,7 +206,7 @@
       "storage-cache-warning-banner", "storage-warning-banner-text", "storage-warning-clean-button", "storage-warning-dismiss-button", "storage-warning-close-button",
       "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
       "storage-caj-bytes", "storage-caj-count",
-      "storage-temp-bytes", "storage-temp-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
+      "storage-temp-bytes", "storage-temp-count", "storage-runtime-card", "storage-runtime-bytes", "storage-runtime-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
       "storage-expand-all", "storage-collapse-all", "storage-search-input",
       "storage-open-root", "storage-clean-temp", "storage-clean-orphaned", "storage-refresh", "storage-tree-container",
       "custom-translation-instruction-dialog", "custom-translation-instruction-input", "save-custom-translation-instruction",
@@ -9760,6 +9760,7 @@
     const cajBytes = Number(summary.cajActiveBytes ?? 0);
     const tempBytes = summary.tempTotalBytes || 0;
     const edgeBytes = summary.edgeLocalTotalBytes || 0;
+    const runtimeBytes = summary.runtimeTotalBytes || 0;
     const orphanBytes = Number(summary.orphanedCoreBytes ?? 0);
 
     const segments = [
@@ -9769,6 +9770,9 @@
     ];
     if (edgeBytes > 0) {
       segments.push({ key: "edge", label: "离线引擎", bytes: edgeBytes, formatted: summary.edgeLocalTotalBytesFormatted || formatStorageBytes(edgeBytes), color: "#8b5cf6" });
+    }
+    if (runtimeBytes > 0) {
+      segments.push({ key: "runtime", label: "采集运行时", bytes: runtimeBytes, formatted: summary.runtimeTotalBytesFormatted || formatStorageBytes(runtimeBytes), color: "#06b6d4" });
     }
     if (orphanBytes > 0) {
       segments.push({ key: "orphan", label: "失效残留", bytes: orphanBytes, formatted: summary.orphanedTotalBytesFormatted || formatStorageBytes(orphanBytes), color: "#ef4444" });
@@ -9866,6 +9870,16 @@
     if (els["storage-temp-bytes"]) els["storage-temp-bytes"].textContent = s.tempTotalBytesFormatted || "0 B";
     if (els["storage-temp-count"]) els["storage-temp-count"].textContent = `${s.tempFilesCount || 0} 个临时文件`;
 
+    if (els["storage-runtime-card"]) {
+      if (s.runtimeTotalBytes > 0) {
+        els["storage-runtime-card"].hidden = false;
+        if (els["storage-runtime-bytes"]) els["storage-runtime-bytes"].textContent = s.runtimeTotalBytesFormatted || "0 B";
+        if (els["storage-runtime-count"]) els["storage-runtime-count"].textContent = `${s.runtimeTotalFiles || 0} 个文件`;
+      } else {
+        els["storage-runtime-card"].hidden = true;
+      }
+    }
+
     if (els["storage-orphaned-card"]) {
       if (s.orphanedCount > 0) {
         els["storage-orphaned-card"].hidden = false;
@@ -9905,6 +9919,7 @@
       deepseekWeb: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-layers" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
       diagrams: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-diagrams" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M10 5.5h2a4 4 0 0 1 4 4v6.5"/><path d="m14 13 2 3 2-3"/></svg>`,
       logs: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-logs" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+      runtime: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-runtime" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
       other: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-other" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
     };
     return icons[name] || icons.other;
@@ -9947,6 +9962,10 @@
       message = "确定删除全部临时生成文件与解压缓存吗？";
     } else if (kind === "edge") {
       message = "确定删除 Edge 本地离线翻译引擎数据吗？\n\n下次使用离线翻译时会重新下载。";
+    } else if (kind === "runtime") {
+      message = "确定完全删除文献检索与采集运行时吗？\n\n将清理嵌入式 Python 与 ScanSci 依赖包，释放全部空间。下次发起文献下载时将自动重新配置。";
+    } else if (kind === "runtime-cache") {
+      message = "确定清理文献检索运行时的安装包残留与编译缓存吗？\n\n可安全瘦身释放空间，不会影响文献下载功能。";
     } else {
       return;
     }
@@ -9968,7 +9987,11 @@
       ? `【${storageCategoryLabels[category] || category}】数据`
       : kind === "temp"
       ? "临时缓存"
-      : "Edge 本地离线翻译引擎数据";
+      : kind === "edge"
+      ? "Edge 本地离线翻译引擎数据"
+      : kind === "runtime"
+      ? "文献检索与采集运行时"
+      : "运行时临时缓存";
     toast(`已删除${label}${released}`);
     refreshStorageManager();
   }
@@ -10010,13 +10033,19 @@
       menu.appendChild(button);
     };
 
-    const openPayload = entry.kind === "subcategory"
-      ? { kind: "subcategory", documentID: entry.documentID, subcategory: entry.subcategory }
-      : entry.kind === "document"
-      ? { kind: "document", documentID: entry.documentID }
-      : { kind: entry.kind };
-    addAction("打开文件夹", () => hostCall("open-storage-folder", openPayload));
-    addAction("删除该条目的数据", () => clearStorageEntry(entry), true);
+    if (entry.kind === "runtime") {
+      addAction("打开文件夹", () => hostCall("open-storage-folder", { kind: "runtime" }));
+      addAction("清理安装包与编译缓存（安全瘦身）", () => clearStorageEntry({ kind: "runtime-cache", title: "文献采集运行时缓存" }));
+      addAction("彻底删除运行时", () => clearStorageEntry(entry), true);
+    } else {
+      const openPayload = entry.kind === "subcategory"
+        ? { kind: "subcategory", documentID: entry.documentID, subcategory: entry.subcategory }
+        : entry.kind === "document"
+        ? { kind: "document", documentID: entry.documentID }
+        : { kind: entry.kind };
+      addAction("打开文件夹", () => hostCall("open-storage-folder", openPayload));
+      addAction("删除该条目的数据", () => clearStorageEntry(entry), true);
+    }
 
     // 存储管理是模态 dialog；菜单挂到 body 会落在 dialog 的 top layer 后面。
     // dialog 自身带有 transform，因此在 dialog 内按其坐标系定位菜单。
@@ -10295,6 +10324,42 @@
       edgeGroup.appendChild(edgeHeader);
       container.appendChild(edgeGroup);
     }
+
+    // 根组 4：文献检索与采集运行时 (ScanSci)
+    if (currentStorageSummary.runtimeTotalBytes > 0) {
+      const runtimeGroup = document.createElement("div");
+      runtimeGroup.className = "tree-root-group";
+      const runtimeHeader = document.createElement("div");
+      runtimeHeader.className = "tree-root-header";
+      runtimeHeader.title = `文献检索与采集运行时 (${currentStorageSummary.runtimeTotalBytesFormatted})\n\n包含 ScanSci-PDF 文献下载微服务、嵌入式 Python 及科学计算依赖环境。\n\n💡 提示：双击可直接在系统文件管理器中打开此目录；右键可清理安装包与编译缓存（瘦身）或完全卸载。`;
+      runtimeHeader.innerHTML = `
+        <div class="tree-root-left">
+          <span class="tree-node-icon">${getStorageIcon("runtime")}</span>
+          <span>文献检索与采集运行时 (ScanSci)</span>
+        </div>
+        <div class="tree-item-right">
+          <span class="tree-item-size">${currentStorageSummary.runtimeTotalBytesFormatted}</span>
+          <div class="tree-item-actions">
+            <button class="tree-action-link" type="button" data-action="clean-runtime-cache" title="清理安装包残留与编译缓存">瘦身</button>
+            <button class="tree-action-link" type="button" data-action="open-runtime" title="打开运行时目录">打开</button>
+          </div>
+        </div>
+      `;
+
+      runtimeHeader.addEventListener("dblclick", (e) => {
+        if (e.target.closest("button")) return;
+        e.stopPropagation();
+        hostCall("open-storage-folder", { kind: "runtime" }).catch(err => toast(err.message, "error"));
+      });
+
+      runtimeHeader.addEventListener("contextmenu", (e) => {
+        if (e.target.closest("button")) return;
+        showStorageContextMenu(e, { kind: "runtime", title: "文献检索与采集运行时 (ScanSci)" });
+      });
+
+      runtimeGroup.appendChild(runtimeHeader);
+      container.appendChild(runtimeGroup);
+    }
   }
 
   function bindStorageManagerEvents() {
@@ -10428,6 +10493,16 @@
         } else if (action === "open-edge") {
           try {
             await hostCall("open-storage-folder", { kind: "edge" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "open-runtime") {
+          try {
+            await hostCall("open-storage-folder", { kind: "runtime" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "clean-runtime-cache") {
+          try {
+            const res = await hostCall("clear-storage-data", { target: "runtime-cache" });
+            toast(`已清理运行时安装包与临时缓存${res.formatted && res.clearedBytes ? `，释放了 ${res.formatted}` : ""}`);
+            refreshStorageManager();
           } catch (err) { toast(err.message, "error"); }
         } else if (action === "clean-temp") {
           if (!window.confirm("确定清空全部临时生成文件与解压缓存吗？")) return;

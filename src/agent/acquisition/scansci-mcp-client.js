@@ -132,6 +132,43 @@
     finally { try { environment.set("SCANSCI_PDF_PROXY", ""); } catch (_) {} }
   }
 
+  function resolveServerLaunchSpec(executable, port, options = {}) {
+    const defaultArgs = ["-m", "scansci_pdf.main", "run", "--mode", "streamable_http", "--host", "127.0.0.1", "--port", String(port)];
+    const isWindows = options.isWindows ?? Boolean(global.Zotero?.isWin || /win/i.test(options.runtime?.platform?.os || ""));
+    const serverArgs = Array.isArray(options.serverArgs) && options.serverArgs.length ? options.serverArgs : defaultArgs;
+
+    if (isWindows && /python\.exe$/i.test(executable)) {
+      const pythonw = executable.replace(/python\.exe$/i, "pythonw.exe");
+      let exists = false;
+      if (typeof options.fileExists === "function") {
+        exists = Boolean(options.fileExists(pythonw));
+      } else {
+        try {
+          const hostFile = LitMTrans.Utils?.createLocalFile?.(pythonw);
+          exists = Boolean(hostFile?.exists?.());
+        } catch (_) {
+          exists = false;
+        }
+      }
+      if (exists) {
+        const portStr = String(port);
+        const silentBootstrap = [
+          "import sys, os, runpy",
+          "if sys.stdout is None: sys.stdout = open(os.devnull, 'w')",
+          "if sys.stderr is None: sys.stderr = open(os.devnull, 'w')",
+          `sys.argv = ['scansci_pdf', 'run', '--mode', 'streamable_http', '--host', '127.0.0.1', '--port', '${portStr}']`,
+          "runpy.run_module('scansci_pdf.main', run_name='__main__')"
+        ].join("\n");
+        return {
+          executable: pythonw,
+          args: ["-c", silentBootstrap]
+        };
+      }
+    }
+
+    return { executable, args: serverArgs };
+  }
+
   class ScanSciMCPClient {
     constructor(runtime, options = {}) {
       this.runtime = runtime;
@@ -255,12 +292,13 @@
           }
           else {
             const state = this.runtime?.state || {};
-            const executable = String(state.executable || "");
-            if (!executable) throw new Error("ScanSci 托管运行时没有可执行文件");
-            const args = Array.isArray(state.serverArgs) && state.serverArgs.length
-              ? state.serverArgs
-              : ["-m", "scansci_pdf.main", "run", "--mode", "streamable_http", "--host", "127.0.0.1", "--port", String(this.port)];
-            await this.spawnProcess(executable, args);
+            const rawExecutable = String(state.executable || "");
+            if (!rawExecutable) throw new Error("ScanSci 托管运行时没有可执行文件");
+            const launchSpec = resolveServerLaunchSpec(rawExecutable, this.port, {
+              runtime: this.runtime,
+              serverArgs: state.serverArgs
+            });
+            await this.spawnProcess(launchSpec.executable, launchSpec.args);
           }
           this.started = true;
           this.initialized = false;
@@ -269,10 +307,11 @@
           this.toolSchemas = [];
           if (options.waitForHealth !== false) {
             let healthy = false;
-            for (let healthAttempt = 0; healthAttempt < 20; healthAttempt++) {
+            const maxHealthAttempts = Math.max(1, Number(options.maxHealthAttempts || this.options.maxHealthAttempts || (typeof this.options.spawn === "function" ? 20 : 60)) || 20);
+            for (let healthAttempt = 0; healthAttempt < maxHealthAttempts; healthAttempt++) {
               if (await this.health({ ...options, restart: false })) { healthy = true; break; }
               if (!this.started) throw new Error(this.lastError || "ScanSci MCP 进程未能启动");
-              await new Promise(resolve => setTimeout(resolve, Math.min(250, 50 + healthAttempt * 20)));
+              await new Promise(resolve => setTimeout(resolve, Math.min(500, (typeof this.options.spawn === "function" ? 50 : 150) + healthAttempt * (typeof this.options.spawn === "function" ? 20 : 25))));
             }
             if (!healthy) throw new Error(this.lastError || "ScanSci MCP 服务健康检查超时");
           }
@@ -409,5 +448,5 @@
   Agent.normalizeScanSciToolResult = normalizeScanSciToolResult;
   Agent.normalizeScanSciDownloadResult = normalizeScanSciDownloadResult;
   Agent.ScanSciMCPClient = ScanSciMCPClient;
-  Agent.ScanSciDownloadInternals = { normalizeScanSciToolResult, normalizeScanSciDownloadResult, jsonFromResponse, withScanSciProxyEnvironment, CONTROL_TIMEOUT_MS, DOWNLOAD_TIMEOUT_MS, LOGIN_TIMEOUT_MS };
+  Agent.ScanSciDownloadInternals = { normalizeScanSciToolResult, normalizeScanSciDownloadResult, jsonFromResponse, withScanSciProxyEnvironment, resolveServerLaunchSpec, CONTROL_TIMEOUT_MS, DOWNLOAD_TIMEOUT_MS, LOGIN_TIMEOUT_MS };
 })(this);

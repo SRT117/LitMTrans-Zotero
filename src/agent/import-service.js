@@ -148,10 +148,21 @@
       catch (error) {
         throw new C.AgentError("DOI_IMPORT_FAILED", `DOI 元数据获取失败：${error?.message || error}`, { recoverable: true, suggestedAction: "add_by_bibtex" });
       }
+      const rawAbstract = text(data?.abstract || "");
+      const cleanAbstract = rawAbstract.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       const fallback = await this.create({
-        DOI: doi, title: data?.title?.[0], author: data?.author?.map(row => ({ firstName: row.given, lastName: row.family })) || [],
-        date: data?.published?.["date-parts"]?.[0]?.[0] || data?.issued?.["date-parts"]?.[0]?.[0], publicationTitle: data?.["container-title"]?.[0],
-        volume: data?.volume, issue: data?.issue, pages: data?.page, publisher: data?.publisher, url: data?.URL
+        DOI: doi,
+        title: data?.title?.[0],
+        abstract: cleanAbstract,
+        abstractNote: cleanAbstract,
+        author: data?.author?.map(row => ({ firstName: row.given, lastName: row.family })) || [],
+        date: data?.published?.["date-parts"]?.[0]?.[0] || data?.issued?.["date-parts"]?.[0]?.[0],
+        publicationTitle: data?.["container-title"]?.[0],
+        volume: data?.volume,
+        issue: data?.issue,
+        pages: data?.page,
+        publisher: data?.publisher,
+        url: data?.URL
       }, options);
       return { ...fallback, backend: "fallback-crossref", fallbackReason: "Zotero Translator unavailable or returned no item" };
     }

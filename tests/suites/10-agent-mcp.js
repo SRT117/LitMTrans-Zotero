@@ -63,6 +63,11 @@ module.exports = function createSuite(env) {
     assert.equal(parsed.length, 1);
     assert.equal(parsed[0].fields.doi, "10.1000/test");
     assert.equal(Agent.ImportHelpers.normalizeDOI("https://doi.org/10.1000/test."), "10.1000/test");
+    const facade = Object.create(Agent.AgentFacade.prototype);
+    assert.deepEqual(facade.citationRefs({ itemKey: "KEY1" }), ["KEY1"]);
+    assert.deepEqual(facade.citationRefs({ itemID: 123 }), [123]);
+    assert.deepEqual(facade.citationRefs({ documentID: "1-ABCD" }), ["1-ABCD"]);
+    assert.deepEqual(facade.citationRefs({ items: ["A", "B"] }), ["A", "B"]);
   }
 
   async function testTaskPersistenceAndCancellation() {
@@ -692,7 +697,7 @@ module.exports = function createSuite(env) {
     assert.equal(fulltextResult.total, 1);
     assert.equal(fulltextResult.items[0].key, "ITEM1");
     const instruction = Agent.buildAgentBootstrapInstruction("http://127.0.0.1:45124/litmtrans/mcp", "litmtrans", { toolCount: 108 }, "Codex");
-    assert(instruction.includes("zotero-mcp"));
+    assert(instruction.includes("保留所有已有服务"));
     assert(instruction.includes("litmtrans_get_capabilities"));
     assert(instruction.includes("45124"));
     assert(!instruction.trim().startsWith("{"));
@@ -1313,6 +1318,82 @@ module.exports = function createSuite(env) {
     finally { Agent.PDFValidator.validateFile = originalValidateFile; }
   }
 
+  async function testStandaloneAttachmentCleanedUpIfSaveEntityFails() {
+    const originalValidateFile = Agent.PDFValidator.validateFile;
+    const originalGlobalZotero = global.Zotero;
+    const originalGlobalLitMTrans = global.LitMTrans;
+    const originalContextZotero = context.Zotero;
+
+    Agent.PDFValidator.validateFile = async () => ({ valid: true, size: 100, pageCount: 1, signature: "PDF" });
+
+    let erased = false;
+    const fakeStandaloneAttachment = {
+      id: 999,
+      key: "STANDALONE_ATT",
+      parentID: false,
+      attachmentFilename: "test.pdf",
+      eraseTx: async () => { erased = true; }
+    };
+
+    const mockZotero = {
+      Attachments: {
+        importFromFile: async () => fakeStandaloneAttachment
+      },
+      RecognizeDocument: {
+        canRecognize: () => false,
+        recognizeItems: async () => {}
+      }
+    };
+    global.Zotero = mockZotero;
+    context.Zotero = mockZotero;
+    const originalCreateLocalFile = context.LitMTrans?.Utils?.createLocalFile;
+    if (context.LitMTrans?.Utils) {
+      context.LitMTrans.Utils.createLocalFile = path => ({ path });
+    }
+
+    try {
+      const parentItem = { id: 888, key: "PARENT_ITEM" };
+      const service = Object.create(Agent.PaperAcquisitionService.prototype);
+      service.library = {
+        resolveItem: async ref => String(ref) === parentItem.key || String(ref) === String(parentItem.id) ? parentItem : null,
+        saveEntity: async entity => {
+          if (entity === fakeStandaloneAttachment) {
+            throw new Error("Disk full: failed to save attached entity");
+          }
+        },
+        itemRecord: async () => ({ key: parentItem.key, title: "Test Paper" })
+      };
+      service.importer = {
+        addByDOI: async () => ({ item: parentItem })
+      };
+      service.cleanupStaged = async () => false;
+      service.init = async () => {};
+      service.upsertPaperCard = async () => {};
+      service.providerAcquire = async () => ({ status: "available", path: "/mock/downloaded.pdf", size: 100 });
+
+      let caught = null;
+      try {
+        await service.acquirePaper({ identifiers: { doi: "10.1000/fixture" } }, {});
+      } catch (err) {
+        caught = err;
+      }
+
+      assert.ok(caught, "acquirePaper should throw when attachment save fails");
+      assert.equal(caught.message, "Disk full: failed to save attached entity");
+      assert.equal(erased, true, "standalone attachment should be erased when saveEntity throws");
+      assert.equal(fakeStandaloneAttachment.parentID, false, "standalone attachment parentID should be reset to false before erase");
+    }
+    finally {
+      Agent.PDFValidator.validateFile = originalValidateFile;
+      global.Zotero = originalGlobalZotero;
+      global.LitMTrans = originalGlobalLitMTrans;
+      context.Zotero = originalContextZotero;
+      if (context.LitMTrans?.Utils) {
+        context.LitMTrans.Utils.createLocalFile = originalCreateLocalFile;
+      }
+    }
+  }
+
   async function testFallbackTaskAbortSignalSupportsListeners() {
     const original = context.AbortController;
     context.AbortController = undefined;
@@ -1583,6 +1664,104 @@ module.exports = function createSuite(env) {
     assert.equal(environment.get("SCANSCI_PDF_PROXY"), "http://configured-proxy:9000");
   }
 
+  async function testScanSciSilentServerLaunchSpec() {
+    const resolve = Agent.ScanSciDownloadInternals.resolveServerLaunchSpec;
+    assert.equal(typeof resolve, "function");
+
+    // 1. Windows with pythonw.exe available: selects pythonw.exe and builds silent devnull bootstrap args
+    const windowsSpec = resolve("C:/test/python/python.exe", 44123, {
+      isWindows: true,
+      fileExists: file => file.endsWith("pythonw.exe")
+    });
+    assert.equal(windowsSpec.executable, "C:/test/python/pythonw.exe");
+    assert.equal(windowsSpec.args[0], "-c");
+    assert.ok(windowsSpec.args[1].includes("devnull"));
+    assert.ok(windowsSpec.args[1].includes("44123"));
+    assert.ok(windowsSpec.args[1].includes("runpy.run_module"));
+
+    // 2. Windows without pythonw.exe: falls back to original executable
+    const fallbackSpec = resolve("C:/test/python/python.exe", 44123, {
+      isWindows: true,
+      fileExists: () => false
+    });
+    assert.equal(fallbackSpec.executable, "C:/test/python/python.exe");
+    assert.deepEqual(fallbackSpec.args, ["-m", "scansci_pdf.main", "run", "--mode", "streamable_http", "--host", "127.0.0.1", "--port", "44123"]);
+
+    // 3. Linux/macOS: keeps original python executable
+    const unixSpec = resolve("/usr/bin/python3", 44123, {
+      isWindows: false
+    });
+    assert.equal(unixSpec.executable, "/usr/bin/python3");
+    assert.deepEqual(unixSpec.args, ["-m", "scansci_pdf.main", "run", "--mode", "streamable_http", "--host", "127.0.0.1", "--port", "44123"]);
+  }
+
+  async function testStorageRuntimeSummaryAndCacheCleanup() {
+    const files = new Map();
+    const removedPaths = [];
+    const mockStorage = {
+      root: "/mem/profile/litmtrans",
+      tempRoot: "/mem/profile/litmtrans-tmp",
+      documentsRoot: "/mem/profile/litmtrans/documents",
+      runtimeRoot: "/mem/profile/litmtrans/runtime",
+      formatBytes: bytes => `${bytes} B`,
+      async exists(p) {
+        if (p === "/mem/profile/litmtrans/runtime" || p === "/mem/profile/litmtrans/runtime/acquisition" || p === "/mem/profile/litmtrans/runtime/acquisition/python" || p === "/mem/profile/litmtrans/runtime/acquisition/python/Lib" || p === "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages" || p === "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages/__pycache__") return true;
+        return files.has(p);
+      },
+      async list(dir) {
+        if (dir === "/mem/profile/litmtrans/runtime") return ["/mem/profile/litmtrans/runtime/acquisition"];
+        if (dir === "/mem/profile/litmtrans/runtime/acquisition") return [
+          "/mem/profile/litmtrans/runtime/acquisition/python-embed.zip",
+          "/mem/profile/litmtrans/runtime/acquisition/scansci-pdf.whl",
+          "/mem/profile/litmtrans/runtime/acquisition/python"
+        ];
+        if (dir === "/mem/profile/litmtrans/runtime/acquisition/python") return [
+          "/mem/profile/litmtrans/runtime/acquisition/python/python313.zip",
+          "/mem/profile/litmtrans/runtime/acquisition/python/Lib"
+        ];
+        if (dir === "/mem/profile/litmtrans/runtime/acquisition/python/Lib") return [
+          "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages"
+        ];
+        if (dir === "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages") return [
+          "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages/__pycache__"
+        ];
+        if (dir === "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages/__pycache__") return [
+          "/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages/__pycache__/test.cpython-313.pyc"
+        ];
+        return [];
+      },
+      async stat(p) {
+        if (p.endsWith(".zip") || p.endsWith(".whl") || p.endsWith(".pyc")) {
+          return { type: "regular", size: 100 };
+        }
+        return { type: "directory" };
+      },
+      async dirStats(p) {
+        if (p.endsWith("__pycache__")) return { bytes: 100, files: 1, formatted: "100 B" };
+        if (p.endsWith("runtime")) return { bytes: 400, files: 4, formatted: "400 B" };
+        return { bytes: 0, files: 0, formatted: "0 B" };
+      },
+      async remove(p) {
+        removedPaths.push(p);
+        files.delete(p);
+      }
+    };
+
+    files.set("/mem/profile/litmtrans/runtime/acquisition/python-embed.zip", "zip");
+    files.set("/mem/profile/litmtrans/runtime/acquisition/scansci-pdf.whl", "whl");
+    files.set("/mem/profile/litmtrans/runtime/acquisition/python/python313.zip", "keep-me");
+    files.set("/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages/__pycache__/test.cpython-313.pyc", "pyc");
+
+    const clearRes = await context.LitMTrans.Storage.prototype.clearRuntimeCache.call(mockStorage);
+    assert.ok(clearRes.clearedBytes > 0);
+    // python313.zip must NOT be removed
+    assert.ok(!removedPaths.includes("/mem/profile/litmtrans/runtime/acquisition/python/python313.zip"));
+    // python-embed.zip and scansci-pdf.whl must be removed
+    assert.ok(removedPaths.includes("/mem/profile/litmtrans/runtime/acquisition/python-embed.zip"));
+    assert.ok(removedPaths.includes("/mem/profile/litmtrans/runtime/acquisition/scansci-pdf.whl"));
+    assert.ok(removedPaths.includes("/mem/profile/litmtrans/runtime/acquisition/python/Lib/site-packages/__pycache__"));
+  }
+
   async function testAgentFacadeShutdownStopsAcquisitionImmediately() {
     const facade = Object.create(Agent.AgentFacade.prototype);
     const calls = [];
@@ -1741,6 +1920,7 @@ module.exports = function createSuite(env) {
     testAcquisitionRunnerSharesRuntimePreflight,
       testManagedRuntimeProcessTimeoutKillsProcess,
       testAcquisitionReusesExistingAttachmentBeforeDownload,
+      testStandaloneAttachmentCleanedUpIfSaveEntityFails,
     testFallbackTaskAbortSignalSupportsListeners,
     testManagedRuntimeSingleFlightAndHealthTTL,
     testManagedRuntimePromotionRetriesTransientMoveFailure,
@@ -1750,6 +1930,8 @@ module.exports = function createSuite(env) {
     testFullTextRetryResolvesEveryCandidateID,
     testScanSciToolResultNormalizationAndRedaction,
     testScanSciProxyEnvironmentMapping,
+    testScanSciSilentServerLaunchSpec,
+    testStorageRuntimeSummaryAndCacheCleanup,
     testAgentFacadeShutdownStopsAcquisitionImmediately,
     testAgentBackendShutdownDelegatesToFacade,
     testTargetRuntimeVersionAndClientInfo,

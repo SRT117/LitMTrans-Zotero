@@ -14,7 +14,7 @@
       `服务名称固定为 ${name}，连接地址为 ${url}。请直接按你当前客户端的能力完成配置，不要让我手工编辑配置文件。`,
       "请保留所有已有服务，只新增或更新名为litmtrans的这一项；不要删除、改名或覆盖其他服务。",
       "完成后连接LitMTrans，并调用litmtrans_get_capabilities验证；如果连接失败，请告诉我下一步该做什么。",
-      toolCount ? `当前服务预计提供约 ${toolCount} 个工具；验证时以实际返回为准。` : "连接后以litmtrans_get_capabilities返回的实际能力为准。连接成功后向我介绍可用的功能。"
+      toolCount ? `当前服务预计提供约 ${toolCount} 个工具；验证时以实际返回为准。` : "连接后以litmtrans_get_capabilities返回的实际能力为准。连接成功后向我介绍可用的功能，如果当前会话提示工具未就绪或未启用，可直接新建一个对话即可自动生效。"
     ].join("\n");
   }
 

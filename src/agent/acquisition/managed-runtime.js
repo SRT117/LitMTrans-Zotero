@@ -365,6 +365,24 @@
         throw new Error(`托管 Python 版本不符合清单：${versions?.pythonVersion || "unknown"}`);
       }
       await storage.remove?.(probePath, false);
+      if (typeof storage.list === "function") {
+        try {
+          const stagingFiles = await storage.list(staging);
+          for (const file of stagingFiles) {
+            const fileName = PathUtils.filename(file);
+            const isPythonStandardLib = /^python\d+\.zip$/i.test(fileName);
+            const isKnownInstallerArchive = (
+              fileName === "python-embed.zip" ||
+              /^pip-.*\.whl$/i.test(fileName) ||
+              /^scansci-.*\.whl$/i.test(fileName) ||
+              fileName === PathUtils.filename(wheelPath)
+            );
+            if (!isPythonStandardLib && isKnownInstallerArchive) {
+              await storage.remove?.(file, false);
+            }
+          }
+        } catch (_) {}
+      }
       await storage.ensureDir(parent);
       const backup = `${root}.last-known-good`;
       if (typeof options.promote === "function") await options.promote({ staging, root, backup, storage, generation });
@@ -528,7 +546,16 @@
       if (this.state.target !== this.platform.target) return false;
       if (!options.ignoreRuntimeVersion && expectedRuntimeVersion && this.state.runtimeVersion !== expectedRuntimeVersion) return false;
       const checkedAt = Number(this.state.healthCheckedAt || 0);
-      if (!options.forceHealth && this.state.healthResult !== null && checkedAt > 0 && Date.now() - checkedAt < this.healthTTL) return this.state.healthResult === true;
+      if (!options.forceHealth && this.state.healthResult !== null && checkedAt > 0 && Date.now() - checkedAt < this.healthTTL) {
+        if (this.state.executable && this.storage?.exists) {
+          const exists = await this.storage.exists(this.state.executable).catch(() => false);
+          if (!exists) {
+            this.invalidateHealth("executable-missing");
+            return false;
+          }
+        }
+        return this.state.healthResult === true;
+      }
       let healthy = false;
       try {
         healthy = typeof this.healthCheck === "function"

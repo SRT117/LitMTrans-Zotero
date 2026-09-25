@@ -161,53 +161,161 @@
       options.onProgress?.({ phase: "validate", message: "正在校验全文文件" });
       let item = existingItem || fetched.item || null;
       let imported = null;
-      if (!item && options.attachToZotero !== false) {
-        try {
-          if (!this.importer?.create) throw new C.AgentError("LITERATURE_IMPORT_UNAVAILABLE", "当前环境无法创建 Zotero 文献条目", { recoverable: true });
-          imported = await this.importer.create({
-            title: input.metadata?.title,
-            abstract: input.summary?.abstract,
-            DOI: input.identifiers?.doi,
-            URL: input.identifiers?.url,
-            date: input.metadata?.date || input.metadata?.year,
-            publicationTitle: input.metadata?.venue || input.metadata?.journal,
-            publisher: input.metadata?.publisher,
-            author: input.metadata?.authors || [],
-            libraryID: input.local?.libraryID || options.libraryID
-          }, { libraryID: input.local?.libraryID || options.libraryID, collection: options.collection, collectionID: options.collectionID });
-          item = imported.item ? await this.library.resolveItem(imported.item.key || imported.item.itemKey || imported.item.id) : null;
+      let attached = null;
+      let standaloneAttachment = null;
+      let standaloneAttached = false;
+
+      try {
+        if (!item && options.attachToZotero !== false) {
+          const doi = Agent.PaperCardHelpers?.normalizeDOI?.(input.identifiers?.doi || input.doi || "");
+          const url = text(input.identifiers?.url || input.url || "");
+          const hasTitle = Boolean(input.metadata?.title);
+          const libID = Number(input.local?.libraryID || options.libraryID || 1);
+
+          // 1. 若调用方未显式提供标题（例如按 DOI 下载），优先以独立附件形式导入并触发 Zotero 原生 RecognizeDocument 解析
+          //    这与用户手动把 PDF 拖入 Zotero 触发的是完全相同的原生引擎，能提取出完整的标题、作者以及摘要（Abstract）
+          if (!hasTitle && fetched.path && global.Zotero?.Attachments?.importFromFile && (global.Zotero?.RecognizeDocument?.recognizeItems || global.Zotero?.RecognizeDocument?.autoRecognizeItems)) {
+            try {
+              const localFile = LitMTrans.Utils?.createLocalFile?.(fetched.path);
+              if (localFile) {
+                standaloneAttachment = await global.Zotero.Attachments.importFromFile({
+                  file: localFile,
+                  parentItemID: false,
+                  libraryID: libID
+                });
+                if (standaloneAttachment && global.Zotero.RecognizeDocument.canRecognize?.(standaloneAttachment)) {
+                  options.onProgress?.({ phase: "recognize", message: "正在触发 Zotero 原生元数据与摘要识别" });
+                  try {
+                    await global.Zotero.RecognizeDocument.recognizeItems([standaloneAttachment]);
+                    if (standaloneAttachment.parentID) {
+                      standaloneAttached = true;
+                      item = await this.library.resolveItem(standaloneAttachment.parentID);
+                      attached = {
+                        attachmentID: standaloneAttachment.id,
+                        attachmentKey: standaloneAttachment.key,
+                        itemKey: item.key || item.itemKey || "",
+                        fileName: standaloneAttachment.attachmentFilename || ""
+                      };
+                    }
+                  } catch (_) {}
+                }
+              }
+            } catch (_) {}
+          }
+
+          // 2. 若 Zotero 原生识别未运行或未匹配到父条目，走 Crossref / Zotero Translator 学术流水线
+          if (!item) {
+            try {
+              if (!hasTitle && doi && typeof this.importer?.addByDOI === "function") {
+                try {
+                  imported = await this.importer.addByDOI(doi, {
+                    libraryID: libID,
+                    collection: options.collection,
+                    collectionID: options.collectionID,
+                    saveAttachments: false
+                  });
+                  if (imported?.item) {
+                    item = await this.library.resolveItem(imported.item.key || imported.item.itemKey || imported.item.id);
+                  }
+                } catch (_) {}
+              } else if (!hasTitle && url && typeof this.importer?.addByURL === "function") {
+                try {
+                  imported = await this.importer.addByURL(url, {
+                    libraryID: libID,
+                    collection: options.collection,
+                    collectionID: options.collectionID,
+                    saveAttachments: false
+                  });
+                  if (imported?.item) {
+                    item = await this.library.resolveItem(imported.item.key || imported.item.itemKey || imported.item.id);
+                  }
+                } catch (_) {}
+              }
+
+              if (!item) {
+                if (!this.importer?.create) throw new C.AgentError("LITERATURE_IMPORT_UNAVAILABLE", "当前环境无法创建 Zotero 文献条目", { recoverable: true });
+                const fallbackTitle = input.metadata?.title
+                  || (fetched.path ? PathUtils.filename(fetched.path).replace(/\.pdf$/i, "") : (doi ? `DOI: ${doi}` : "未命名文献"));
+                imported = await this.importer.create({
+                  title: fallbackTitle,
+                  abstract: input.summary?.abstract,
+                  abstractNote: input.summary?.abstract,
+                  DOI: doi || input.identifiers?.doi,
+                  URL: url || input.identifiers?.url,
+                  date: input.metadata?.date || input.metadata?.year,
+                  publicationTitle: input.metadata?.venue || input.metadata?.journal,
+                  publisher: input.metadata?.publisher,
+                  author: input.metadata?.authors || [],
+                  libraryID: libID
+                }, { libraryID: libID, collection: options.collection, collectionID: options.collectionID });
+                item = imported.item ? await this.library.resolveItem(imported.item.key || imported.item.itemKey || imported.item.id) : null;
+              }
+            }
+            catch (error) {
+              this.runtime?.invalidateHealth?.("import-failed");
+              throw error;
+            }
+          }
+          if (item && doi && typeof item.setField === "function" && !item.getField?.("DOI")) {
+            item.setField("DOI", doi);
+            if (!item.getField?.("url")) item.setField("url", `https://doi.org/${doi}`);
+            await this.library.saveEntity?.(item);
+          }
         }
-        catch (error) {
-          this.runtime?.invalidateHealth?.("import-failed");
-          throw error;
+
+        if (options.attachToZotero !== false && item) {
+          const existingAttachment = fetched.attachment;
+          try {
+            if (!attached) {
+              if (standaloneAttachment) {
+                standaloneAttachment.parentID = item.id;
+                await this.library.saveEntity?.(standaloneAttachment);
+                standaloneAttached = true;
+                attached = {
+                  attachmentID: standaloneAttachment.id,
+                  attachmentKey: standaloneAttachment.key,
+                  itemKey: item.key || item.itemKey || "",
+                  fileName: standaloneAttachment.attachmentFilename || ""
+                };
+                if (options.collection || options.collectionID) {
+                  await this.library.addItemsToCollection(options.collection || options.collectionID, [item.key]);
+                }
+              } else {
+                attached = existingAttachment || await this.attach(fetched.path, item, options);
+              }
+            }
+            fetched.attachment = existingAttachment && typeof existingAttachment === "object"
+              ? { attachmentID: existingAttachment.id || 0, attachmentKey: existingAttachment.key || "", itemKey: item.key || item.itemKey || "", fileName: existingAttachment.attachmentFilename || "" }
+              : attached;
+            fetched.item = await this.library.itemRecord(item, { includeStatus: false });
+            fetched.imported = imported;
+            await this.upsertPaperCard(item);
+            options.onProgress?.({ phase: "attach", message: "正在写入 Zotero 附件" });
+            if (options.parse) {
+              if (typeof this.parseCallback === "function") fetched.parse = await this.parseCallback(item, attached, options);
+              else fetched.parse = { requested: true, status: "not-started", reason: "parse callback unavailable" };
+            }
+          }
+          catch (error) {
+            this.runtime?.invalidateHealth?.("import-failed");
+            throw error;
+          }
+          finally {
+            if (await this.cleanupStaged(fetched.path)) {
+              fetched.stagedPathCleaned = true;
+              fetched.path = "";
+            }
+          }
         }
       }
-      if (options.attachToZotero !== false && item) {
-        const existingAttachment = fetched.attachment;
-        let attached;
-        try {
-          attached = existingAttachment || await this.attach(fetched.path, item, options);
-          fetched.attachment = existingAttachment && typeof existingAttachment === "object"
-            ? { attachmentID: existingAttachment.id || 0, attachmentKey: existingAttachment.key || "", itemKey: item.key || item.itemKey || "", fileName: existingAttachment.attachmentFilename || "" }
-            : attached;
-          fetched.item = await this.library.itemRecord(item, { includeStatus: false });
-          fetched.imported = imported;
-          await this.upsertPaperCard(item);
-          options.onProgress?.({ phase: "attach", message: "正在写入 Zotero 附件" });
-          if (options.parse) {
-            if (typeof this.parseCallback === "function") fetched.parse = await this.parseCallback(item, attached, options);
-            else fetched.parse = { requested: true, status: "not-started", reason: "parse callback unavailable" };
+      finally {
+        // 若创建了独立附件但最终未能成功持久化挂接到父条目，及时擦除孤立附件，避免污染文献库
+        if (standaloneAttachment && !standaloneAttached) {
+          try {
+            standaloneAttachment.parentID = false;
+            await standaloneAttachment.eraseTx?.();
           }
-        }
-        catch (error) {
-          this.runtime?.invalidateHealth?.("import-failed");
-          throw error;
-        }
-        finally {
-          if (await this.cleanupStaged(fetched.path)) {
-            fetched.stagedPathCleaned = true;
-            fetched.path = "";
-          }
+          catch (_) {}
         }
       }
       return { ...fetched, status: "available", reused: false, duplicate: Boolean(existingItem) };

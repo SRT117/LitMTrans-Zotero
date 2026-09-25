@@ -6280,6 +6280,8 @@
         targetPath = this.storage.tempRoot;
       } else if (payload?.kind === "edge") {
         targetPath = PathUtils.join(this.storage.root, "edge-local-translation");
+      } else if (payload?.kind === "runtime") {
+        targetPath = PathUtils.join(this.storage.root, "runtime");
       } else if (payload?.kind === "documentsRoot") {
         targetPath = this.storage.documentsRoot;
       } else if (payload?.kind === "document" && payload?.documentID) {
@@ -6318,6 +6320,33 @@
       }
       if (target === "edge") {
         const res = await this.storage.clearEdgeLocalFiles();
+        return { success: true, ...res };
+      }
+      if (target === "runtime-cache") {
+        const res = await this.storage.clearRuntimeCache();
+        return { success: true, ...res };
+      }
+      if (target === "runtime") {
+        try {
+          if (this.agent?.facade?.acquisition) {
+            await this.agent.facade.acquisition.shutdown();
+          }
+        } catch (_) {}
+        const res = await this.storage.clearRuntime();
+        try {
+          const runtime = this.agent?.facade?.acquisition?.runtime;
+          if (runtime) {
+            runtime.invalidateHealth?.("runtime-deleted");
+            if (runtime.state && typeof runtime.state === "object") {
+              runtime.state.status = "uninstalled";
+              runtime.state.version = "";
+              runtime.state.executable = "";
+              runtime.state.healthResult = null;
+              runtime.state.healthCheckedAt = 0;
+              runtime.state.lastHealthCheck = "";
+            }
+          }
+        } catch (_) {}
         return { success: true, ...res };
       }
       if (target === "orphaned") {

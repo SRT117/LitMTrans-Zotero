@@ -826,6 +826,13 @@
         if (!allowed.has(key)) continue;
         item.setField?.(key, String(value ?? ""));
       }
+      if (values.creators || values.author || values.authors) {
+        const rawCreators = values.creators ?? values.authors ?? values.author;
+        const normalized = Agent.ImportHelpers?.normalizeCreators?.(rawCreators, "author");
+        if (Array.isArray(normalized) && typeof item.setCreators === "function") {
+          item.setCreators(normalized);
+        }
+      }
       await this.saveEntity(item);
       return this.itemRecord(item, { includeStatus: false });
     }

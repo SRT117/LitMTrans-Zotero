@@ -63,10 +63,17 @@
     }
 
     async records(refs = [], options = {}) {
-      const values = Array.isArray(refs) ? refs : [refs];
+      const values = (Array.isArray(refs) ? refs : [refs]).filter(Boolean);
       const rows = [];
       for (const ref of values) {
-        const item = await this.library.resolveItem(ref, options);
+        let item = await this.library.resolveItem(ref, options);
+        if (Agent.LibraryHelpers?.isAttachment?.(item) || item?.isAttachment?.()) {
+          const pid = Agent.LibraryHelpers?.parentID?.(item) || item?.parentItemID;
+          if (pid) {
+            const parent = global.Zotero?.Items?.get ? global.Zotero.Items.get(pid) : null;
+            if (parent) item = parent;
+          }
+        }
         rows.push(await this.library.itemRecord(item, { includeStatus: false }));
       }
       if (!rows.length) throw new C.AgentError("ITEMS_REQUIRED", "至少需要一个 Zotero 条目", { recoverable: false });

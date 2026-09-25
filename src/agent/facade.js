@@ -234,6 +234,7 @@
         },
         instructions: [
           "LitMTrans 允许正常的读取、解析、翻译、标签、Note、Annotation、Collection 整理、导出和研究记录自主执行。",
+          "支持学术文献发现与全文 PDF 下载：用 litmtrans_literature_search 查找候选，再用 litmtrans_acquire_papers 获取、验证并添加 PDF 到 Zotero；也可用 litmtrans_literature_import 获取全文（acquireFullText=false 时只导入元数据）。获取到有效 PDF 后可用 parse=true 启动 MinerU 解析，之后可继续翻译。全文能否获取取决于开放来源和机构权限，解析与翻译取决于相应服务配置。",
           "正文未解析时可以主动提交解析任务；译文缺失时可以主动使用当前配置翻译。",
           "优先复用未过期缓存，长任务使用 Job，批量任务使用父 Job 和子 Job。",
           "不要索取已经由 LitMTrans 配置的 API Key、MinerU Token 或网页登录凭据。",
@@ -282,6 +283,18 @@
 
     contextRef(input = {}) {
       return input.documentID || input.attachmentKey || input.itemKey || input.itemID || input.key || input.item || input.attachment || input.ref || input;
+    }
+
+    citationRefs(args = {}) {
+      const candidate = args.items || args.itemKeys || args.keys || args.ids;
+      if (Array.isArray(candidate) && candidate.length) return candidate.filter(Boolean);
+      const single = args.item || args.itemKey || args.itemID || args.attachmentKey || args.documentID || args.key || args.ref;
+      if (single != null && single !== "" && typeof single !== "object") return [single];
+      if (typeof single === "object" && single) {
+        const keyOrID = single.key || single.itemKey || single.id || single.itemID || single.documentID;
+        if (keyOrID) return [keyOrID];
+      }
+      return [];
     }
 
     processingRunner(kind, input = {}) {
@@ -942,8 +955,8 @@
         case "update_collection":
         case "rename_collection":
         case "move_collection": this.policy.assert("library-write"); return this.library.updateCollection(args.collection ?? args.collectionID ?? args.key, args);
-        case "add_items_to_collection": this.policy.assert("library-write"); return this.library.addItemsToCollection(args.collection ?? args.collectionID ?? args.key, args.items || args.itemKeys || []);
-        case "remove_items_from_collection": this.policy.assert("library-write"); return this.library.removeItemsFromCollection(args.collection ?? args.collectionID ?? args.key, args.items || args.itemKeys || []);
+        case "add_items_to_collection": this.policy.assert("library-write"); return this.library.addItemsToCollection(args.collection ?? args.collectionID ?? args.key, this.citationRefs(args));
+        case "remove_items_from_collection": this.policy.assert("library-write"); return this.library.removeItemsFromCollection(args.collection ?? args.collectionID ?? args.key, this.citationRefs(args));
         case "add_tags": this.policy.assert("library-write"); return this.library.addTags(args.item || args.itemKey || args.key, args.tags || args.tag || []);
         case "remove_tags": this.policy.assert("library-write"); return this.library.removeTags(args.item || args.itemKey || args.key, args.tags || args.tag || []);
         case "update_item_metadata": this.policy.assert("library-write"); return this.library.updateItemMetadata(args.item || args.itemKey || args.key, args.fields || args.metadata || args);
@@ -969,11 +982,11 @@
         case "inspect_document_state": return this.inspectDocumentState(this.contextRef(args), args);
         case "repair_document": this.policy.assert("developer"); return this.artifact.getManifest(this.contextRef(args), { ...args, prepareCAJ: true });
         case "query_agent_index": this.policy.assert("developer"); return this.corpus.search(args);
-        case "generate_citation": this.policy.assert("library-read"); return this.citation.generateCitation(args.items || args.item || args.itemKeys || [], args);
-        case "generate_bibliography": this.policy.assert("library-read"); return this.citation.generateBibliography(args.items || args.item || args.itemKeys || [], args);
-        case "export_bibtex": this.policy.assert("export"); return this.citation.exportFormat(args.items || args.item || args.itemKeys || [], "bibtex", args);
-        case "export_ris": this.policy.assert("export"); return this.citation.exportFormat(args.items || args.item || args.itemKeys || [], "ris", args);
-        case "export_csl_json": this.policy.assert("export"); return this.citation.exportFormat(args.items || args.item || args.itemKeys || [], "csl-json", args);
+        case "generate_citation": this.policy.assert("library-read"); return this.citation.generateCitation(this.citationRefs(args), args);
+        case "generate_bibliography": this.policy.assert("library-read"); return this.citation.generateBibliography(this.citationRefs(args), args);
+        case "export_bibtex": this.policy.assert("export"); return this.citation.exportFormat(this.citationRefs(args), "bibtex", args);
+        case "export_ris": this.policy.assert("export"); return this.citation.exportFormat(this.citationRefs(args), "ris", args);
+        case "export_csl_json": this.policy.assert("export"); return this.citation.exportFormat(this.citationRefs(args), "csl-json", args);
          case "add_by_doi": {
            this.policy.assert("library-write");
            const existing = await this.importer.existingByDOI(Agent.ImportHelpers.normalizeDOI(args.doi || args.DOI), args.libraryID);
