@@ -163,30 +163,30 @@
           </html:div>
         </html:section>
 
-        <html:section class="litmtrans-pref-card litmtrans-pref-card-agent">
-          <html:div class="litmtrans-pref-card-heading">
-            <html:span class="litmtrans-pref-card-mark">连接</html:span>
-            <html:div><html:h2>AI助手连接</html:h2><html:p>连接后，你常用的AI助手可以帮你查找、整理和处理Zotero文献。</html:p></html:div>
-            <html:span id="litmtrans-pref-agent-status" class="litmtrans-agent-status"/>
-          </html:div>
-          <html:div class="litmtrans-pref-form-stack">
-                <html:div class="litmtrans-shared-toggle"><html:input id="litmtrans-pref-agent-enabled" type="checkbox" checked="checked"/><html:label for="litmtrans-pref-agent-enabled"><html:strong>允许AI助手访问Zotero</html:strong></html:label></html:div>
-                <html:p id="litmtrans-pref-agent-hint" class="litmtrans-agent-hint">打开后，AI助手可以帮你查找和整理Zotero文献。</html:p>
-            <html:button id="litmtrans-pref-copy-agent-bootstrap" class="primary" type="button">复制给智能体</html:button>
-            <html:details id="litmtrans-pref-agent-advanced" class="litmtrans-agent-advanced">
-              <html:summary>开发者设置</html:summary>
-              <html:div class="litmtrans-agent-advanced-body">
-                <html:label>访问权限<html:select id="litmtrans-pref-agent-access-mode"><html:option value="read">只读</html:option><html:option value="full" selected="selected">科研访问（默认）</html:option><html:option value="developer">开发者诊断</html:option></html:select></html:label>
-                <html:div class="litmtrans-shared-toggle"><html:input id="litmtrans-pref-agent-allow-configured-services" type="checkbox" checked="checked"/><html:label for="litmtrans-pref-agent-allow-configured-services">允许使用已配置的解析和翻译服务</html:label></html:div>
-                <html:div class="litmtrans-shared-toggle"><html:input id="litmtrans-pref-agent-allow-chat-history" type="checkbox" checked="checked"/><html:label for="litmtrans-pref-agent-allow-chat-history">允许读取LitMTrans对话历史</html:label></html:div>
-                <html:label>后台AI<html:select id="litmtrans-pref-agent-background-provider"><html:option value="auto">自动选择已配置API</html:option><html:option value="deepseek">DeepSeek API</html:option><html:option value="oneapi">OneAPI / NewAPI</html:option><html:option value="openai_compatible">OpenAI兼容接口</html:option><html:option value="gemini">Gemini API</html:option><html:option value="siliconflow">SiliconFlow</html:option><html:option value="zai">Z.ai</html:option><html:option value="openrouter">OpenRouter</html:option></html:select></html:label>
-                <html:div class="litmtrans-field-with-action litmtrans-agent-client-config"><html:label>客户端配置<html:select id="litmtrans-pref-agent-client"><html:option value="codex">Codex</html:option><html:option value="claude-code">Claude Code</html:option><html:option value="claude-desktop">Claude Desktop</html:option><html:option value="cline">Cline</html:option><html:option value="continue">Continue</html:option><html:option value="cursor">Cursor</html:option><html:option value="cherry-studio">Cherry Studio</html:option><html:option value="gemini-cli">Gemini CLI</html:option><html:option value="chatbox">Chatbox</html:option><html:option value="workbuddy">WorkBuddy</html:option><html:option value="trae-ai">Trae</html:option><html:option value="qwen-code">Qwen Code</html:option><html:option value="custom-http">通用 HTTP 客户端</html:option></html:select></html:label><html:button id="litmtrans-pref-copy-agent-client-config" type="button">复制开发者配置</html:button></html:div>
-              </html:div>
-            </html:details>
-          </html:div>
-        </html:section>
         </html:div>
       </html:details>
+      <html:section class="litmtrans-pref-card litmtrans-pref-card-agent">
+        <html:div class="litmtrans-pref-card-heading">
+          <html:span class="litmtrans-pref-card-mark">连接</html:span>
+          <html:div><html:h2>AI助手连接</html:h2><html:p>连接后，你常用的AI助手可以通过MCP协议查找、整理和处理Zotero文献。</html:p></html:div>
+          <html:span id="litmtrans-pref-agent-status" class="litmtrans-agent-status"/>
+        </html:div>
+        <html:div class="litmtrans-pref-form-stack">
+          <html:div class="litmtrans-shared-toggle"><html:input id="litmtrans-pref-agent-enabled" type="checkbox" checked="checked"/><html:label for="litmtrans-pref-agent-enabled"><html:strong>允许AI助手访问Zotero</html:strong></html:label></html:div>
+          <html:p id="litmtrans-pref-agent-hint" class="litmtrans-agent-hint">打开后，AI助手可以帮你查找和整理Zotero文献。</html:p>
+          <html:button id="litmtrans-pref-copy-agent-bootstrap" class="primary" type="button">复制给智能体</html:button>
+          <html:details id="litmtrans-pref-agent-advanced" class="litmtrans-agent-advanced">
+            <html:summary>开发者设置</html:summary>
+            <html:div class="litmtrans-agent-advanced-body">
+              <html:label>访问权限<html:select id="litmtrans-pref-agent-access-mode"><html:option value="read">只读</html:option><html:option value="full" selected="selected">科研访问（默认）</html:option><html:option value="developer">开发者诊断</html:option></html:select></html:label>
+              <html:div class="litmtrans-shared-toggle"><html:input id="litmtrans-pref-agent-allow-configured-services" type="checkbox" checked="checked"/><html:label for="litmtrans-pref-agent-allow-configured-services">允许使用已配置的解析和翻译服务</html:label></html:div>
+              <html:div class="litmtrans-shared-toggle"><html:input id="litmtrans-pref-agent-allow-chat-history" type="checkbox" checked="checked"/><html:label for="litmtrans-pref-agent-allow-chat-history">允许读取LitMTrans对话历史</html:label></html:div>
+              <html:label>后台AI<html:select id="litmtrans-pref-agent-background-provider"><html:option value="auto">自动选择已配置API</html:option><html:option value="deepseek">DeepSeek API</html:option><html:option value="oneapi">OneAPI / NewAPI</html:option><html:option value="openai_compatible">OpenAI兼容接口</html:option><html:option value="gemini">Gemini API</html:option><html:option value="siliconflow">SiliconFlow</html:option><html:option value="zai">Z.ai</html:option><html:option value="openrouter">OpenRouter</html:option></html:select></html:label>
+              <html:div class="litmtrans-field-with-action litmtrans-agent-client-config"><html:label>客户端配置<html:select id="litmtrans-pref-agent-client"><html:option value="codex">Codex</html:option><html:option value="claude-code">Claude Code</html:option><html:option value="claude-desktop">Claude Desktop</html:option><html:option value="cline">Cline</html:option><html:option value="continue">Continue</html:option><html:option value="cursor">Cursor</html:option><html:option value="cherry-studio">Cherry Studio</html:option><html:option value="gemini-cli">Gemini CLI</html:option><html:option value="chatbox">Chatbox</html:option><html:option value="workbuddy">WorkBuddy</html:option><html:option value="trae-ai">Trae</html:option><html:option value="qwen-code">Qwen Code</html:option><html:option value="custom-http">通用 HTTP 客户端</html:option></html:select></html:label><html:button id="litmtrans-pref-copy-agent-client-config" type="button">复制配置命令</html:button></html:div>
+            </html:div>
+          </html:details>
+        </html:div>
+      </html:section>
     </html:main>
 
     <html:div id="litmtrans-pref-web-mode-info" class="litmtrans-pref-info-overlay" hidden="hidden" role="dialog" aria-modal="true" aria-labelledby="litmtrans-pref-web-mode-info-title">

@@ -523,7 +523,7 @@ var LitMTransControllerPreferences = {
       if (!result?.ready || !value) throw new Error("请先启用连接，等待服务准备好后再复制。");
       if (this.controller().writeClipboardText) this.controller().writeClipboardText(value);
       else await navigator.clipboard?.writeText?.(value);
-      this.message("已复制给智能体");
+      this.message("已复制，请粘贴给智能体");
     }
     catch (error) { this.message(error.message || "复制失败", true); }
   },

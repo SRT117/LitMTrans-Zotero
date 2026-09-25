@@ -109,10 +109,11 @@
 .litmtrans-pref-card-model { grid-column: 2; grid-row: 1 / span 2; }
 .litmtrans-pref-card-required { border-color: color-mix(in srgb, var(--litmtrans-mineru) 55%, var(--material-border, #d7d7d7)); box-shadow: 0 2px 9px color-mix(in srgb, var(--litmtrans-mineru) 13%, transparent); }
 .litmtrans-pref-card-reading { --litmtrans-section: var(--litmtrans-reading); --litmtrans-section-soft: var(--litmtrans-reading-soft); }
-.litmtrans-pref-card-agent { --litmtrans-section: #3d7892; --litmtrans-section-soft: color-mix(in srgb, #3d7892 8%, var(--material-background, #fff)); }
+.litmtrans-pref-card-agent { --litmtrans-section: #3d7892; --litmtrans-section-soft: color-mix(in srgb, #3d7892 8%, var(--material-background, #fff)); grid-column: 1 / -1; grid-row: 4; }
 .litmtrans-pref-advanced { grid-column: 1 / -1; grid-row: 3; min-width: 0; border-top: 1px solid var(--material-border, #d7d7d7); }
 .litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-model { grid-row: 1; }
 .litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-advanced { grid-row: 2; }
+.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-agent { grid-row: 3; }
 .litmtrans-pref-advanced > summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 9px; list-style: none; border: 1px solid var(--material-border, #d7d7d7); border-top: 0; background: color-mix(in srgb, var(--material-background, #fff) 92%, transparent); color: var(--fill-secondary, #555); cursor: pointer; user-select: none; }
 .litmtrans-pref-advanced > summary::-webkit-details-marker { display: none; }
 .litmtrans-pref-advanced > summary::before { content: ""; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid currentColor; transition: transform .16s ease; }

@@ -8915,7 +8915,7 @@
           value = String(result?.instruction || "");
         }
         if (!result?.ready || !value) throw new Error("请先启用连接，等待服务准备好后再复制。");
-        await copyText(value, "已复制给智能体");
+        await copyText(value, "已复制，请粘贴给智能体");
       }
       catch (error) { toast(error.message || "复制失败", "error"); }
     });
