@@ -18,7 +18,7 @@
 <p align="center">
   <a href="https://www.zotero.org/"><img src="https://img.shields.io/badge/Zotero-7%2B-CC2936?style=flat-square" alt="Zotero 7+"></a>
   <a href="https://github.com/SRT117/LitMTrans-Zotero/releases"><img src="https://img.shields.io/github/v/release/SRT117/LitMTrans-Zotero?style=flat-square" alt="GitHub Release"></a>
-  <a href="https://github.com/SRT117/LitMTrans-Zotero/releases"><img src="https://img.shields.io/github/downloads/SRT117/LitMTrans-Zotero/litmtrans-2.0.0.xpi?style=flat-square&displayAssetName=false" alt="GitHub Downloads"></a>
+  <a href="https://github.com/SRT117/LitMTrans-Zotero/releases"><img src="https://img.shields.io/github/downloads/SRT117/LitMTrans-Zotero/total?style=flat-square" alt="GitHub Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -269,6 +269,9 @@ LitMTrans-Zotero 的实现离不开以下开源项目与工具的启发和支持
 - [LitMTrans (Desktop)](https://github.com/SRT117/LitMTrans)：LitMTrans 独立桌面端版本，为插件版提供了核心排版算法与架构基础；
 - [MinerU](https://github.com/opendatalab/MinerU)：高质量的文档视觉解析与结构化提取支持；
 - [PDFMathTranslate / pdf2zh](https://github.com/PDFMathTranslate/PDFMathTranslate) 与 [BabelDOC](https://github.com/funstory-ai/BabelDOC)：学术文献双语排版翻译的先驱工作与思路启发；
+- [caj2pdf-rs](https://github.com/duststarr/caj2pdf-rs)：优秀的 Rust/WASM CAJ 解析与转换实现，为本插件提供了本地离线 CAJ 文献支持；
+- [ScanSci](https://github.com/Rimagination/scansci-pdf)：多源学术文献下载与检索工具，为本插件的文献获取运行时提供了核心能力；
+- [zotero-mcp](https://github.com/cookjohn/zotero-mcp)：成熟的 Zotero MCP 服务实现，为本插件的智能体连接与写入协调提供了基础模块参考；
 - [KaTeX](https://github.com/KaTeX/KaTeX) 与 [Mermaid](https://github.com/mermaid-js/mermaid)：离线 LaTeX 数学公式与流程图/思维导图渲染支持；
 - [Adobe Source Han Serif](https://github.com/adobe-fonts/source-han-serif)：开源思源宋体字体；
 - [Zotero](https://www.zotero.org/)：优秀的开源文献管理平台与插件生态。
