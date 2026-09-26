@@ -11,31 +11,39 @@
   const UPDATE_MANIFEST_SOURCES = [
     GITEE_UPDATE_URL,
     OFFICIAL_UPDATE_URL,
-    `https://ghproxy.net/${OFFICIAL_UPDATE_URL}`,
-    `https://mirror.ghproxy.com/${OFFICIAL_UPDATE_URL}`
+    `https://ghproxy.net/${OFFICIAL_UPDATE_URL}`
   ];
 
   function getDownloadMirrors(officialUpdateLink) {
     const rawUrl = String(officialUpdateLink || "").trim();
     if (!rawUrl) return [];
 
+    const githubReleasePrefix = `https://github.com/${REPO}/releases/download/`;
+    const giteeReleasePrefix = `https://gitee.com/${REPO}/releases/download/`;
+
     const githubMirrors = githubUrl => [
       `https://ghproxy.net/${githubUrl}`,
-      `https://mirror.ghproxy.com/${githubUrl}`,
       githubUrl
     ];
 
-    if (rawUrl.startsWith("https://github.com/")) {
-      return githubMirrors(rawUrl);
-    }
-
-    const giteeReleasePrefix = `https://gitee.com/${REPO}/releases/download/`;
     if (rawUrl.startsWith(giteeReleasePrefix)) {
       const githubUrl = rawUrl.replace(
         giteeReleasePrefix,
-        `https://github.com/${REPO}/releases/download/`
+        githubReleasePrefix
       );
       return [rawUrl, ...githubMirrors(githubUrl)];
+    }
+
+    if (rawUrl.startsWith(githubReleasePrefix)) {
+      const giteeUrl = rawUrl.replace(
+        githubReleasePrefix,
+        giteeReleasePrefix
+      );
+      return [giteeUrl, ...githubMirrors(rawUrl)];
+    }
+
+    if (rawUrl.startsWith("https://github.com/")) {
+      return githubMirrors(rawUrl);
     }
 
     return [rawUrl];

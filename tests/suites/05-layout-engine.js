@@ -437,6 +437,15 @@ function testLayoutTranslationValidation() {
     {},
     "JSON escape artefacts from model TeX must be retried instead of reaching the renderer"
   );
+  assert.equal(
+    parser.parseTranslationResponse(
+      JSON.stringify({ translations: [{ id: "transport", text: "译文\b控制字符" }], formula_replacements: [] }),
+      [transportRecord],
+      { sanitizeUnsafe: true, allowSanitized: true }
+    ).translations.transport,
+    "译文控制字符",
+    "retry and manual parsing must sanitize unsafe control characters and keep valid model translations"
+  );
   const rawFormulaResponse = '{"translations":[{"id":"transport","text":"$\\frac{1}{2}$、$\\tfrac{a}{b}$、$\\textbf{测试}$、$\\not y$、$\\rangle$"}]}';
   const parsedFormulaResponse = parser.parseTranslationResponse(
     rawFormulaResponse,
@@ -469,6 +478,15 @@ function testLayoutTranslationValidation() {
     }),
     "At \\(R / R _ { 0 } = 6\\), the afterflow dominates.",
     "translation records must preserve one canonical delimiter pair for inline equation spans"
+  );
+  assert.equal(
+    LayoutHelpers.plainBlockText({
+      lines: [{ spans: [
+        { type: "text", content: "sample (\u0005100 lm separation)" }
+      ] }]
+    }),
+    "sample (100 lm separation)",
+    "plainBlockText must sanitize OCR control characters before sending to model"
   );
   const unchangedModelAnswer = {
     id: "unchanged-model-answer",

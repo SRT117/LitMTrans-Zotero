@@ -8,8 +8,8 @@
     welcome: Object.freeze({
       title: "欢迎使用LitMTrans",
       paragraphs: Object.freeze([
-        "LitMTrans是一个免费的开源项目。项目本身免费；日常使用网页模式时，翻译和问答也免费。（取决于Deepseek官方）",
-        "LitMTrans使用MinerU进行文献结构化解析，因此首次使用前需要自行配置MinerU令牌。目前该服务由官方免费提供，官方目前声称每天有1000页快速解析额度，超出后进入排队。",
+        "LitMTrans是一个免费的开源项目；日常使用网页模式时，翻译和问答也免费。(取决于DeepSeek官方)",
+        "LitMTrans使用MinerU进行文献结构化解析，因此首次使用前需要自行配置MinerU令牌。目前该服务由MinerU官方免费提供，官方目前声称每天有1000页快速解析额度，超出后进入排队。",
         "程序内置DeepSeek网页模式，扫码登录后即可使用官方免费问答。若需要使用其他AI服务，可以切换到API模式；API模式需要自行配置API密钥，费用由用户自行承担，LitMTrans本身不收取任何费用。"
       ]),
       calloutTitle: "开始使用",
