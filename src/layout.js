@@ -153,10 +153,11 @@
     return output;
   }
 
-  function acceptedModelText(value, sanitizeUnsafe = false) {
+  function acceptedModelText(value, sanitizeUnsafe = false, allowSanitized = false) {
     const raw = String(value || "");
-    if (hasUnsafeControlCharacters(raw)) return null;
-    return sanitizeUnsafe ? sanitizeModelText(raw) : raw;
+    if (!hasUnsafeControlCharacters(raw)) return raw;
+    if (allowSanitized) return sanitizeModelText(raw);
+    return null;
   }
 
   function validBBox(value) {
@@ -328,7 +329,7 @@
       .filter(Boolean)
       .join(isSymbolGlossaryBlock(block) ? "\n\n" : "\n");
     const preserved = html.replace(/<\/?(?:sup|sub)\b[^>]*>/gi, match => match);
-    return preserved.replace(/<(?!\/?(?:sup|sub)\b)[^>]+>/gi, "").trim();
+    return sanitizeModelText(preserved.replace(/<(?!\/?(?:sup|sub)\b)[^>]+>/gi, "").trim());
   }
 
   function restoreSymbolGlossaryRowBreaks(record, translatedText) {
@@ -2421,9 +2422,9 @@
               id: block.id,
               page: block.page,
               type: block.type,
-              text: tocRows
+              text: sanitizeModelText(tocRows
                 ? layoutLogicalLines(original.lines).join("\n").trim()
-                : (plainBlockText(original) || block.text),
+                : (plainBlockText(original) || block.text)),
               symbolGlossary,
               symbolMarkers: symbolGlossary ? symbolGlossaryMarkers(original) : [],
               formulas: M.extractMathTokens(block.text)
@@ -2747,7 +2748,7 @@
             const id = String(row?.id || "");
             const record = expected.get(id);
             if (!record) continue;
-            const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe);
+            const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe, Boolean(options.allowSanitized));
             if (rawText === null) continue;
             const translated = restoreSymbolGlossaryRowBreaks(
               record,
@@ -2769,7 +2770,7 @@
       for (const row of rows) {
         const id = String(row?.id || "");
         const record = expected.get(id);
-        const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe);
+        const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe, Boolean(options.allowSanitized));
         if (rawText === null) continue;
         const translated = restoreSymbolGlossaryRowBreaks(
           record,
@@ -2809,7 +2810,7 @@
           const id = String(row?.id || "");
           const record = expected.get(id);
           if (!record) continue;
-          const rawText = acceptedModelText(row?.text, true);
+          const rawText = acceptedModelText(row?.text, true, true);
           if (rawText === null) continue;
           const translated = restoreSymbolGlossaryRowBreaks(
             record,
@@ -2959,9 +2960,10 @@
         if (signal?.aborted || completeError?.name === "AbortError") {
           throw completeError;
         }
+        const isRetryPass = Boolean(retryDetails || settings.transportRecovery);
         if (streamed && typeof streamed === "string" && streamed.includes("{")) {
           try {
-            const partial = this.parseTranslationResponse(streamed, group, { sanitizeUnsafe: true });
+            const partial = this.parseTranslationResponse(streamed, group, { sanitizeUnsafe: true, allowSanitized: isRetryPass });
             if (partial?.translations && Object.keys(partial.translations).length > 0) {
               result = { text: streamed, usage: latestUsage };
             }
@@ -2969,7 +2971,8 @@
         }
         if (!result) throw completeError;
       }
-      const parsed = this.parseTranslationResponse(result.text, group, { sanitizeUnsafe: true });
+      const isRetryPass = Boolean(retryDetails || settings.transportRecovery);
+      const parsed = this.parseTranslationResponse(result.text, group, { sanitizeUnsafe: true, allowSanitized: isRetryPass });
       const retryClassified = settings.deferLayoutRetry
         ? []
         : classifyRetryRecords(group, parsed.translations, settings.targetLanguage, settings.enableUntranslatedCheck);
@@ -3055,7 +3058,7 @@
             }),
             onReasoning: delta => emit?.({ type: "reasoning", delta, scope: `layout-retry-${attempt}`, group: index + 1 })
           });
-          const corrected = this.parseTranslationResponse(retry.text, retryRecords, { sanitizeUnsafe: true });
+          const corrected = this.parseTranslationResponse(retry.text, retryRecords, { sanitizeUnsafe: true, allowSanitized: true });
           parsed.translations = { ...parsed.translations, ...corrected.translations };
           parsed.formulaReplacements = { ...parsed.formulaReplacements, ...corrected.formulaReplacements };
           currentClassified = classifyRetryRecords(group, parsed.translations, settings.targetLanguage, settings.enableUntranslatedCheck)
@@ -3771,7 +3774,7 @@
         emit?.({ type: "log", message: `DeepSeek 快速排版翻译完成，共处理 ${groups.length} 部分。` });
       }
       for (const record of records) {
-        if (!translations[record.id]) translations[record.id] = record.text;
+        if (!translations[record.id]) translations[record.id] = sanitizeModelText(record.text);
       }
       const meta = {
         identity,

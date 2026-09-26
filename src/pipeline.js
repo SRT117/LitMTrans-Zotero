@@ -265,6 +265,10 @@
         mode: String(payload.mode || this.getSettings().translationMode || "full_context"),
         engine: payload.engine,
         aiMode: payload.aiMode,
+        provider: payload.provider,
+        baseURL: payload.baseURL,
+        model: payload.model,
+        apiKey: payload.apiKey,
         runtime: payload.runtime
       }, this.logTranslationEvent(context.documentID, "stream", emit), signal));
     }
@@ -302,6 +306,10 @@
           customTranslationInstruction: webMachine ? "" : settings.customTranslationInstruction,
           engine: payload.engine,
           aiMode: payload.aiMode,
+          provider: payload.provider,
+          baseURL: payload.baseURL,
+          model: payload.model,
+          apiKey: payload.apiKey,
           runtime: payload.runtime
         }, loggedEmit, signal);
       });

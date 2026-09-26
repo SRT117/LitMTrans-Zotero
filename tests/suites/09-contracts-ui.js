@@ -138,11 +138,12 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(workbench.includes("state.layoutPublicationRevision += 1;"), "a final layout event must mark its model as published");
   assert(workbench.includes("if (state.layoutPublicationRevision === publicationRevision) renderLayoutPanes();"), "the bridge result must rebuild layout only when its final event was lost");
   assert(workbench.includes("await refreshState({ preserveLayout: true });"), "post-translation state refresh must not remount an already published layout");
-  const saveSettingsHandler = workbench.slice(
-    workbench.indexOf('els["save-settings-button"].addEventListener("click", async () => {'),
-    workbench.indexOf('els["clear-document-button"].addEventListener("click", async () => {')
-  );
-  assert(!saveSettingsHandler.includes("renderLayoutPanes()"), "saving connection settings must not rebuild an already fitted layout");
+  const closeStart = workbench.indexOf("  async function closeSettingsDialog() {");
+  const closeEnd = workbench.indexOf("  async function initialize()", closeStart);
+  assert(closeStart >= 0 && closeEnd > closeStart, "settings close must have an explicit save guard");
+  const closeSettingsHandler = workbench.slice(closeStart, closeEnd);
+  assert(closeSettingsHandler.includes("await flushSettingsAutoSave(false)"), "settings must flush pending changes before closing");
+  assert(!closeSettingsHandler.includes("renderLayoutPanes()"), "closing settings must not rebuild an already fitted layout");
 }
 
 function testSilentNotifications() {
@@ -337,8 +338,16 @@ async function testStartupNoticeContracts() {
     assert.equal(prefValues.get("extensions.litmtrans.startupNoticeVersion"), "2.0.0");
     assert.equal(await controller.getStartupNotice(), null, "the same version must not reopen after the UI acknowledges it");
 
+    // 运行时内部自动生成的配置不应误判为老用户已有状态
     prefValues.clear();
+    prefValues.set("extensions.litmtrans.agentPort", 45123);
+    prefValues.set("extensions.litmtrans.deepseekWebCacheBytesInitialized", true);
     prefValues.set("extensions.litmtrans.promptLibraryInitialized", true);
+    const welcomeWithRuntimePrefs = await controller.getStartupNotice();
+    assert.equal(welcomeWithRuntimePrefs.type, "welcome", "a clean profile with runtime generated prefs must still receive the welcome guide");
+
+    prefValues.clear();
+    prefValues.set("extensions.litmtrans.targetLanguage", "繁体中文");
     const update = await controller.getStartupNotice();
     assert.equal(update.type, "update", "an existing profile must receive release notes");
     assert(update.entries.some(entry => String(entry).includes("首次使用指南")), "release notes must come from the bundled version entry");
@@ -776,6 +785,125 @@ async function testAnnouncementSystemContracts() {
   assert(manifestScript.includes("compareVersionBounds"), "manifest generation must validate announcement version bounds");
 }
 
+async function testSettingsAutoSaveIsolationAndFailure() {
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const start = workbench.indexOf("  let settingsAutoSaveTimer = null;");
+  const end = workbench.indexOf("  async function initialize()", start);
+  assert(start >= 0 && end > start, "workbench auto-save implementation must be available");
+  const form = { agentEnabled: false, autoUpdate: true, chatEngine: "api", translationProviderProfiles: { oneapi: { model: "old" } } };
+  const server = { ...form };
+  const calls = [];
+  const state = { settings: { ...server }, aiMode: "api" };
+  let fail = false;
+  let modeChanges = 0;
+  let closed = 0;
+  const errors = [];
+  const sandbox = {
+    state, els: { "settings-dialog": { open: true, close: () => { closed++; } } }, window: {}, document: { activeElement: null }, setTimeout, clearTimeout,
+    settingsPayload: () => JSON.parse(JSON.stringify(form)),
+    mergePromptLibraryDraft: value => value,
+    setAIMode: mode => { state.aiMode = mode; modeChanges++; },
+    renderMode: () => {},
+    toast: message => errors.push(message),
+    hostCall: async (method, patch) => {
+      if (method === "save-mineru-token") {
+        if (fail) throw new Error("credential save failed");
+        return { hasToken: Boolean(patch.token) };
+      }
+      assert.equal(method, "save-settings");
+      if (fail) throw new Error("save failed");
+      calls.push(patch);
+      Object.assign(server, patch);
+      return { ...server };
+    }
+  };
+  const autoSave = vm.runInNewContext(`${workbench.slice(start, end)}\n({
+    baseline: value => { settingsAutoSaveBaseline = value; },
+    dirty: () => { settingsAutoSaveRevision++; },
+    flush: flushSettingsAutoSave,
+    close: closeSettingsDialog,
+    credential: queueSettingsCredentialWrite
+  })`, sandbox);
+  autoSave.baseline(JSON.parse(JSON.stringify(form)));
+  await autoSave.flush();
+  assert.equal(calls.length, 0, "closing an unchanged settings dialog must not write stale settings");
+  server.autoUpdate = false;
+  form.agentEnabled = true;
+  autoSave.dirty();
+  await autoSave.flush();
+  assert.deepEqual(Object.keys(calls[0]), ["agentEnabled"], "auto-save must write only the changed field");
+  assert.equal(server.autoUpdate, false, "another pane's preference change must survive workbench auto-save");
+  form.chatEngine = "deepseek_web";
+  autoSave.dirty();
+  await autoSave.flush();
+  assert.equal(state.aiMode, "web", "a saved chat mode must immediately update the active workbench");
+  assert.equal(modeChanges, 1);
+  form.translationProviderProfiles.oneapi.model = "new";
+  autoSave.dirty();
+  await autoSave.flush();
+  assert.deepEqual(Object.keys(calls.at(-1)), ["translationProviderProfiles"]);
+  assert.deepEqual(Object.keys(calls.at(-1).translationProviderProfiles), ["oneapi"]);
+  form.agentEnabled = false;
+  autoSave.dirty();
+  fail = true;
+  await assert.rejects(autoSave.flush(false), /save failed/, "failed saves must reject instead of reporting success");
+  await Promise.all([autoSave.close(), autoSave.close()]);
+  assert.equal(closed, 0, "the settings dialog must remain open when its final save fails");
+  assert.equal(errors.at(-1), "save failed");
+  assert.equal(errors.length, 1, "repeated close attempts must show one save error");
+  fail = false;
+  await autoSave.close();
+  assert.equal(closed, 1, "closing must succeed once pending changes are saved");
+  fail = true;
+  autoSave.credential("save-mineru-token", { token: "saved-on-close" }, "setting-mineru-token");
+  await autoSave.close();
+  assert.equal(closed, 1, "an unfinished credential write must also keep settings open on failure");
+  fail = false;
+  await autoSave.close();
+  assert.equal(closed, 2, "closing retries a failed credential write");
+
+  const preferences = fs.readFileSync(path.join(root, "src", "preferences.js"), "utf8");
+  const pane = vm.runInNewContext(`${preferences}\nLitMTransControllerPreferences`, {
+    document: { addEventListener() {} }, setTimeout, clearTimeout
+  });
+  const paneForm = { agentEnabled: false, chatEngine: "api", autoUpdate: true };
+  const paneServer = { ...paneForm };
+  const paneCalls = [];
+  const messages = [];
+  pane.payload = () => ({ ...paneForm });
+  pane.$ = () => null;
+  pane.message = (message, error) => messages.push({ message, error });
+  pane.controller = () => ({ saveSettings(patch) {
+    if (fail) throw new Error("save failed");
+    paneCalls.push(patch);
+    Object.assign(paneServer, patch);
+    return { ...paneServer };
+  } });
+  pane.settings = { ...paneServer };
+  pane.autoSaveBaseline = { ...paneForm };
+  await pane.flushAutoSave();
+  assert.equal(paneCalls.length, 0);
+  fail = false;
+  paneServer.autoUpdate = false;
+  paneForm.chatEngine = "deepseek_web";
+  pane.autoSaveRevision++;
+  await pane.flushAutoSave();
+  assert.deepEqual(Object.keys(paneCalls[0]), ["chatEngine"]);
+  assert.equal(paneServer.autoUpdate, false);
+  paneForm.agentEnabled = true;
+  fail = true;
+  pane.autoSaveRevision++;
+  pane.flushAutoSaveWithFeedback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(messages.at(-1).message, "save failed");
+  assert.equal(messages.at(-1).error, true);
+  const settingsMarkup = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8")
+    .split('<dialog id="settings-dialog"')[1].split('<dialog id="custom-translation-instruction-dialog"')[0];
+  assert(!settingsMarkup.includes('>取消</button>') && !settingsMarkup.includes('>保存</button>'));
+  assert(settingsMarkup.includes('id="close-settings-button"'));
+  assert(!fs.readFileSync(path.join(root, "src", "preferences.xhtml"), "utf8").includes('id="litmtrans-pref-save"'));
+}
+
   return {
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
@@ -794,5 +922,6 @@ async function testAnnouncementSystemContracts() {
     testUpdaterContractsAndSafety,
     testDeepSeekWebDriverSessionActionAndRetryContracts,
     testAnnouncementSystemContracts,
+    testSettingsAutoSaveIsolationAndFailure,
   };
 };

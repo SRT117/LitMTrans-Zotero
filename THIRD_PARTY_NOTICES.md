@@ -1,53 +1,44 @@
 # Third-Party Notices
 
-## Source Han Serif CN
+LitMTrans's own source is licensed under MIT; that license does not replace the
+licenses of bundled components. The detailed pinned inventory and distribution
+boundaries are in `docs/licensing/third-party-inventory.md`.
 
-The plugin bundles `SourceHanSerifCN-Regular.ttf` (Source Han Serif CN,
-Version 2.003) for translated-document reading and retained-layout rendering.
-It is supplied unmodified from the [Adobe Source Han Serif project]
-(https://github.com/adobe-fonts/source-han-serif) under the SIL Open Font
-License 1.1. The complete license is included at
-`assets/fonts/LICENSE-SourceHanSerif.txt`.
+## Bundled fonts and JavaScript
 
-## KaTeX
+- Source Han Serif CN 2.003 is distributed unmodified under SIL OFL 1.1. Its
+  complete license is `assets/fonts/LICENSE-SourceHanSerif.txt`.
+- KaTeX 0.16.47 JavaScript/CSS is MIT (`assets/vendor/katex/LICENSE.txt`). Its
+  bundled fonts are under SIL OFL 1.1 (`assets/vendor/licenses/KaTeX-Fonts-OFL-1.1.txt`);
+  the copyright attribution is retained there.
+- Mermaid 11.16.1, Pako 2.1.0, and pdf-lib 1.17.1 are bundled for offline
+  rendering, decompression, and PDF page handling. Pako's MIT and Zlib notices
+  are both retained. Direct and transitive npm package notices are preserved
+  under `assets/vendor/licenses/npm/`, keyed by package and locked version.
+- Selected portable modules from `cookjohn/zotero-mcp` are adapted under MIT.
+  Original attribution and the complete MIT text are in
+  `assets/vendor/licenses/zotero-mcp-MIT.txt`; adapted files and the available
+  provenance boundary are listed in the inventory.
 
-The plugin bundles KaTeX JavaScript, CSS, and fonts for offline mathematical rendering.
+## CAJ WebAssembly
 
-KaTeX is licensed under the MIT License:
+The independent `caj2pdf-rs` CAJ converter is distributed as WebAssembly under
+GPL-2.0-or-later. Its source, fixed upstream commit, build instructions, and
+license are retained in `native/caj-backend/` and `native/dist/caj2pdf/`.
+The binary includes a JBIG1 decoder derived from code distributed under the
+FreeType Project License (FTL); the full GPL and FTL text and attribution are
+included in both CAJ license files. Notices for the locked Cargo dependency
+graph are under `assets/vendor/licenses/rust/`. CAJ is an independent component;
+this notice does not make a legal determination about combined-work licensing.
 
-> Copyright (c) 2013-2020 Khan Academy and other contributors
+## Dynamically downloaded runtime
 
-The complete MIT license is included at `assets/vendor/katex/LICENSE.txt`.
+The optional acquisition runtime is not bundled in the XPI. Its pinned Python,
+uv, pip, ScanSci, and dependency-installation boundaries are described in
+`docs/licensing/acquisition-runtime.md`. Runtime files are fetched from their
+upstream sources into the user's Zotero Profile; they are not copied into this
+repository or re-hosted by LitMTrans.
 
-## Pako
-
-The plugin bundles Pako 2.1.0 as a portable fallback for DEFLATE-compressed
-MinerU result archives. Pako is licensed under the MIT License; the complete
-license is included at `assets/vendor/pako/LICENSE.txt`.
-
-## pdf-lib
-
-The plugin bundles pdf-lib 1.17.1 to copy pages into local, temporary PDF
-parts when a source exceeds MinerU's 200-page upload limit. pdf-lib is
-licensed under the MIT License; the complete license is included at
-`assets/vendor/pdf-lib/LICENSE.md`.
-
-## caj2pdf-rs
-
-The plugin bundles `native/caj2pdf/caj2pdf.wasm`, a WebAssembly conversion
-module built from [caj2pdf-rs](https://github.com/duststarr/caj2pdf-rs), to
-convert archived CNKI HN/C8 (JBIG-compressed scan) CAJ documents into PDF so
-they can be opened in the workbench. The module runs inside the plugin on all
-supported platforms and is licensed under GPL-2.0-or-later; the source of the
-locally modified fork lives in `native/caj-backend/` and the complete license
-is included at `native/caj2pdf/LICENSE`.
-
-## Mermaid
-
-The plugin bundles Mermaid 11.16.1 for local flowchart layout and SVG
-rendering. Mermaid is licensed under the MIT License; the complete license is
-included at `assets/vendor/mermaid/LICENSE`.
-
-## External services and host
-
-Zotero, MinerU, and user-configured model services are not bundled components. Their names, services, trademarks, and software remain subject to their owners' terms and licenses. The plugin does not distribute MinerU/model source code, model weights, online/local machine-translation code, or Word/DOCX/HTML/Markdown export toolchains.
+Zotero, MinerU, configured model services, and the projects listed as
+`DESIGN_REFERENCE_ONLY` in the inventory are external services or references,
+not bundled components.

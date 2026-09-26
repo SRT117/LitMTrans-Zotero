@@ -8,6 +8,8 @@
   const Layout = window.LitMTrans?.LayoutHelpers;
   const P = window.LitMTrans?.PortedCore || {};
   const pending = new Map();
+  let agentStatusTimer = null;
+  let agentStatusRefreshing = false;
   const state = {
     data: null,
     settings: null,
@@ -197,13 +199,14 @@
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
       "setting-auto-update", "check-update-button", "update-status-label",
-      "open-storage-manager-button", "clear-document-button", "save-settings-button",
+      "setting-agent-enabled", "setting-agent-access-mode", "setting-agent-allow-configured-services", "setting-agent-allow-chat-history", "setting-agent-background-provider", "setting-agent-status", "setting-agent-hint", "setting-agent-client", "copy-agent-bootstrap", "copy-agent-client-config",
+      "open-storage-manager-button", "clear-document-button", "close-settings-button",
       "storage-manager-dialog", "close-storage-manager", "done-storage-manager",
       "storage-chart-card", "storage-donut-chart", "storage-chart-legend",
       "storage-cache-warning-banner", "storage-warning-banner-text", "storage-warning-clean-button", "storage-warning-dismiss-button", "storage-warning-close-button",
       "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
       "storage-caj-bytes", "storage-caj-count",
-      "storage-temp-bytes", "storage-temp-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
+      "storage-temp-bytes", "storage-temp-count", "storage-runtime-card", "storage-runtime-bytes", "storage-runtime-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
       "storage-expand-all", "storage-collapse-all", "storage-search-input",
       "storage-open-root", "storage-clean-temp", "storage-clean-orphaned", "storage-refresh", "storage-tree-container",
       "custom-translation-instruction-dialog", "custom-translation-instruction-input", "save-custom-translation-instruction",
@@ -4081,7 +4084,17 @@
     for (const entry of Array.isArray(notice.entries) ? notice.entries : []) {
       const item = document.createElement("li");
       if (typeof entry === "string") {
-        item.textContent = entry;
+        const mdMatch = entry.match(/^\s*(?:[-*]\s*)?(?:\*\*([^*]+)\*\*|__([^_]+)__)[：:]\s*(.*)$/);
+        if (mdMatch) {
+          const entryTitle = (mdMatch[1] || mdMatch[2] || "").trim();
+          const detail = (mdMatch[3] || "").trim();
+          const strong = document.createElement("strong");
+          strong.textContent = entryTitle;
+          item.appendChild(strong);
+          if (detail) item.append(`：${detail}`);
+        } else {
+          item.textContent = entry;
+        }
       }
       else {
         const entryTitle = String(entry?.title || "").trim();
@@ -6605,6 +6618,15 @@
     renderReferencePaths();
     renderCustomTranslationInstructionPreview();
     els["setting-key-points-prompt"].value = settings.effectiveKeyPointsPrompt || settings.keyPointsDefaultPrompt || "";
+    const agent = settings.agent || {};
+    if (els["setting-agent-enabled"]) els["setting-agent-enabled"].checked = agent.enabled === true;
+    if (els["setting-agent-access-mode"]) els["setting-agent-access-mode"].value = ["read", "full", "developer"].includes(agent.mode) ? agent.mode : "full";
+    if (els["setting-agent-allow-configured-services"]) els["setting-agent-allow-configured-services"].checked = agent.allowConfiguredServices !== false;
+    if (els["setting-agent-allow-chat-history"]) els["setting-agent-allow-chat-history"].checked = agent.allowChatHistory !== false;
+    if (els["setting-agent-background-provider"]) els["setting-agent-background-provider"].value = ["auto", "deepseek", "oneapi", "openai_compatible", "gemini", "siliconflow", "zai", "openrouter"].includes(agent.backgroundProvider) ? agent.backgroundProvider : "auto";
+    const agentViewModel = window.LitMTrans?.AgentSettingsViewModel;
+    if (els["setting-agent-status"]) els["setting-agent-status"].textContent = agentViewModel?.statusText?.(agent) || (agent.enabled ? "等待智能体连接" : "未启用");
+    if (els["setting-agent-hint"]) els["setting-agent-hint"].textContent = agentViewModel?.statusHint?.(agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
     updateWebMachineTranslationSettings();
     updateDeepSeekFastLayoutControl();
     updateProviderLabel();
@@ -7222,6 +7244,11 @@
       keyPointsPrompt: els["setting-key-points-prompt"].value.trim() === String(state.settings?.keyPointsDefaultPrompt || "").trim()
         ? ""
         : els["setting-key-points-prompt"].value,
+      agentEnabled: els["setting-agent-enabled"]?.checked === true,
+      agentAccessMode: ["read", "full", "developer"].includes(els["setting-agent-access-mode"]?.value) ? els["setting-agent-access-mode"].value : "full",
+      agentAllowConfiguredServices: els["setting-agent-access-mode"]?.value === "developer" ? els["setting-agent-allow-configured-services"]?.checked !== false : true,
+      agentAllowChatHistory: els["setting-agent-access-mode"]?.value === "developer" ? els["setting-agent-allow-chat-history"]?.checked !== false : true,
+      agentBackgroundProvider: els["setting-agent-access-mode"]?.value === "developer" ? (els["setting-agent-background-provider"]?.value || "auto") : "auto",
       showLayoutRestoration: true,
       layoutDevelopmentMode: Boolean(els["debug-boxes-check"]?.checked ?? state.settings?.layoutDevelopmentMode),
       showReasoning: true,
@@ -7245,6 +7272,153 @@
       chatImageFormat: els["setting-chat-image-format"].value
     });
     return payload;
+  }
+
+  let settingsAutoSaveTimer = null;
+  let settingsAutoSavePromise = null;
+  let settingsAutoSaveRevision = 0;
+  let settingsAutoSavedRevision = 0;
+  let settingsAutoSaveBaseline = null;
+  let settingsClosePromise = null;
+  const settingsCredentialWrites = new Map();
+
+  function queueSettingsCredentialWrite(method, payload, key) {
+    const previous = settingsCredentialWrites.get(key);
+    const entry = { method, payload, failed: false, promise: null };
+    entry.promise = Promise.resolve(previous?.promise).catch(() => {}).then(() => hostCall(method, payload)).then(() => {
+      if (settingsCredentialWrites.get(key) === entry) settingsCredentialWrites.delete(key);
+    }, error => {
+      entry.failed = true;
+      throw error;
+    });
+    settingsCredentialWrites.set(key, entry);
+    void entry.promise.catch(error => {
+      if (!settingsClosePromise) toast(error.message || String(error), "error");
+    });
+  }
+
+  function changedSettingsPayload(payload) {
+    const baseline = settingsAutoSaveBaseline || {};
+    const changed = {};
+    for (const [key, value] of Object.entries(payload)) {
+      if (JSON.stringify(value) === JSON.stringify(baseline[key])) continue;
+      if (key === "translationProviderProfiles" || key === "chatProviderProfiles") {
+        const previous = baseline[key] || {};
+        const profiles = Object.fromEntries(Object.entries(value).filter(([provider, profile]) =>
+          JSON.stringify(profile) !== JSON.stringify(previous[provider])));
+        if (Object.keys(profiles).length) changed[key] = profiles;
+      } else changed[key] = value;
+    }
+    return changed;
+  }
+
+  function flushSettingsAutoSaveWithFeedback() {
+    void flushSettingsAutoSave(true).catch(error => toast(error.message || String(error), "error"));
+  }
+
+  function scheduleSettingsAutoSave(delay = 400) {
+    settingsAutoSaveRevision += 1;
+    if (settingsAutoSaveTimer) {
+      clearTimeout(settingsAutoSaveTimer);
+      settingsAutoSaveTimer = null;
+    }
+    if (delay <= 0) {
+      flushSettingsAutoSaveWithFeedback();
+      return;
+    }
+    settingsAutoSaveTimer = setTimeout(() => {
+      settingsAutoSaveTimer = null;
+      flushSettingsAutoSaveWithFeedback();
+    }, delay);
+  }
+
+  async function flushSettingsAutoSave(silent = true) {
+    if (settingsAutoSaveTimer) {
+      clearTimeout(settingsAutoSaveTimer);
+      settingsAutoSaveTimer = null;
+    }
+    while (true) {
+      if (settingsAutoSavedRevision >= settingsAutoSaveRevision) return state.settings;
+      if (settingsAutoSavePromise) {
+        try { await settingsAutoSavePromise; } catch (_) {}
+        if (settingsAutoSavedRevision >= settingsAutoSaveRevision) return;
+        if (settingsAutoSaveTimer) {
+          if (silent) return;
+          clearTimeout(settingsAutoSaveTimer);
+          settingsAutoSaveTimer = null;
+        }
+      }
+      const revision = settingsAutoSaveRevision;
+      const payload = settingsPayload();
+      const changed = changedSettingsPayload(payload);
+      if (!Object.keys(changed).length) {
+        settingsAutoSavedRevision = revision;
+        return state.settings;
+      }
+      const savePromise = hostCall("save-settings", changed);
+      settingsAutoSavePromise = savePromise;
+      let savedSettings;
+      try {
+        savedSettings = await savePromise;
+      } catch (error) {
+        if (revision !== settingsAutoSaveRevision) {
+          if (settingsAutoSaveTimer) {
+            if (silent) return;
+            clearTimeout(settingsAutoSaveTimer);
+            settingsAutoSaveTimer = null;
+          }
+          continue;
+        }
+        throw error;
+      } finally {
+        if (settingsAutoSavePromise === savePromise) settingsAutoSavePromise = null;
+      }
+      if (revision !== settingsAutoSaveRevision) {
+        if (settingsAutoSaveTimer) {
+          if (silent) return;
+          clearTimeout(settingsAutoSaveTimer);
+          settingsAutoSaveTimer = null;
+        }
+        continue;
+      }
+      state.settings = mergePromptLibraryDraft(savedSettings);
+      settingsAutoSaveBaseline = payload;
+      settingsAutoSavedRevision = revision;
+      if (Object.prototype.hasOwnProperty.call(changed, "chatEngine")) {
+        const preferredMode = savedSettings.chatEngine === "deepseek_web" ? "web" : "api";
+        if (state.aiMode !== preferredMode) setAIMode(preferredMode, { syncPref: false });
+        renderMode();
+      }
+      if (savedSettings?.agent) {
+        const viewModel = window.LitMTrans?.AgentSettingsViewModel;
+        if (els["setting-agent-status"]) els["setting-agent-status"].textContent = viewModel?.statusText?.(savedSettings.agent) || (savedSettings.agent.enabled ? "等待智能体连接" : "未启用");
+        if (els["setting-agent-hint"]) els["setting-agent-hint"].textContent = viewModel?.statusHint?.(savedSettings.agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
+      }
+      return savedSettings;
+    }
+  }
+
+  async function closeSettingsDialog() {
+    if (settingsClosePromise) {
+      try { await settingsClosePromise; } catch (_) {}
+      return;
+    }
+    settingsClosePromise = (async () => {
+      if (!els["settings-dialog"].open) return;
+      const focused = document.activeElement;
+      if (focused?.closest?.("#settings-dialog")) focused.blur?.();
+      for (const [key, entry] of [...settingsCredentialWrites]) {
+        if (entry.failed) queueSettingsCredentialWrite(entry.method, entry.payload, key);
+      }
+      while (settingsCredentialWrites.size) {
+        await Promise.all([...settingsCredentialWrites.values()].map(entry => entry.promise));
+      }
+      if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
+      els["settings-dialog"].close();
+    })();
+    try { await settingsClosePromise; }
+    catch (error) { toast(error.message || String(error), "error"); }
+    finally { settingsClosePromise = null; }
   }
 
   async function initialize() {
@@ -7287,6 +7461,29 @@
     return data;
   }
 
+  async function refreshAgentStatus() {
+    if (agentStatusRefreshing || !els["settings-dialog"]?.open) return;
+    agentStatusRefreshing = true;
+    try {
+      const agent = await hostCall("get-agent-status", {}, { timeout: 5000 });
+      const viewModel = window.LitMTrans?.AgentSettingsViewModel;
+      if (els["setting-agent-status"]) els["setting-agent-status"].textContent = viewModel?.statusText?.(agent) || (agent?.enabled ? "等待智能体连接" : "未启用");
+      if (els["setting-agent-hint"]) els["setting-agent-hint"].textContent = viewModel?.statusHint?.(agent) || "打开后，AI助手可以帮你查找和整理Zotero文献。";
+    }
+    catch (_) {}
+    finally { agentStatusRefreshing = false; }
+  }
+
+  function startAgentStatusPolling() {
+    if (agentStatusTimer) return;
+    agentStatusTimer = window.setInterval(() => void refreshAgentStatus(), 2500);
+  }
+
+  function stopAgentStatusPolling() {
+    if (agentStatusTimer) window.clearInterval(agentStatusTimer);
+    agentStatusTimer = null;
+  }
+
   function translationConfigurationField(message) {
     const text = String(message || "");
     const missing = /(?:尚未配置|尚未选择|请先(?:在.*设置中)?(?:配置|填写|选择))/.test(text);
@@ -7301,12 +7498,17 @@
     // Always fetch the canonical settings snapshot when this entry opens.
     // The Zotero preference pane and this workbench must never render two
     // independently cached versions of the configuration.
+    if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
     state.settings = mergePromptLibraryDraft(await hostCall("get-settings"));
     populateSettings(state.settings);
+    settingsAutoSaveBaseline = settingsPayload();
+    settingsAutoSavedRevision = settingsAutoSaveRevision;
     els["settings-advanced"].open = false;
     els["settings-dialog"].style.height = "auto";
     els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
     if (!els["settings-dialog"].open) els["settings-dialog"].showModal();
+    startAgentStatusPolling();
+    void refreshAgentStatus();
     requestAnimationFrame(() => {
       syncDeepSeekWebBounds();
       fitSettingsDialog(els["settings-dialog"]);
@@ -8690,10 +8892,54 @@
         syncDeepSeekWebBounds();
       });
     });
+    els["copy-agent-client-config"]?.addEventListener("click", async () => {
+      try {
+        const isChecked = els["setting-agent-enabled"]?.checked === true;
+        if (isChecked && (settingsAutoSaveTimer || settingsAutoSavePromise || !state.settings?.agent?.server?.running)) {
+          await flushSettingsAutoSave(false);
+        }
+        const client = els["setting-agent-client"]?.value || "generic";
+        let result = await hostCall("get-agent-client-config", { client }, { timeout: 5000 });
+        let value = String(result?.displayText || "");
+        if (!value) {
+          await flushSettingsAutoSave(false);
+          result = await hostCall("get-agent-client-config", { client }, { timeout: 5000 });
+          value = String(result?.displayText || "");
+        }
+        if (!value) throw new Error("Agent MCP 服务尚未启动，请先启用后再复制配置");
+        await copyText(value, "配置已复制");
+      }
+      catch (error) { toast(error.message || "配置复制失败", "error"); }
+    });
+    els["copy-agent-bootstrap"]?.addEventListener("click", async () => {
+      try {
+        const isChecked = els["setting-agent-enabled"]?.checked === true;
+        if (isChecked && (settingsAutoSaveTimer || settingsAutoSavePromise || !state.settings?.agent?.server?.running)) {
+          await flushSettingsAutoSave(false);
+        }
+        let result = await hostCall("get-agent-bootstrap-instruction", {}, { timeout: 5000 });
+        let value = String(result?.instruction || "");
+        if (!result?.ready || !value) {
+          await flushSettingsAutoSave(false);
+          result = await hostCall("get-agent-bootstrap-instruction", {}, { timeout: 5000 });
+          value = String(result?.instruction || "");
+        }
+        if (!result?.ready || !value) throw new Error("请先启用连接，等待服务准备好后再复制。");
+        await copyText(value, "已复制，请粘贴给智能体");
+      }
+      catch (error) { toast(error.message || "复制失败", "error"); }
+    });
     els["setting-web-mode-advanced"].addEventListener("toggle", () => {
       requestAnimationFrame(() => fitSettingsDialog(els["settings-dialog"]));
     });
+    els["close-settings-button"].addEventListener("click", () => void closeSettingsDialog());
+    els["settings-dialog"].addEventListener("cancel", event => {
+      event.preventDefault();
+      void closeSettingsDialog();
+    });
     els["settings-dialog"].addEventListener("close", () => {
+      flushSettingsAutoSaveWithFeedback();
+      stopAgentStatusPolling();
       els["settings-dialog"].style.height = "auto";
       els["settings-dialog"].querySelector(".modal-card")?.style.setProperty("height", "auto");
       requestAnimationFrame(() => syncDeepSeekWebBounds());
@@ -9221,25 +9467,33 @@
         }
         updateProviderLabel(chat ? "setting-chat-" : "setting-");
         if (chat) updateChatImageSettingsVisibility();
+        scheduleSettingsAutoSave(50);
       });
     }
     els["setting-chat-model"].addEventListener("change", () => {
       restoreChatReasoningPreference("setting-chat");
       updateChatImageSettingsVisibility();
+      scheduleSettingsAutoSave(50);
     });
-    const saveCredential = async (inputID, providerID = "") => {
+    const saveCredential = (inputID, providerID = "") => {
       const value = els[inputID].value.trim();
-      try {
-        if (providerID) await hostCall("save-provider-api-key", { provider: els[providerID].value, apiKey: value });
-        else await hostCall("save-mineru-token", { token: value });
-      }
-      catch (error) { toast(error.message, "error"); }
+      if (providerID) {
+        const provider = els[providerID].value;
+        queueSettingsCredentialWrite("save-provider-api-key", { provider, apiKey: value }, `${inputID}:${provider}`);
+      } else queueSettingsCredentialWrite("save-mineru-token", { token: value }, inputID);
     };
-    els["setting-api-key"].addEventListener("change", () => { void saveCredential("setting-api-key", "setting-provider"); });
-    els["setting-base-url"].addEventListener("input", () => updateDeepSeekFastLayoutControl());
-    els["setting-deepseek-fast-layout"].addEventListener("change", () => updateDeepSeekFastLayoutControl());
-    els["setting-chat-api-key"].addEventListener("change", () => { void saveCredential("setting-chat-api-key", "setting-chat-provider"); });
-    els["setting-mineru-token"].addEventListener("change", () => { void saveCredential("setting-mineru-token"); });
+    els["setting-api-key"].addEventListener("change", () => saveCredential("setting-api-key", "setting-provider"));
+    els["setting-base-url"].addEventListener("input", () => {
+      updateDeepSeekFastLayoutControl();
+      scheduleSettingsAutoSave(400);
+    });
+    els["setting-base-url"].addEventListener("blur", () => flushSettingsAutoSaveWithFeedback());
+    els["setting-deepseek-fast-layout"].addEventListener("change", () => {
+      updateDeepSeekFastLayoutControl();
+      scheduleSettingsAutoSave(50);
+    });
+    els["setting-chat-api-key"].addEventListener("change", () => saveCredential("setting-chat-api-key", "setting-chat-provider"));
+    els["setting-mineru-token"].addEventListener("change", () => saveCredential("setting-mineru-token"));
     const refreshModels = async (purpose) => {
       const chat = purpose === "chat";
       const button = els[chat ? "refresh-chat-models-button" : "refresh-models-button"];
@@ -9303,14 +9557,22 @@
         els["setting-chat-uses-translation-model"].checked = false;
       }
       updateChatModelSectionVisibility();
+      scheduleSettingsAutoSave(50);
     });
     if (els["setting-chat-engine-web"]) {
       els["setting-chat-engine-web"].addEventListener("change", () => {
         updateChatModelSectionVisibility();
+        scheduleSettingsAutoSave(50);
       });
     }
-    els["setting-web-input-mode-auto"].addEventListener("change", () => updateWebModeAdvancedControls());
-    els["setting-web-input-mode-clipboard"].addEventListener("change", () => updateWebModeAdvancedControls());
+    els["setting-web-input-mode-auto"].addEventListener("change", () => {
+      updateWebModeAdvancedControls();
+      scheduleSettingsAutoSave(50);
+    });
+    els["setting-web-input-mode-clipboard"].addEventListener("change", () => {
+      updateWebModeAdvancedControls();
+      scheduleSettingsAutoSave(50);
+    });
     els["provider-card-api-key"].addEventListener("input", () => {
       const hasValue = Boolean(els["provider-card-api-key"].value.trim());
       const existing = providerCardByID(state.editingProviderCardID);
@@ -9320,11 +9582,13 @@
     });
     els["restore-key-points-prompt"].addEventListener("click", () => {
       els["setting-key-points-prompt"].value = state.settings?.keyPointsDefaultPrompt || "";
+      scheduleSettingsAutoSave(0);
     });
     els["add-reference-button"].addEventListener("click", async () => {
       try {
         state.referencePaths = await hostCall("select-reference-files", { paths: state.referencePaths });
         renderReferencePaths();
+        scheduleSettingsAutoSave(0);
       }
       catch (error) {
         toast(error.message, "error");
@@ -9334,12 +9598,14 @@
       const selected = new Set([...els["setting-reference-list"].selectedOptions].map(option => option.value));
       state.referencePaths = state.referencePaths.filter(path => !selected.has(path));
       renderReferencePaths();
+      scheduleSettingsAutoSave(0);
     });
     els["clear-reference-button"].addEventListener("click", () => {
       state.referencePaths = [];
       els["custom-translation-instruction-input"].value = "";
       renderReferencePaths();
       renderCustomTranslationInstructionPreview();
+      scheduleSettingsAutoSave(0);
     });
     els["edit-custom-translation-instruction"].addEventListener("click", () => {
       els["custom-translation-instruction-dialog"].showModal();
@@ -9347,38 +9613,53 @@
     els["save-custom-translation-instruction"].addEventListener("click", () => {
       els["custom-translation-instruction-dialog"].close();
       renderCustomTranslationInstructionPreview();
+      scheduleSettingsAutoSave(0);
     });
     els["edit-custom-translation-instruction-preview"].addEventListener("click", () => {
       els["custom-translation-instruction-dialog"].showModal();
     });
-    els["save-settings-button"].addEventListener("click", async () => {
-      try {
-        const settings = await hostCall("save-settings", settingsPayload());
-        state.settings = mergePromptLibraryDraft(settings);
-        document.body.classList.toggle("layout-debug", false);
-        state.chatRenderMarkdown = settings.chatRenderMarkdown !== false;
-        state.syncScroll = state.mode === "layout"
-          ? true
-          : Boolean(settings.streamSyncScroll ?? settings.syncScroll);
-        els["sync-scroll-check"].checked = state.syncScroll;
-        populateSettings(settings);
-        const preferredMode = (settings.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
-        setAIMode(preferredMode, { syncPref: false });
-        renderMode();
-        // Connection/model settings affect future translation requests only.
-        // Rebuilding an already fitted layout here discards its stable DOM and
-        // can re-measure it while the settings dialog is still changing the
-        // workbench geometry. Keep the completed reading view intact.
-        els["settings-dialog"].close();
-        toast("设置已保存");
+
+    // 自动保存绑定：工作台离散设置控件
+    const discreteSettingIDs = [
+      "setting-thinking-mode", "setting-reasoning-effort",
+      "setting-chat-thinking-mode", "setting-chat-reasoning-effort",
+      "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
+      "setting-web-page-image-quality", "setting-delete-web-translation-sessions",
+      "setting-caj-double-click-action", "setting-show-native-reader-ask-ai", "setting-auto-update",
+      "setting-target-language", "setting-machine-source-language", "setting-translation-mode",
+      "setting-agent-access-mode", "setting-agent-allow-configured-services",
+      "setting-agent-allow-chat-history", "setting-agent-background-provider"
+    ];
+    for (const id of discreteSettingIDs) {
+      els[id]?.addEventListener("change", () => scheduleSettingsAutoSave(50));
+    }
+
+    const textSettingIDs = [
+      "setting-model", "setting-chat-base-url", "setting-chat-model", "setting-key-points-prompt"
+    ];
+    for (const id of textSettingIDs) {
+      const el = els[id];
+      if (el) {
+        el.addEventListener("input", () => scheduleSettingsAutoSave(400));
+        el.addEventListener("blur", () => flushSettingsAutoSaveWithFeedback());
       }
-      catch (error) { toast(error.message, "error"); }
+    }
+
+    els["setting-agent-enabled"]?.addEventListener("change", () => {
+      const checked = els["setting-agent-enabled"].checked;
+      const statusEl = els["setting-agent-status"];
+      const hintEl = els["setting-agent-hint"];
+      if (statusEl) statusEl.textContent = checked ? "正在启动..." : "未启用";
+      if (hintEl) hintEl.textContent = checked ? "正在启动服务，完成后即可复制给智能体。" : "打开后，AI助手可以帮你查找和整理Zotero文献。";
+      scheduleSettingsAutoSave(0);
     });
+
     els["clear-document-button"].addEventListener("click", async () => {
       if (!window.confirm("确定清除这篇文献的解析结果、译文和对话记录吗？\n\nZotero中的原始附件不会被修改。")) return;
       try {
+        if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
         setData(await hostCall("clear-document"));
-        els["settings-dialog"].close();
+        await closeSettingsDialog();
         toast("这篇文献的数据已清除");
       }
       catch (error) { toast(error.message, "error"); }
@@ -9489,6 +9770,7 @@
     const cajBytes = Number(summary.cajActiveBytes ?? 0);
     const tempBytes = summary.tempTotalBytes || 0;
     const edgeBytes = summary.edgeLocalTotalBytes || 0;
+    const runtimeBytes = summary.runtimeTotalBytes || 0;
     const orphanBytes = Number(summary.orphanedCoreBytes ?? 0);
 
     const segments = [
@@ -9498,6 +9780,9 @@
     ];
     if (edgeBytes > 0) {
       segments.push({ key: "edge", label: "离线引擎", bytes: edgeBytes, formatted: summary.edgeLocalTotalBytesFormatted || formatStorageBytes(edgeBytes), color: "#8b5cf6" });
+    }
+    if (runtimeBytes > 0) {
+      segments.push({ key: "runtime", label: "采集运行时", bytes: runtimeBytes, formatted: summary.runtimeTotalBytesFormatted || formatStorageBytes(runtimeBytes), color: "#06b6d4" });
     }
     if (orphanBytes > 0) {
       segments.push({ key: "orphan", label: "失效残留", bytes: orphanBytes, formatted: summary.orphanedTotalBytesFormatted || formatStorageBytes(orphanBytes), color: "#ef4444" });
@@ -9524,7 +9809,12 @@
         const gap = circumference - dash;
         const offset = -currentOffset;
         currentOffset += dash;
-        return `<circle class="donut-slice" data-key="${seg.key}" data-label="${seg.label}" data-size="${seg.formatted}" data-percent="${seg.percentFormatted}" cx="50" cy="50" r="${radius}" fill="none" stroke="${seg.color}" stroke-width="12" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 50 50)"><title>${seg.label}: ${seg.formatted} (${seg.percentFormatted})</title></circle>`;
+        const escapedKey = escapeHTML(seg.key);
+        const escapedLabel = escapeHTML(seg.label);
+        const escapedSize = escapeHTML(seg.formatted);
+        const escapedPercent = escapeHTML(seg.percentFormatted);
+        const titleText = escapeHTML(`${seg.label}: ${seg.formatted} (${seg.percentFormatted})`);
+        return `<circle class="donut-slice" data-key="${escapedKey}" data-label="${escapedLabel}" data-size="${escapedSize}" data-percent="${escapedPercent}" cx="50" cy="50" r="${radius}" fill="none" stroke="${seg.color}" stroke-width="12" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 50 50)"><title>${titleText}</title></circle>`;
       }).join("");
     }
 
@@ -9552,10 +9842,10 @@
 
     if (legendEl) {
       legendEl.innerHTML = segments.map(seg => `
-        <div class="storage-legend-item" data-key="${seg.key}" title="${seg.label}: ${seg.formatted}">
+        <div class="storage-legend-item" data-key="${escapeHTML(seg.key)}" title="${escapeHTML(seg.label)}: ${escapeHTML(seg.formatted)}">
           <span class="storage-legend-dot" style="background-color: ${seg.color}"></span>
           <span class="storage-legend-label">${escapeHTML(seg.label)}</span>
-          <span class="storage-legend-val">${seg.percentFormatted}</span>
+          <span class="storage-legend-val">${escapeHTML(seg.percentFormatted)}</span>
         </div>
       `).join("");
 
@@ -9594,6 +9884,16 @@
     if (els["storage-caj-count"]) els["storage-caj-count"].textContent = `${s.cajDocumentCount || 0} 篇含 CAJ 缓存`;
     if (els["storage-temp-bytes"]) els["storage-temp-bytes"].textContent = s.tempTotalBytesFormatted || "0 B";
     if (els["storage-temp-count"]) els["storage-temp-count"].textContent = `${s.tempFilesCount || 0} 个临时文件`;
+
+    if (els["storage-runtime-card"]) {
+      if (s.runtimeTotalBytes > 0) {
+        els["storage-runtime-card"].hidden = false;
+        if (els["storage-runtime-bytes"]) els["storage-runtime-bytes"].textContent = s.runtimeTotalBytesFormatted || "0 B";
+        if (els["storage-runtime-count"]) els["storage-runtime-count"].textContent = `${s.runtimeTotalFiles || 0} 个文件`;
+      } else {
+        els["storage-runtime-card"].hidden = true;
+      }
+    }
 
     if (els["storage-orphaned-card"]) {
       if (s.orphanedCount > 0) {
@@ -9634,6 +9934,7 @@
       deepseekWeb: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-layers" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
       diagrams: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-diagrams" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M10 5.5h2a4 4 0 0 1 4 4v6.5"/><path d="m14 13 2 3 2-3"/></svg>`,
       logs: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-logs" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+      runtime: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-runtime" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
       other: `<svg xmlns="http://www.w3.org/2000/svg" class="tree-svg-icon tree-icon-other" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
     };
     return icons[name] || icons.other;
@@ -9676,6 +9977,10 @@
       message = "确定删除全部临时生成文件与解压缓存吗？";
     } else if (kind === "edge") {
       message = "确定删除 Edge 本地离线翻译引擎数据吗？\n\n下次使用离线翻译时会重新下载。";
+    } else if (kind === "runtime") {
+      message = "确定完全删除文献检索与采集运行时吗？\n\n将清理嵌入式 Python 与 ScanSci 依赖包，释放全部空间。下次发起文献下载时将自动重新配置。";
+    } else if (kind === "runtime-cache") {
+      message = "确定清理文献检索运行时的安装包残留与编译缓存吗？\n\n可安全瘦身释放空间，不会影响文献下载功能。";
     } else {
       return;
     }
@@ -9697,7 +10002,11 @@
       ? `【${storageCategoryLabels[category] || category}】数据`
       : kind === "temp"
       ? "临时缓存"
-      : "Edge 本地离线翻译引擎数据";
+      : kind === "edge"
+      ? "Edge 本地离线翻译引擎数据"
+      : kind === "runtime"
+      ? "文献检索与采集运行时"
+      : "运行时临时缓存";
     toast(`已删除${label}${released}`);
     refreshStorageManager();
   }
@@ -9739,13 +10048,19 @@
       menu.appendChild(button);
     };
 
-    const openPayload = entry.kind === "subcategory"
-      ? { kind: "subcategory", documentID: entry.documentID, subcategory: entry.subcategory }
-      : entry.kind === "document"
-      ? { kind: "document", documentID: entry.documentID }
-      : { kind: entry.kind };
-    addAction("打开文件夹", () => hostCall("open-storage-folder", openPayload));
-    addAction("删除该条目的数据", () => clearStorageEntry(entry), true);
+    if (entry.kind === "runtime") {
+      addAction("打开文件夹", () => hostCall("open-storage-folder", { kind: "runtime" }));
+      addAction("清理安装包与编译缓存（安全瘦身）", () => clearStorageEntry({ kind: "runtime-cache", title: "文献采集运行时缓存" }));
+      addAction("彻底删除运行时", () => clearStorageEntry(entry), true);
+    } else {
+      const openPayload = entry.kind === "subcategory"
+        ? { kind: "subcategory", documentID: entry.documentID, subcategory: entry.subcategory }
+        : entry.kind === "document"
+        ? { kind: "document", documentID: entry.documentID }
+        : { kind: entry.kind };
+      addAction("打开文件夹", () => hostCall("open-storage-folder", openPayload));
+      addAction("删除该条目的数据", () => clearStorageEntry(entry), true);
+    }
 
     // 存储管理是模态 dialog；菜单挂到 body 会落在 dialog 的 top layer 后面。
     // dialog 自身带有 transform，因此在 dialog 内按其坐标系定位菜单。
@@ -9806,7 +10121,7 @@
         <span>文献数据 (${filteredDocs.length} 篇${filter ? " / 过滤结果" : ""})</span>
       </div>
       <div class="tree-item-right">
-        <span class="tree-item-size">${currentStorageSummary.documentsTotalBytesFormatted}</span>
+        <span class="tree-item-size">${escapeHTML(currentStorageSummary.documentsTotalBytesFormatted || "0 B")}</span>
       </div>
     `;
 
@@ -9844,7 +10159,7 @@
             ${badges.join(" ")}
           </div>
           <div class="tree-item-right">
-            <span class="tree-item-size">${doc.totalBytesFormatted}</span>
+            <span class="tree-item-size">${escapeHTML(doc.totalBytesFormatted || "0 B")}</span>
             <div class="tree-item-actions">
               <button class="tree-action-link" type="button" data-action="open-doc" data-id="${escapeHTML(doc.id)}" title="在系统文件管理器中打开此文件夹">打开</button>
               <button class="tree-action-link danger" type="button" data-action="clear-doc" data-id="${escapeHTML(doc.id)}" data-title="${escapeHTML(doc.title)}" data-caj="${doc.isCAJ ? "1" : "0"}" title="清空这篇文献的全部解析和翻译缓存">清除</button>
@@ -9872,7 +10187,7 @@
               <span class="tree-sub-files">(${cat.files} 个文件)</span>
             </div>
             <div class="tree-sub-right">
-              <span class="tree-sub-size">${cat.formatted}</span>
+              <span class="tree-sub-size">${escapeHTML(cat.formatted || "0 B")}</span>
               ${cleanBtn}
             </div>
           `;
@@ -9968,7 +10283,7 @@
         <span>临时与碎片缓存 (PDF导出碎片与页面高清切图，可安全清空)</span>
       </div>
       <div class="tree-item-right">
-        <span class="tree-item-size">${currentStorageSummary.tempTotalBytesFormatted}</span>
+        <span class="tree-item-size">${escapeHTML(currentStorageSummary.tempTotalBytesFormatted || "0 B")}</span>
         <div class="tree-item-actions">
           <button class="tree-action-link" type="button" data-action="open-temp" title="打开临时目录">打开</button>
           <button class="tree-action-link danger" type="button" data-action="clean-temp" title="清空临时缓存">清空</button>
@@ -10003,7 +10318,7 @@
           <span>Edge 本地离线翻译引擎数据</span>
         </div>
         <div class="tree-item-right">
-          <span class="tree-item-size">${currentStorageSummary.edgeLocalTotalBytesFormatted}</span>
+          <span class="tree-item-size">${escapeHTML(currentStorageSummary.edgeLocalTotalBytesFormatted || "0 B")}</span>
           <div class="tree-item-actions">
             <button class="tree-action-link" type="button" data-action="open-edge" title="打开离线引擎目录">打开</button>
           </div>
@@ -10023,6 +10338,42 @@
 
       edgeGroup.appendChild(edgeHeader);
       container.appendChild(edgeGroup);
+    }
+
+    // 根组 4：文献检索与采集运行时 (ScanSci)
+    if (currentStorageSummary.runtimeTotalBytes > 0) {
+      const runtimeGroup = document.createElement("div");
+      runtimeGroup.className = "tree-root-group";
+      const runtimeHeader = document.createElement("div");
+      runtimeHeader.className = "tree-root-header";
+      runtimeHeader.title = `文献检索与采集运行时 (${currentStorageSummary.runtimeTotalBytesFormatted})\n\n包含 ScanSci-PDF 文献下载微服务、嵌入式 Python 及科学计算依赖环境。\n\n💡 提示：双击可直接在系统文件管理器中打开此目录；右键可清理安装包与编译缓存（瘦身）或完全卸载。`;
+      runtimeHeader.innerHTML = `
+        <div class="tree-root-left">
+          <span class="tree-node-icon">${getStorageIcon("runtime")}</span>
+          <span>文献检索与采集运行时 (ScanSci)</span>
+        </div>
+        <div class="tree-item-right">
+          <span class="tree-item-size">${escapeHTML(currentStorageSummary.runtimeTotalBytesFormatted || "0 B")}</span>
+          <div class="tree-item-actions">
+            <button class="tree-action-link" type="button" data-action="clean-runtime-cache" title="清理安装包残留与编译缓存">瘦身</button>
+            <button class="tree-action-link" type="button" data-action="open-runtime" title="打开运行时目录">打开</button>
+          </div>
+        </div>
+      `;
+
+      runtimeHeader.addEventListener("dblclick", (e) => {
+        if (e.target.closest("button")) return;
+        e.stopPropagation();
+        hostCall("open-storage-folder", { kind: "runtime" }).catch(err => toast(err.message, "error"));
+      });
+
+      runtimeHeader.addEventListener("contextmenu", (e) => {
+        if (e.target.closest("button")) return;
+        showStorageContextMenu(e, { kind: "runtime", title: "文献检索与采集运行时 (ScanSci)" });
+      });
+
+      runtimeGroup.appendChild(runtimeHeader);
+      container.appendChild(runtimeGroup);
     }
   }
 
@@ -10157,6 +10508,16 @@
         } else if (action === "open-edge") {
           try {
             await hostCall("open-storage-folder", { kind: "edge" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "open-runtime") {
+          try {
+            await hostCall("open-storage-folder", { kind: "runtime" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "clean-runtime-cache") {
+          try {
+            const res = await hostCall("clear-storage-data", { target: "runtime-cache" });
+            toast(`已清理运行时安装包与临时缓存${res.formatted && res.clearedBytes ? `，释放了 ${res.formatted}` : ""}`);
+            refreshStorageManager();
           } catch (err) { toast(err.message, "error"); }
         } else if (action === "clean-temp") {
           if (!window.confirm("确定清空全部临时生成文件与解压缓存吗？")) return;

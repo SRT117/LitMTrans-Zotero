@@ -24,6 +24,7 @@
       // transient workspace outside the document hierarchy so Windows path
       // limits do not depend on the user's profile/project location.
       this.tempRoot = PathUtils.join(Zotero.Profile.dir, "litmtrans-tmp");
+      this.runtimeRoot = PathUtils.join(this.root, "runtime");
       this._resourceRegistered = false;
       this._appendQueues = new Map();
     }
@@ -438,6 +439,10 @@
     }
 
     async findDocumentIDsForItemIDs(itemIDs) {
+      return (await this.findDocumentRecordsForItemIDs(itemIDs)).map(record => record.documentID);
+    }
+
+    async findDocumentRecordsForItemIDs(itemIDs) {
       const deleted = new Set((Array.isArray(itemIDs) ? itemIDs : [itemIDs])
         .map(value => Number(value))
         .filter(Number.isFinite));
@@ -450,7 +455,13 @@
         const identities = [meta?.itemID, meta?.parentItemID]
           .map(value => Number(value))
           .filter(Number.isFinite);
-        if (identities.some(id => deleted.has(id))) matches.push(PathUtils.filename(directory));
+        const matchedItemIDs = identities.filter(id => deleted.has(id));
+        if (matchedItemIDs.length) matches.push({
+          documentID: PathUtils.filename(directory),
+          itemID: Number(meta?.itemID || 0) || null,
+          parentItemID: Number(meta?.parentItemID || 0) || null,
+          matchedItemIDs
+        });
       }
       return matches;
     }
@@ -914,7 +925,11 @@
       const edgeLocalDir = PathUtils.join(this.root, "edge-local-translation");
       const edgeStats = await this.dirStats(edgeLocalDir);
 
-      const totalBytes = documentsTotalBytes + tempStats.bytes + edgeStats.bytes;
+      // 文献采集与下载运行时统计 (ScanSci + 嵌入式 Python)
+      const runtimeDir = PathUtils.join(this.root, "runtime");
+      const runtimeStats = await this.dirStats(runtimeDir);
+
+      const totalBytes = documentsTotalBytes + tempStats.bytes + edgeStats.bytes + runtimeStats.bytes;
       const documentsCoreBytes = Math.max(0, documentsTotalBytes - deepseekWebTotalBytes);
       const orphanedCoreBytes = Math.max(0, orphanedTotalBytes - orphanedDeepSeekWebBytes);
       const cajActiveBytes = Math.max(0, cajTotalBytes - orphanedCajBytes);
@@ -927,6 +942,7 @@
       return {
         rootPath: this.root,
         tempPath: this.tempRoot,
+        runtimePath: runtimeDir,
         totalBytes,
         totalBytesFormatted: this.formatBytes(totalBytes),
         documentsTotalBytes,
@@ -955,6 +971,9 @@
         orphanedCoreBytesFormatted: this.formatBytes(orphanedCoreBytes),
         edgeLocalTotalBytes: edgeStats.bytes,
         edgeLocalTotalBytesFormatted: edgeStats.formatted,
+        runtimeTotalBytes: runtimeStats.bytes,
+        runtimeTotalBytesFormatted: runtimeStats.formatted,
+        runtimeTotalFiles: runtimeStats.files,
         documents
       };
     }
@@ -1014,6 +1033,65 @@
         clearedFiles: stats.files,
         formatted: stats.formatted
       };
+    }
+
+    async clearRuntimeCache() {
+      const runtimeDir = PathUtils.join(this.root, "runtime");
+      let clearedBytes = 0;
+      let clearedFiles = 0;
+      if (!await this.exists(runtimeDir)) {
+        return { clearedBytes: 0, clearedFiles: 0, formatted: this.formatBytes(0) };
+      }
+
+      const cleanDir = async (dirPath, depth = 0) => {
+        if (!await this.exists(dirPath)) return;
+        const entries = await this.list(dirPath);
+        for (const entry of entries) {
+          const info = await this.stat(entry);
+          if (!info) continue;
+          const name = PathUtils.filename(entry);
+          if (info.type === "directory") {
+            if (name === "__pycache__") {
+              const stats = await this.dirStats(entry);
+              clearedBytes += stats.bytes;
+              clearedFiles += stats.files;
+              await this.remove(entry, true);
+            } else if (depth < 8) {
+              await cleanDir(entry, depth + 1);
+            }
+          } else {
+            // 严格白名单判定：只清理确认为安装包的文件与字节码文件，严禁误伤 Python 核心库
+            const isPythonStandardLib = /^python\d+\.zip$/i.test(name) || dirPath.endsWith("python");
+            const isKnownInstallationArchive = depth <= 2 && !isPythonStandardLib && (
+              name === "python-embed.zip" ||
+              /^pip-.*\.whl$/i.test(name) ||
+              /^scansci-.*\.whl$/i.test(name)
+            );
+            const isBytecode = name.endsWith(".pyc");
+            if (isKnownInstallationArchive || isBytecode) {
+              clearedBytes += Number(info.size || 0);
+              clearedFiles++;
+              await this.remove(entry, false);
+            }
+          }
+        }
+      };
+
+      await cleanDir(runtimeDir, 0);
+      return { clearedBytes, clearedFiles, formatted: this.formatBytes(clearedBytes) };
+    }
+
+    async clearRuntime() {
+      const runtimeDir = PathUtils.join(this.root, "runtime");
+      let clearedBytes = 0;
+      let clearedFiles = 0;
+      if (await this.exists(runtimeDir)) {
+        const stats = await this.dirStats(runtimeDir);
+        clearedBytes = stats.bytes;
+        clearedFiles = stats.files;
+        await this.remove(runtimeDir, true);
+      }
+      return { clearedBytes, clearedFiles, formatted: this.formatBytes(clearedBytes) };
     }
 
     async clearOrphanedDocuments() {

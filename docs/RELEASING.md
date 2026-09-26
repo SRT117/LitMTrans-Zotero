@@ -36,7 +36,7 @@ git push -u origin main
 
 ```powershell
 gh repo edit SRT117/LitMTrans-Zotero `
-  --description "文献解析、全文翻译、思维导图与文献对话的 Zotero 插件" `
+  --description "全文对照翻译、AI对话、思维导图、智能体MCP、Markdown转换、公式Latex提取" `
   --add-topic zotero `
   --add-topic zotero-plugin `
   --add-topic translation `

@@ -5,7 +5,7 @@
 <h1 align="center">LitMTrans</h1>
 
 <p align="center">
-  Zotero中的科研PDF解析、排版翻译与全文AI阅读
+  全文对照翻译、AI对话、思维导图、智能体MCP、Markdown转换、公式Latex提取
 </p>
 
 <p align="center">
@@ -284,5 +284,6 @@ LitMTrans-Zotero 的实现离不开以下开源项目与工具的启发和支持
 - 维护者：[SRT117](https://github.com/SRT117)
 - 许可证：[MIT License](LICENSE)
 - 第三方组件许可：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- Bundled / managed third-party components retain their respective licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [docs/licensing/](docs/licensing/).
 
 *LitMTrans是独立开源项目，与Zotero、MinerU或相关模型提供商不存在隶属或合作关系。*

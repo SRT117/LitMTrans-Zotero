@@ -18,18 +18,25 @@ if (-not $SkipValidate) {
 }
 $manifest = Get-Content (Join-Path $projectRoot "manifest.json") -Raw -Encoding utf8 | ConvertFrom-Json
 $dist = Join-Path $projectRoot "dist"
-$stage = Join-Path $dist "addon"
+$stage = Join-Path $dist ".xpi-release-stage"
 $xpi = Join-Path $dist ("litmtrans-{0}.xpi" -f $manifest.version)
 
-Remove-Item -LiteralPath $xpi -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $stage -Force | Out-Null
+New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
+try {
+Remove-Item -LiteralPath $xpi -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $stage) {
+    Remove-Item -LiteralPath $stage -Recurse -Force
+}
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
 foreach ($entry in @("manifest.json", "src", "assets", "locale", "README.md", "CHANGELOG.md", "PRIVACY.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
     $entryPath = Join-Path $projectRoot $entry
     if (Test-Path -LiteralPath $entryPath) {
         Copy-Item -LiteralPath $entryPath -Destination $stage -Recurse -Force
     }
 }
+New-Item -ItemType Directory -Path (Join-Path $stage "docs") -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot "docs/licensing") -Destination (Join-Path $stage "docs/licensing") -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $stage "chrome.manifest") -Force -ErrorAction SilentlyContinue
 Copy-Item -LiteralPath (Join-Path $projectRoot "src/bootstrap.js") -Destination (Join-Path $stage "bootstrap.js") -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "src/prefs.js") -Destination (Join-Path $stage "prefs.js") -Force
@@ -75,13 +82,21 @@ try {
     if ($invalidEntries.Count) {
         throw "XPI contains invalid ZIP path: $($invalidEntries -join ', ')"
     }
-    foreach ($required in @("manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "src/caj-worker.js", "src/caj-converter.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/katex/LICENSE.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "native/caj2pdf/caj2pdf.wasm", "native/caj2pdf/LICENSE", "PRIVACY.md", "THIRD_PARTY_NOTICES.md")) {
+    $requiredEntries = @("manifest.json", "bootstrap.js", "prefs.js", "src/ported-core.js", "src/controller.js", "src/caj-worker.js", "src/caj-converter.js", "assets/icon-48.png", "assets/icon-96.png", "assets/docs/token-guide.pdf", "assets/fonts/SourceHanSerifCN-Regular.ttf", "assets/fonts/LICENSE-SourceHanSerif.txt", "assets/vendor/katex/LICENSE.txt", "assets/vendor/licenses/KaTeX-Fonts-OFL-1.1.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE", "assets/vendor/licenses/npm/pako@2.1.0/LICENSE", "assets/vendor/licenses/npm/pako@2.1.0/LICENSE-ZLIB.txt", "assets/vendor/licenses/zotero-mcp-MIT.txt", "native/caj2pdf/caj2pdf.wasm", "native/caj2pdf/LICENSE", "native/caj2pdf/UPSTREAM.md", "docs/licensing/third-party-inventory.md", "docs/licensing/acquisition-runtime.md", "docs/licensing/caj-backend.md", "PRIVACY.md", "THIRD_PARTY_NOTICES.md")
+    $licenseRoot = Join-Path $projectRoot "assets/vendor/licenses"
+    foreach ($licenseFile in Get-ChildItem -LiteralPath $licenseRoot -Recurse -File) {
+        $relative = $licenseFile.FullName.Substring($projectRoot.Length).TrimStart("\", "/").Replace("\", "/")
+        $requiredEntries += $relative
+    }
+    foreach ($required in $requiredEntries) {
         if ($entries -notcontains $required) {
             throw "XPI missing required runtime file: $required"
         }
     }
     $forbidden = @($entries | Where-Object {
-        $_ -match '(^|/)\.env$' -or
+        $_ -match '(^|/)\.env(?:\.[^/]*)?$' -or
+        $_ -match '(^|/)\.mutagen(?:\.yml(?:\.lock)?)?$' -or
+        $_ -match '(^|/)(?:\.zotero-dev|\.serena|\.vscode|\.npm-cache|\.playwright-cli|node_modules|profile|cookies?|sessions?|session-storage|runtime|runtime-state)(/|$)' -or
         $_ -match '(^|/)node_modules/' -or
         ($_.ToLowerInvariant().EndsWith('.pdf') -and $_ -ne 'assets/docs/token-guide.pdf') -or
         $_ -match '\.(?:py|pyc)$'
@@ -89,9 +104,25 @@ try {
     if ($forbidden.Count) {
         throw "XPI contains forbidden file: $($forbidden -join ', ')"
     }
+    if (@($entries | Where-Object { $_ -like "native/caj-backend/*" }).Count) {
+        throw "XPI must contain the CAJ WASM distribution, not the Rust source tree."
+    }
+    $fileEntries = @($archive.Entries | Where-Object { -not $_.FullName.EndsWith("/") })
+    $licenseEntries = @($entries | Where-Object { $_ -like "assets/vendor/licenses/*" })
+    Write-Output "Actual files: $($fileEntries.Count)"
+    Write-Output "Bundled vendor license files: $($licenseEntries.Count)"
+    Write-Output "Forbidden entries: $($forbidden.Count)"
 }
 finally {
     $archive.Dispose()
+}
+}
+catch {
+    Remove-Item -LiteralPath $xpi -Force -ErrorAction SilentlyContinue
+    throw
+}
+finally {
+    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $sha256 = [System.Security.Cryptography.SHA256]::Create()

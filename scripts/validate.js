@@ -9,12 +9,39 @@ const runtimeFiles = [
   "manifest.json", "src/bootstrap.js", "src/prefs.js", "src/controller.js", "src/pipeline.js",
   "src/workbench.xhtml", "src/workbench.js", "src/workbench.css",
   "src/preferences.xhtml", "src/preferences.js", "src/preferences.css",
+  "src/settings-view-model.js",
   "src/ported-core.js", "src/utils.js", "src/storage.js", "src/secrets.js", "src/http.js",
   "src/markdown.js", "src/mindmap.js", "src/flowchart.js", "src/mineru.js", "src/llm.js", "src/edge-local-translation.js", "src/web-machine-translation.js", "src/translation.js", "src/layout.js",
-  "src/chat.js", "src/icon-reader.js", "assets/icon.ico", "assets/icon-reader.svg",
+  "src/chat.js", "src/icon-reader.js",
+  "src/agent/contracts.js", "src/agent/capability-policy.js", "src/agent/task-manager.js",
+  "src/agent/background-ai.js", "src/agent/external-approval.js",
+  "src/agent/zotero-write-coordinator.js", "src/agent/mcp/http-request-reader.js",
+  "src/agent/item-formatter.js", "src/agent/collection-formatter.js", "src/agent/annotation-formatter.js",
+  "src/agent/library-service.js", "src/agent/artifact-service.js", "src/agent/research-service.js",
+  "src/agent/corpus-index.js", "src/agent/export-service.js", "src/agent/facade.js",
+  "src/agent/citation-service.js", "src/agent/import-service.js",
+  "src/agent/literature/paper-card.js", "src/agent/literature/paper-card-index.js",
+  "src/agent/literature/candidate-store.js", "src/agent/literature/provider-base.js",
+  "src/agent/literature/openalex-provider.js", "src/agent/literature/semantic-scholar-provider.js",
+  "src/agent/literature/crossref-provider.js", "src/agent/literature/arxiv-provider.js",
+  "src/agent/literature/europepmc-provider.js", "src/agent/literature/ranking.js",
+  "src/agent/literature/literature-graph.js", "src/agent/literature/discovery-service.js",
+  "src/agent/acquisition/platform-descriptor.js", "src/agent/acquisition/runtime-adapters.js",
+  "src/agent/acquisition/runtime-manifest.js", "src/agent/acquisition/managed-runtime.js",
+  "src/agent/acquisition/pdf-validator.js", "src/agent/acquisition/existing-attachment-provider.js",
+  "src/agent/acquisition/direct-oa-provider.js", "src/agent/acquisition/scansci-mcp-client.js",
+  "src/agent/acquisition/scansci-institution.js", "src/agent/acquisition/scansci-provider.js",
+  "src/agent/acquisition/acquisition-service.js", "src/agent/review-workspace.js",
+  "src/agent/bootstrap-instruction.js",
+  "src/agent/mcp/tools.js", "src/agent/mcp/protocol.js", "src/agent/mcp/client-config.js", "src/agent/mcp/server.js",
+  "assets/icon.ico", "assets/icon-reader.svg",
   "assets/docs/token-guide.pdf",
-  "assets/vendor/pako/pako_inflate.min.js", "assets/vendor/pdf-lib/pdf-lib.min.js",
+  "assets/vendor/pako/pako_inflate.min.js", "assets/vendor/pako/LICENSE.txt", "assets/vendor/pdf-lib/pdf-lib.min.js",
+  "assets/vendor/licenses/zotero-mcp-MIT.txt",
+  "assets/vendor/licenses/npm/pako@2.1.0/LICENSE", "assets/vendor/licenses/npm/pako@2.1.0/LICENSE-ZLIB.txt",
+  "assets/vendor/licenses/KaTeX-Fonts-OFL-1.1.txt",
   "assets/vendor/pdf-lib/LICENSE.md", "assets/vendor/katex/LICENSE.txt", "assets/vendor/mermaid/mermaid.min.js", "assets/vendor/mermaid/LICENSE",
+  "docs/licensing/third-party-inventory.md", "docs/licensing/acquisition-runtime.md", "docs/licensing/caj-backend.md",
   "locale/en-US/litmtrans.ftl", "locale/zh-CN/litmtrans.ftl",
   "THIRD_PARTY_NOTICES.md"
 ];
@@ -43,6 +70,54 @@ function walk(directory, options = {}) {
   return result;
 }
 
+function auditNpmLicenses() {
+  const npmLicenseRoot = path.join(root, "assets/vendor/licenses/npm");
+  const packageRecords = Object.entries(packageLock.packages || {})
+    .filter(([key, info]) => key.startsWith("node_modules/") && info.dev !== true);
+  const packageDirs = new Set();
+  const missingFiles = [];
+  const legalName = /^(?:LICENSE|LICENCE|NOTICE|COPYING|COPYRIGHT)(?:[.-].*)?$/i;
+
+  for (const [key] of packageRecords) {
+    const packageRoot = path.join(root, key);
+    const packageJSONPath = path.join(packageRoot, "package.json");
+    if (!fs.existsSync(packageJSONPath)) fail(`Production package is not installed for license audit: ${key}`);
+    let metadata;
+    try { metadata = JSON.parse(fs.readFileSync(packageJSONPath, "utf8")); }
+    catch (error) { fail(`Invalid package metadata for license audit (${key}): ${error.message}`); }
+    if (!metadata.name || !metadata.version) fail(`Production package has no name/version for license audit: ${key}`);
+
+    const assetDirName = `${key.slice("node_modules/".length).replaceAll("/", "__")}@${metadata.version}`;
+    packageDirs.add(assetDirName);
+    const assetDir = path.join(npmLicenseRoot, assetDirName);
+    if (!fs.existsSync(assetDir)) fail(`Missing npm license directory: ${assetDirName}`);
+
+    const sourceLegalFiles = [];
+    function visit(directory) {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (["node_modules", ".git"].includes(entry.name)) continue;
+        const fullPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) visit(fullPath);
+        else if (entry.isFile() && legalName.test(entry.name)) sourceLegalFiles.push(entry.name);
+      }
+    }
+    visit(packageRoot);
+    const retainedNames = new Set(fs.readdirSync(assetDir, { withFileTypes: true })
+      .filter(entry => entry.isFile()).map(entry => entry.name));
+    for (const name of new Set(sourceLegalFiles)) {
+      if (!retainedNames.has(name)) missingFiles.push(`${assetDirName}/${name}`);
+    }
+  }
+
+  const retainedDirs = fs.readdirSync(npmLicenseRoot, { withFileTypes: true })
+    .filter(entry => entry.isDirectory()).map(entry => entry.name);
+  const orphanDirs = retainedDirs.filter(name => !packageDirs.has(name));
+  if (orphanDirs.length) fail(`Unmatched npm license directories: ${orphanDirs.join(", ")}`);
+  if (missingFiles.length) fail(`Production npm license files not retained: ${missingFiles.join(", ")}`);
+  const retainedFiles = walk(npmLicenseRoot).length;
+  console.log(`npm license audit passed: ${packageRecords.length} production records, ${retainedDirs.length} package directories, ${retainedFiles} files.`);
+}
+
 console.log("[1/8] TypeScript compilation");
 const localTscCli = path.join(root, "node_modules", "typescript", "bin", "tsc");
 // Calling a .cmd shim directly through spawnSync fails with EINVAL on recent
@@ -66,10 +141,11 @@ try {
   packageLock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
 }
 catch (error) { fail(`Invalid JSON metadata: ${error.message}`); }
+auditNpmLicenses();
 if (manifest.manifest_version !== 2) fail("manifest_version must be 2");
 if (!manifest.applications?.zotero?.id) fail("applications.zotero.id is required");
 if (manifest.name !== "LitMTrans") fail("manifest name must be LitMTrans");
-if (manifest.description !== "文献解析、全文翻译、思维导图与文献对话") fail("manifest description is not the approved public copy");
+if (manifest.description !== "全文对照翻译、AI对话、思维导图、智能体MCP、Markdown转换、公式Latex提取") fail("manifest description is not the approved public copy");
 if (manifest.author !== "SRT117") fail("manifest author must be SRT117");
 if (manifest.applications.zotero.id !== "litmtrans@srt117.github.io") fail("public add-on ID changed");
 const releaseUpdateURL = process.env.LITMTRANS_RELEASE_UPDATE_URL || "";
@@ -102,7 +178,8 @@ if (!preferencesScript.includes('event.target?.id !== "litmtrans-preferences-roo
     || !preferencesScript.includes('document.addEventListener("load", initializeLitMTransPreferences, true)')) {
   fail("preferences.js must capture Zotero's dynamically inserted pane root load event");
 }
-if (!preferencesScript.includes('root.addEventListener("showing", () => void this.load())')) {
+if (!preferencesScript.includes('root.addEventListener("showing", () => {')
+    || !preferencesScript.includes('this.flushAutoSave(true).then(() => this.load())')) {
   fail("preferences.js must reload the canonical settings snapshot whenever the pane is shown");
 }
 if (/DOMContentLoaded|pageshow|window\.addEventListener\(["']load|onload=/.test(preferencesScript)) {
@@ -180,20 +257,41 @@ for (const file of allProjectFiles.filter(f => f.startsWith(path.join(root, "scr
     fail(`PowerShell script must have UTF-8 BOM for Windows PowerShell compatibility: ${path.relative(root, file)}`);
   }
 }
-const auditText = allProjectFiles
+const publishablePaths = run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).stdout.split("\0").filter(Boolean);
+const auditText = publishablePaths
+  .map(file => path.join(root, file))
+  .filter(file => fs.existsSync(file) && fs.statSync(file).isFile())
   .filter(file => /\.(?:js|ts|json|md|xhtml|css|mjs|ps1|sh|txt|csv)$/.test(file))
   .filter(file => path.basename(file) !== "AGENTS.md")
+  .filter(file => path.basename(file) !== "mcp计划.md")
   .filter(file => path.resolve(file) !== path.resolve(__filename))
-  .filter(file => !path.relative(root, file).replace(/\\/g, "/").startsWith("docs/"))
   .map(file => fs.readFileSync(file, "utf8"))
   .join("\n");
 for (const pattern of [
   /C:\\Users\\\d{3,}\\/i,
   /\/home\/[A-Za-z0-9._-]+\//,
   /\/Users\/[A-Za-z0-9._-]+\//,
-  /(?:sk|AIza|ghp|xox[baprs])-[_A-Za-z0-9]{20,}/
+  /(?:sk|AIza|ghp|xox[baprs])-[_A-Za-z0-9]{20,}/,
+  /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/
 ]) {
   if (pattern.test(auditText)) fail(`Potential personal path or embedded secret found: ${pattern}`);
+}
+const trackedPaths = run("git", ["ls-files", "-z"]).stdout.split("\0").filter(Boolean);
+const trackedSensitivePaths = trackedPaths.filter(file => {
+  const normalized = file.replace(/\\/g, "/");
+  const sampleEnv = /^\.env\.(?:example|template)$/i.test(normalized);
+  return (!sampleEnv && /(^|\/)\.env(?:\.|$)/i.test(normalized))
+    || /\.(?:p12|pfx|key|pem)$/i.test(normalized)
+    || /(^|\/)(?:id_rsa|id_ed25519)$/i.test(normalized)
+    || /(^|\/)(?:\.zotero-dev|profile|runtime\/acquisition)(?:\/|$)/i.test(normalized)
+    || /^\/(?:cookies|sessions|session-storage|cookies\.json|session\.json|runtime-state\.json)(?:\/|$)/i.test(`/${normalized}`);
+});
+if (trackedSensitivePaths.length) fail(`Sensitive local file paths are tracked: ${trackedSensitivePaths.join(", ")}`);
+for (const document of ["THIRD_PARTY_NOTICES.md", "docs/licensing/third-party-inventory.md"]) {
+  const text = fs.readFileSync(path.join(root, document), "utf8");
+  const localPaths = [...text.matchAll(/`((?:assets|native|docs)\/[A-Za-z0-9_./@+-]+)`/g)].map(match => match[1]);
+  const missingPaths = [...new Set(localPaths)].filter(rel => !fs.existsSync(path.join(root, rel)));
+  if (missingPaths.length) fail(`${document} references missing local files: ${missingPaths.join(", ")}`);
 }
 
 console.log("[8/8] Generated-core and package metadata consistency");

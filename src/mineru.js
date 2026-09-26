@@ -862,6 +862,52 @@
     }
 
     async parse(item, filePath, options = {}, emit = null, signal = null) {
+      if (U.getPref("agentTestNetworkStub", false) === true) {
+        if (signal?.aborted) throw new Error("操作已停止");
+        if (!C.SUPPORTED_INPUT_EXTENSIONS.has(U.extension(filePath))) {
+          throw new Error(`暂不支持这种附件格式：${U.extension(filePath) || "无扩展名"}`);
+        }
+        const { id: documentID } = await this.storage.ensureDocument(item);
+        const existing = await this.storage.getDocumentMeta(documentID);
+        const parsedAt = new Date().toISOString();
+        const modelVersion = String(options.modelVersion || "mcp-sdk-test-stub");
+        const sourceIdentity = "mcp-sdk-test-network-stub";
+        const parseIdentity = U.hashString([sourceIdentity, modelVersion].join("|"));
+        const markdown = "# MCP SDK MRTR test stub\n\n本次解析由隔离测试钩子生成，未访问 MinerU 网络。\n";
+        await this.storage.writeText(this.storage.path(documentID, "full.md"), markdown);
+        await this.storage.writeText(this.storage.path(documentID, "full.cleaned.md"), markdown);
+        await this.storage.writeJSON(this.storage.path(documentID, "asset-map.json"), {});
+        await this.storage.writeJSON(this.storage.path(documentID, "image-map.json"), []);
+        await this.storage.writeJSON(this.storage.path(documentID, "document.json"), {
+          ...(existing || {}),
+          documentID,
+          itemID: item.id,
+          libraryID: item.libraryID,
+          itemKey: item.key,
+          parentItemID: item.parentID || null,
+          parentItemKey: item.parentKey || "",
+          sourceIdentity,
+          parseIdentity,
+          sourceFileName: basename(filePath),
+          sourcePath: filePath,
+          parsedAt,
+          updatedAt: parsedAt,
+          hasLayout: false,
+          imageCount: 0,
+          testNetworkStub: true
+        });
+        const statePath = PathUtils.join(this.storage.root, "agent", "mcp-test-network-stub.json");
+        const previousState = await this.storage.readJSON(statePath, {});
+        await this.storage.writeJSON(statePath, {
+          parseCalls: Math.max(0, Number(previousState?.parseCalls || 0)) + 1,
+          networkCalls: 0,
+          lastRun: modelVersion,
+          documentID,
+          updatedAt: parsedAt
+        });
+        emit?.({ type: "progress", phase: "mcp-test-network-stub", progress: 100, message: "隔离测试解析完成" });
+        return this.loadParsed(documentID);
+      }
       const token = this.secrets.getMinerUToken().trim();
       if (!token) throw new Error("尚未配置MinerU访问令牌");
       if (!/^[\x00-\x7F]+$/.test(token)) throw new Error("MinerU访问令牌包含非ASCII字符，请检查配置");

@@ -1,6 +1,6 @@
 {
   "name": "litmtrans-zotero",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": false,
   "author": "SRT117",
   "license": "MIT",
@@ -28,6 +28,9 @@
     "prevalidate": "npm run sync-vendor",
     "compile:core": "tsc -p tsconfig.core.json",
     "test:runtime": "node tests/run-tests.js",
+    "test:scansci:integration": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scansci-runtime-smoke.ps1",
+    "test:scansci:oa": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scansci-runtime-smoke.ps1 -DownloadIdentifier 2401.00001",
+    "test:mcp:acquisition:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/mcp-acquisition-e2e.ps1",
     "test:layout-parity": "node scripts/layout-parity-test.mjs",
     "test": "npm run compile:core && npm run test:runtime",
     "inventory": "python3 scripts/generate-package-manifest.py",

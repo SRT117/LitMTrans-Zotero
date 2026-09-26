@@ -14,6 +14,7 @@
   <script src="chrome://litmtrans/content/src/mindmap-v2.js"></script>
   <script src="chrome://litmtrans/content/src/flowchart.js"></script>
   <script src="chrome://litmtrans/content/src/diagram-viewer.js"></script>
+  <script src="chrome://litmtrans/content/src/settings-view-model.js"></script>
   <script defer="defer" src="chrome://litmtrans/content/src/workbench.js"></script>
 </head>
 <body>
@@ -384,10 +385,10 @@
   </dialog>
 
   <dialog id="settings-dialog" class="modal settings-modal">
-    <form method="dialog" class="modal-card" id="settings-form">
+    <div class="modal-card" id="settings-form">
       <header class="modal-header">
         <div><h2>LitMTrans设置</h2><span class="settings-header-links"><button id="open-token-guide-button" class="token-guide-link" type="button">点击查看令牌创建指南</button><button id="open-feedback-button" class="token-guide-link" type="button">问题反馈与建议</button><a class="github-link" href="https://github.com/SRT117/LitMTrans-Zotero" data-external-url="https://github.com/SRT117/LitMTrans-Zotero">访问GitHub官网</a></span></div>
-        <button class="icon-button" value="cancel" aria-label="关闭" type="submit">×</button>
+        <button id="close-settings-button" class="icon-button" aria-label="关闭" type="button">×</button>
       </header>
       <div class="settings-grid">
         <section class="settings-section mineru-settings-section settings-card-mineru">
@@ -532,17 +533,37 @@
             <span id="update-status-label" class="update-status-label"></span>
           </div>
         </section>
+
           </div>
         </details>
+        <section class="settings-section settings-card-agent">
+          <div class="settings-section-heading">
+            <div><h3>AI助手连接（实验性MCP功能）</h3><p>连接后，你常用的AI助手可以通过MCP协议查找、整理和处理Zotero文献。</p></div>
+            <span id="setting-agent-status" class="settings-note"></span>
+          </div>
+          <label class="inline-check"><input id="setting-agent-enabled" type="checkbox" checked="checked" /> 允许AI助手访问Zotero</label>
+          <p id="setting-agent-hint" class="settings-note">打开后，AI助手可以帮你查找和整理Zotero文献。</p>
+          <button id="copy-agent-bootstrap" class="button button-primary" type="button">复制给智能体</button>
+          <details id="setting-agent-advanced" class="agent-advanced">
+            <summary>开发者设置</summary>
+            <div class="agent-advanced-body">
+              <label>访问权限<select id="setting-agent-access-mode"><option value="read">只读</option><option value="full" selected="selected">科研访问（默认）</option><option value="developer">开发者诊断</option></select></label>
+              <label class="inline-check"><input id="setting-agent-allow-configured-services" type="checkbox" checked="checked" /> 允许使用已配置的解析和翻译服务</label>
+              <label class="inline-check"><input id="setting-agent-allow-chat-history" type="checkbox" checked="checked" /> 允许读取LitMTrans对话历史</label>
+              <label>后台AI<select id="setting-agent-background-provider"><option value="auto">自动选择已配置API</option><option value="deepseek">DeepSeek API</option><option value="oneapi">OneAPI / NewAPI</option><option value="openai_compatible">OpenAI兼容接口</option><option value="gemini">Gemini API</option><option value="siliconflow">SiliconFlow</option><option value="zai">Z.ai</option><option value="openrouter">OpenRouter</option></select></label>
+              <div class="field-with-action agent-client-config">
+                <label>客户端配置<select id="setting-agent-client"><option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option><option value="cline">Cline</option><option value="continue">Continue</option><option value="cursor">Cursor</option><option value="cherry-studio">Cherry Studio</option><option value="gemini-cli">Gemini CLI</option><option value="chatbox">Chatbox</option><option value="workbuddy">WorkBuddy</option><option value="trae-ai">Trae</option><option value="qwen-code">Qwen Code</option><option value="custom-http">通用 HTTP 客户端</option></select></label>
+                <button id="copy-agent-client-config" class="button" type="button">复制配置命令</button>
+              </div>
+            </div>
+          </details>
+        </section>
       </div>
       <footer class="modal-footer">
         <button id="open-storage-manager-button" class="button" type="button" title="展开插件数据管理树，直观查看所有文献与临时存储占用">存储数据管理</button>
         <button id="clear-document-button" class="button button-danger-quiet" type="button">清除本文献数据</button>
-        <span class="modal-spacer"></span>
-        <button class="button" value="cancel" type="submit">取消</button>
-        <button id="save-settings-button" class="button button-primary" value="default" type="button">保存</button>
       </footer>
-    </form>
+    </div>
   </dialog>
 
   <dialog id="custom-translation-instruction-dialog" class="modal custom-translation-instruction-modal">
@@ -763,6 +784,11 @@
               <span class="storage-summary-label">临时与碎片缓存</span>
               <strong id="storage-temp-bytes" class="storage-summary-value">-</strong>
               <span id="storage-temp-count" class="storage-summary-sub">0 个文件</span>
+            </div>
+            <div class="storage-summary-card" id="storage-runtime-card" hidden="hidden">
+              <span class="storage-summary-label">文献采集运行时</span>
+              <strong id="storage-runtime-bytes" class="storage-summary-value">-</strong>
+              <span id="storage-runtime-count" class="storage-summary-sub">ScanSci 运行时</span>
             </div>
             <div class="storage-summary-card" id="storage-orphaned-card" hidden="hidden">
               <span class="storage-summary-label">失效文献残留</span>

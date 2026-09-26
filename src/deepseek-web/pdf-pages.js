@@ -419,6 +419,94 @@
       }
     }
 
+    async runSubprocess(command, arguments_, timeout = 60000) {
+      const subprocess = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess;
+      const process = await subprocess.call({ command, arguments: arguments_ || [], stderr: "ignore" });
+      let stdout = "";
+      const readStdout = (async () => {
+        if (!process.stdout?.readString) return stdout;
+        while (true) {
+          const chunk = await process.stdout.readString();
+          if (!chunk) break;
+          stdout += chunk;
+        }
+        return stdout;
+      })();
+      const completed = Promise.all([process.wait(), readStdout]);
+      let timer = null;
+      const timeoutMarker = {};
+      const result = await Promise.race([
+        completed,
+        new Promise(resolve => { timer = setTimeout(() => resolve(timeoutMarker), Math.max(1000, Number(timeout || 60000))); })
+      ]);
+      if (timer) clearTimeout(timer);
+      if (result === timeoutMarker) {
+        try { await process.kill(0); } catch (_) {}
+        throw new Error("PDF渲染子进程超时");
+      }
+      return { exitCode: Number(result[0]?.exitCode ?? process.exitCode ?? 0), stdout: String(result[1] || stdout) };
+    }
+
+    async renderWithPoppler(runtime, pageNumber, options = {}, diagnostics = []) {
+      const attachmentID = Number(runtime?.attachmentID || 0);
+      if (!attachmentID) return null;
+      let command = "";
+      try {
+        const subprocess = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess;
+        command = await subprocess.pathSearch("pdftoppm.exe");
+      }
+      catch (_) {
+        try {
+          const subprocess = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess;
+          command = await subprocess.pathSearch("pdftoppm");
+        }
+        catch (_) {}
+      }
+      if (!command) {
+        diagnostics.push("当前系统没有可用的 pdftoppm，无法在无Reader时渲染PDF");
+        return null;
+      }
+      const context = await this.controller.attachmentContext(attachmentID);
+      const filePath = String(context?.filePath || "");
+      if (!filePath || !await IOUtils.exists(filePath)) {
+        diagnostics.push("PDF附件文件不存在，无法使用本地渲染器");
+        return null;
+      }
+      const page = Math.max(1, Math.trunc(Number(pageNumber) || 1));
+      const dpi = Math.max(36, Math.min(576, Math.round(Number(options.dpi || Number(options.scale || 2) * 72))));
+      const outputDir = PathUtils.join(this.storage.root, "agent", "render-tmp");
+      await this.storage.ensureDir(outputDir);
+      const stem = PathUtils.join(outputDir, `page-${attachmentID}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      const outputPath = `${stem}.png`;
+      try {
+        const result = await this.runSubprocess(command, ["-png", "-f", String(page), "-l", String(page), "-singlefile", "-r", String(dpi), filePath, stem]);
+        if (result.exitCode !== 0 || !await IOUtils.exists(outputPath)) throw new Error(`pdftoppm退出码 ${result.exitCode}`);
+        const bytes = await IOUtils.read(outputPath);
+        const width = bytes?.length >= 24 ? readUint32(bytes, 16) : 0;
+        const height = bytes?.length >= 24 ? readUint32(bytes, 20) : 0;
+        return {
+          page,
+          totalPages: 0,
+          mime: "image/png",
+          data: U.encodeBytesBase64(bytes),
+          width,
+          height,
+          scale: dpi / 72,
+          cropped: false,
+          via: "poppler",
+          fallback: true,
+          note: options.rect || options.bbox ? "本地渲染fallback未执行区域裁剪" : ""
+        };
+      }
+      catch (error) {
+        diagnostics.push(`本地PDF渲染失败: ${error?.message || error}`);
+        return null;
+      }
+      finally {
+        try { await IOUtils.remove(outputPath, { ignoreAbsent: true }); } catch (_) {}
+      }
+    }
+
     async renderAndCachePages(runtime, documentID, options = {}) {
       const profile = pageImageProfile(options.quality);
       const pagesDir = this.getPagesDir(documentID, profile);
@@ -555,6 +643,110 @@
         downgraded: false,
         via: iframeCtx ? "iframe" : "self"
       };
+    }
+
+    async renderPage(runtime, pageNumber, options = {}) {
+      const diagnostics = [];
+      const iframeCtx = this.getPreviewIframeContext(runtime, diagnostics);
+      let selfDoc = null;
+      if (!iframeCtx) selfDoc = await this.loadSelfDocument(runtime, diagnostics);
+      if (!iframeCtx && !selfDoc) {
+        const fallback = await this.renderWithPoppler(runtime, pageNumber, options, diagnostics);
+        if (fallback) return fallback;
+      }
+      const pdfDocument = iframeCtx?.pdfDocument || selfDoc;
+      const total = Number(pdfDocument?.numPages || 0);
+      const page = Math.max(1, Math.min(total, Math.trunc(Number(pageNumber) || 1)));
+      if (!total) throw new Error(diagnostics.join("；") || "尚未获取到PDF文档，无法渲染页面");
+      const scale = Math.max(.25, Math.min(8, Number(options.scale || options.dpi && Number(options.dpi) / 72 || 2)));
+      const rawRect = options.rect || options.bbox || null;
+      const rect = Array.isArray(rawRect)
+        ? rawRect.slice(0, 4).map(Number)
+        : [rawRect?.x, rawRect?.y, rawRect?.width, rawRect?.height].map(Number);
+      const hasRect = rect.length === 4 && rect.every(Number.isFinite) && rect[2] > 0 && rect[3] > 0;
+      const rectFormat = String(options.rectFormat || (options.bbox ? "xyxy" : "xywh"));
+      const payloadRect = hasRect ? rect : null;
+      let dataURL = "";
+      let width = 0;
+      let height = 0;
+      if (iframeCtx) {
+        const { cw } = iframeCtx;
+        const code = `
+          (async () => {
+            const pdfDocument = window.PDFViewerApplication && window.PDFViewerApplication.pdfDocument;
+            if (!pdfDocument) return JSON.stringify({ ok: false, error: "PDFViewerApplication.pdfDocument 不可用" });
+            const page = await pdfDocument.getPage(${page});
+            const viewport = page.getViewport({ scale: ${scale} });
+            const source = document.createElement("canvas");
+            source.width = Math.round(viewport.width);
+            source.height = Math.round(viewport.height);
+            const sourceContext = source.getContext("2d");
+            if (!sourceContext) return JSON.stringify({ ok: false, error: "iframe 画布 2D 上下文不可用" });
+            sourceContext.fillStyle = "#ffffff";
+            sourceContext.fillRect(0, 0, source.width, source.height);
+            await page.render({ canvasContext: sourceContext, viewport }).promise;
+            const raw = ${JSON.stringify(payloadRect)};
+            const format = ${JSON.stringify(rectFormat)};
+            let sx = 0, sy = 0, sw = source.width, sh = source.height;
+            if (raw) {
+              const normalized = raw.every(value => value >= 0 && value <= 1);
+              const x = normalized ? raw[0] * source.width : raw[0];
+              const y = normalized ? raw[1] * source.height : raw[1];
+              const third = normalized ? raw[2] * source.width : raw[2];
+              const fourth = normalized ? raw[3] * source.height : raw[3];
+              sx = x; sy = y;
+              sw = format === "xyxy" ? third - x : third;
+              sh = format === "xyxy" ? fourth - y : fourth;
+              sx = Math.max(0, Math.min(source.width - 1, sx));
+              sy = Math.max(0, Math.min(source.height - 1, sy));
+              sw = Math.max(1, Math.min(source.width - sx, sw));
+              sh = Math.max(1, Math.min(source.height - sy, sh));
+            }
+            const output = document.createElement("canvas");
+            output.width = Math.round(sw); output.height = Math.round(sh);
+            const outputContext = output.getContext("2d");
+            if (!outputContext) return JSON.stringify({ ok: false, error: "裁剪画布 2D 上下文不可用" });
+            outputContext.fillStyle = "#ffffff";
+            outputContext.fillRect(0, 0, output.width, output.height);
+            outputContext.drawImage(source, sx, sy, sw, sh, 0, 0, output.width, output.height);
+            return JSON.stringify({ ok: true, dataURL: output.toDataURL("image/png"), width: output.width, height: output.height });
+          })()
+        `;
+        const result = JSON.parse(await cw.eval(code));
+        if (!result.ok || !result.dataURL) throw new Error(result.error || "页面图像为空");
+        dataURL = result.dataURL;
+        width = Number(result.width || 0);
+        height = Number(result.height || 0);
+      }
+      else {
+          const win = runtime.window || runtime.browser?.ownerGlobal || Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
+          const doc = win?.document || runtime.browser?.contentDocument || document;
+        const source = await renderSinglePageToCanvas(selfDoc, page, doc, scale);
+        let output = source;
+        if (payloadRect) {
+          const normalized = payloadRect.every(value => value >= 0 && value <= 1);
+          const x = normalized ? payloadRect[0] * source.width : payloadRect[0];
+          const y = normalized ? payloadRect[1] * source.height : payloadRect[1];
+          const third = normalized ? payloadRect[2] * source.width : payloadRect[2];
+          const fourth = normalized ? payloadRect[3] * source.height : payloadRect[3];
+          const sx = Math.max(0, Math.min(source.width - 1, x));
+          const sy = Math.max(0, Math.min(source.height - 1, y));
+          const sw = Math.max(1, Math.min(source.width - sx, rectFormat === "xyxy" ? third - x : third));
+          const sh = Math.max(1, Math.min(source.height - sy, rectFormat === "xyxy" ? fourth - y : fourth));
+          output = doc.createElement("canvas");
+          output.width = Math.round(sw); output.height = Math.round(sh);
+          const context = output.getContext("2d");
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, output.width, output.height);
+          context.drawImage(source, sx, sy, sw, sh, 0, 0, output.width, output.height);
+        }
+        width = Number(output.width || 0);
+        height = Number(output.height || 0);
+        dataURL = output.toDataURL("image/png");
+        source.width = 1; source.height = 1;
+      }
+      const bytes = dataURLToUint8Array(dataURL);
+      return { page, totalPages: total, mime: "image/png", data: U.encodeBytesBase64(bytes), width, height, scale, cropped: Boolean(payloadRect), via: iframeCtx ? "iframe" : "self" };
     }
 
     async renderPagesToDirectory(runtime, outputDir, options = {}) {

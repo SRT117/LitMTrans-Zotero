@@ -1,4 +1,5 @@
 * text=auto eol=lf
+
 *.ico binary
 *.png binary
 *.ttf binary
@@ -6,3 +7,6 @@
 *.woff2 binary
 *.xpi binary
 *.zip binary
+
+# Third-party license text may contain upstream-significant trailing whitespace.
+assets/vendor/licenses/** whitespace=-blank-at-eol,-blank-at-eof

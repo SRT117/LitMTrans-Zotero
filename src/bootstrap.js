@@ -4,6 +4,25 @@ var LitMTransChromeHandle;
 var LitMTransDeepSeekActorError;
 var LitMTransDeepSeekActorFile;
 var LitMTransDeepSeekActorParentFile;
+
+function shutdownAgentAcquisitionForApplicationExit() {
+  recordAgentShutdownProbe("agentTestShutdownProbeQuitStarted");
+  recordAgentShutdownProbe("agentTestShutdownProbeAcquisitionAvailable", Boolean(LitMTransController?.agent?.facade?.acquisition));
+  try {
+    const pending = LitMTransController?.agent?.facade?.acquisition?.shutdown?.();
+    recordAgentShutdownProbe("agentTestShutdownProbeStopStarted", Boolean(pending));
+    pending?.catch?.(error => litmtransLog(`Agent acquisition 关闭失败: ${error?.message || error}`));
+  }
+  catch (error) { litmtransLog(`Agent acquisition 关闭失败: ${error?.message || error}`); }
+}
+
+var LitMTransAgentShutdownObserver = {
+  observe(_subject, topic) {
+    if (topic !== "quit-application-granted") return;
+    recordAgentShutdownProbe("agentTestShutdownProbeObserverReached");
+    shutdownAgentAcquisitionForApplicationExit();
+  }
+};
 // Explicit aliases: the bootstrap global is privileged but is not a regular
 // browser Window. Do not rely on version-specific implicit Cc/Ci globals.
 var Cc = Components.classes;
@@ -115,6 +134,7 @@ async function startup({ id, version, rootURI }) {
     "src/ported-core.js",
     "src/release-notes.js",
     "src/utils.js",
+    "src/diagram-cache.js",
     "src/caj-converter.js",
     "src/storage.js",
     "src/secrets.js",
@@ -134,7 +154,54 @@ async function startup({ id, version, rootURI }) {
     "src/deepseek-web/driver.js",
     "src/deepseek-web/provider.js",
     "src/updater.js",
-    "src/controller.js"
+    "src/controller.js",
+    "src/agent/contracts.js",
+    "src/agent/capability-policy.js",
+    "src/agent/task-manager.js",
+    "src/agent/background-ai.js",
+    "src/agent/external-approval.js",
+    "src/agent/zotero-write-coordinator.js",
+    "src/agent/mcp/http-request-reader.js",
+    "src/agent/item-formatter.js",
+    "src/agent/collection-formatter.js",
+    "src/agent/annotation-formatter.js",
+    "src/agent/library-service.js",
+    "src/agent/artifact-service.js",
+    "src/agent/research-service.js",
+    "src/agent/corpus-index.js",
+    "src/agent/export-service.js",
+    "src/agent/citation-service.js",
+    "src/agent/import-service.js",
+    "src/agent/literature/paper-card.js",
+    "src/agent/literature/paper-card-index.js",
+    "src/agent/literature/candidate-store.js",
+    "src/agent/literature/provider-base.js",
+    "src/agent/literature/openalex-provider.js",
+    "src/agent/literature/semantic-scholar-provider.js",
+    "src/agent/literature/crossref-provider.js",
+    "src/agent/literature/arxiv-provider.js",
+    "src/agent/literature/europepmc-provider.js",
+    "src/agent/literature/ranking.js",
+    "src/agent/literature/literature-graph.js",
+    "src/agent/literature/discovery-service.js",
+    "src/agent/acquisition/platform-descriptor.js",
+    "src/agent/acquisition/runtime-adapters.js",
+    "src/agent/acquisition/runtime-manifest.js",
+    "src/agent/acquisition/managed-runtime.js",
+    "src/agent/acquisition/pdf-validator.js",
+    "src/agent/acquisition/existing-attachment-provider.js",
+    "src/agent/acquisition/direct-oa-provider.js",
+    "src/agent/acquisition/scansci-mcp-client.js",
+    "src/agent/acquisition/scansci-institution.js",
+    "src/agent/acquisition/scansci-provider.js",
+    "src/agent/acquisition/acquisition-service.js",
+    "src/agent/review-workspace.js",
+    "src/agent/bootstrap-instruction.js",
+    "src/agent/facade.js",
+    "src/agent/mcp/tools.js",
+    "src/agent/mcp/protocol.js",
+    "src/agent/mcp/client-config.js",
+    "src/agent/mcp/server.js"
   ];
   for (const script of scripts) {
     Services.scriptloader.loadSubScript(rootURI + script);
@@ -154,11 +221,13 @@ async function startup({ id, version, rootURI }) {
     label: "LitMTrans",
     image: rootURI + "assets/icon.ico",
     src: rootURI + "src/preferences.xhtml",
-    scripts: [rootURI + "src/preferences.js"],
+    scripts: [rootURI + "src/settings-view-model.js", rootURI + "src/preferences.js"],
     stylesheets: [rootURI + "src/preferences.css"]
   });
 
   LitMTransController.addToAllWindows();
+  try { Services.obs.removeObserver(LitMTransAgentShutdownObserver, "quit-application-granted"); } catch (_) {}
+  Services.obs.addObserver(LitMTransAgentShutdownObserver, "quit-application-granted");
 }
 
 function onMainWindowLoad({ window }) {
@@ -167,16 +236,22 @@ function onMainWindowLoad({ window }) {
 
 function onMainWindowUnload({ window }) {
   LitMTransController?.removeFromWindow(window);
+  if (LitMTransController?.windows?.size) return;
+  recordAgentShutdownProbe("agentTestShutdownProbeMainWindowUnloadReached");
+  shutdownAgentAcquisitionForApplicationExit();
 }
 
 async function shutdown(data, reason) {
   litmtransLog("Shutting down");
+  recordAgentShutdownProbe("agentTestShutdownProbeControllerShutdownStarted");
   try {
     await LitMTransController?.shutdown(reason);
+    recordAgentShutdownProbe("agentTestShutdownProbeControllerShutdownCompleted");
   }
   catch (error) {
     Zotero.logError(error);
   }
+  try { Services.obs.removeObserver(LitMTransAgentShutdownObserver, "quit-application-granted"); } catch (_) {}
   try {
     delete Zotero.LitMTransController;
   }
@@ -207,6 +282,16 @@ async function shutdown(data, reason) {
     LitMTransChromeHandle.destruct();
     LitMTransChromeHandle = null;
   }
+}
+
+function recordAgentShutdownProbe(name, value = true) {
+  try {
+    if (LitMTrans?.Utils?.getPref?.("agentTestShutdownProbe", false)) {
+      LitMTrans.Utils.setPref(name, value);
+      Services.prefs.savePrefFile(null);
+    }
+  }
+  catch (_) {}
 }
 
 function uninstall() {

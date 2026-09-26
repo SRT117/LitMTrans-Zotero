@@ -176,7 +176,69 @@
 
   async function requestBytes(url, options = {}) {
     const response = await request("GET", url, { ...options, accept: "application/octet-stream,*/*" });
-    return new Uint8Array(await response.arrayBuffer());
+    const maxBytes = Number(options.maxBytes || 0);
+    const contentLength = Number(response.headers?.get?.("content-length") || 0) || 0;
+    if (maxBytes && contentLength > maxBytes) throw new HTTPError(`下载文件超过大小限制：${contentLength}`, 413);
+    if (!maxBytes || !response.body?.getReader) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (maxBytes && bytes.length > maxBytes) throw new HTTPError(`下载文件超过大小限制：${bytes.length}`, 413);
+      return bytes;
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        const chunk = new Uint8Array(next.value || []);
+        total += chunk.length;
+        if (total > maxBytes) {
+          try { await reader.cancel("size limit"); } catch (_) {}
+          throw new HTTPError(`下载文件超过大小限制：${total}`, 413);
+        }
+        chunks.push(chunk);
+      }
+    }
+    finally { try { reader.releaseLock?.(); } catch (_) {} }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    return bytes;
+  }
+
+  async function requestToFile(url, destination, options = {}) {
+    const response = await request("GET", url, { ...options, accept: "application/octet-stream,*/*" });
+    const maxBytes = Number(options.maxBytes || 0);
+    const contentLength = Number(response.headers?.get?.("content-length") || 0) || 0;
+    if (maxBytes && contentLength > maxBytes) throw new HTTPError(`下载文件超过大小限制：${contentLength}`, 413);
+    if (!response.body?.getReader || typeof IOUtils?.write !== "function") {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (maxBytes && bytes.length > maxBytes) throw new HTTPError(`下载文件超过大小限制：${bytes.length}`, 413);
+      await IOUtils.write(destination, bytes, { mode: "overwrite" });
+      return { path: destination, size: bytes.length };
+    }
+    await IOUtils.makeDirectory(PathUtils.parent(destination), { createAncestors: true, ignoreExisting: true });
+    const reader = response.body.getReader();
+    let total = 0;
+    let first = true;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        const chunk = new Uint8Array(next.value || []);
+        total += chunk.length;
+        if (maxBytes && total > maxBytes) {
+          try { await reader.cancel("size limit"); } catch (_) {}
+          try { await IOUtils.remove(destination, { ignoreAbsent: true }); } catch (_) {}
+          throw new HTTPError(`下载文件超过大小限制：${total}`, 413);
+        }
+        await IOUtils.write(destination, chunk, { mode: first ? "overwrite" : "append" });
+        first = false;
+      }
+    }
+    finally { try { reader.releaseLock?.(); } catch (_) {} }
+    return { path: destination, size: total };
   }
 
   async function uploadBytes(url, bytes, options = {}) {
@@ -773,6 +835,7 @@
     request,
     requestJSON,
     requestBytes,
+    requestToFile,
     uploadBytes,
     retry,
     extractOpenAIText,

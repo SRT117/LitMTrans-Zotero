@@ -283,7 +283,7 @@ async function testDeepSeekWebPagesCacheAndClearTemp() {
   assert(chatCat && chatCat.files >= 1, "session.json must be categorized into chat, not deepseekWeb");
   assert(!doc.categories.some(c => c.key === "model"), "document.json must not be categorized as a removable model cache");
   assert.equal(
-    summary.documentsPrimaryBytes + summary.cajActiveBytes + summary.orphanedCoreBytes + summary.tempTotalBytes + summary.edgeLocalTotalBytes,
+    summary.documentsPrimaryBytes + summary.cajActiveBytes + summary.orphanedCoreBytes + summary.tempTotalBytes + summary.edgeLocalTotalBytes + (summary.runtimeTotalBytes || 0),
     summary.totalBytes,
     "storage chart partitions must add up to the displayed total without overlap"
   );

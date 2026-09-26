@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "LitMTrans",
-  "version": "2.0.0",
-  "description": "文献解析、全文翻译、思维导图与文献对话",
+  "version": "2.1.0",
+  "description": "全文对照翻译、AI对话、思维导图、智能体MCP、Markdown转换、公式Latex提取",
   "author": "SRT117",
   "homepage_url": "https://github.com/SRT117/LitMTrans-Zotero",
   "icons": {

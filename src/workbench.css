@@ -1018,6 +1018,11 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .settings-card-chat { --settings-section: #8661c1; grid-column: 1; grid-row: 2; }
 .settings-card-translation { --settings-section: #168477; }
 .settings-card-reading { --settings-section: #a04f72; }
+.settings-card-agent { --settings-section: #3d7892; grid-column: 1 / -1; grid-row: 4; }
+.agent-client-config { align-items: end; }
+.agent-advanced { margin-top: 7px; border-top: 1px solid var(--line); }
+.agent-advanced > summary { padding-top: 6px; color: var(--muted); cursor: pointer; font-size: 11px; }
+.agent-advanced-body { display: grid; gap: 7px; padding-top: 6px; }
 .settings-section h3 { margin: 0 0 2px; font-size: 13px; }
 .settings-section-heading { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .settings-section-heading p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
@@ -1030,6 +1035,7 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .settings-advanced { grid-column: 1 / -1; grid-row: 3; min-width: 0; border-top: 1px solid var(--line); }
 .settings-grid.shared-chat-model .settings-card-model { grid-row: 1; }
 .settings-grid.shared-chat-model .settings-advanced { grid-row: 2; }
+.settings-grid.shared-chat-model .settings-card-agent { grid-row: 3; }
 .settings-advanced > summary { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 10px; list-style: none; border: 1px solid var(--line); border-top: 0; background: var(--surface-2); color: var(--ink-2); cursor: pointer; user-select: none; }
 .settings-advanced > summary::-webkit-details-marker { display: none; }
 .settings-advanced > summary::before { content: ""; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid currentColor; transition: transform .16s ease; }

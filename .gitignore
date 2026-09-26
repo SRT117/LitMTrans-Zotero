@@ -24,7 +24,18 @@ docs/deepseek-web-provider-upgrade-plan.md
 .patch
 .env
 .env.local
+.env.*
 .env.*.local
+!.env.example
+!.env.template
+/runtime/
+/.runtime/
+/cookies/
+/sessions/
+/session-storage/
+/cookies.json
+/session.json
+/runtime-state.json
 .mutagen.yml
 scripts/manage_feedbacks.py
 docs/feedback-management-guide.md
@@ -35,6 +46,13 @@ npm-debug.log*
 yarn-debug.log*
 coverage/
 tmp/
+.tmp*
+*.p12
+*.pfx
+*.key
+*.pem
+id_rsa
+id_ed25519
 
 # Operating system and editor temporary files
 .DS_Store
