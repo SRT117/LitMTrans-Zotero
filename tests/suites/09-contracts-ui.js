@@ -338,8 +338,16 @@ async function testStartupNoticeContracts() {
     assert.equal(prefValues.get("extensions.litmtrans.startupNoticeVersion"), "2.0.0");
     assert.equal(await controller.getStartupNotice(), null, "the same version must not reopen after the UI acknowledges it");
 
+    // 运行时内部自动生成的配置不应误判为老用户已有状态
     prefValues.clear();
+    prefValues.set("extensions.litmtrans.agentPort", 45123);
+    prefValues.set("extensions.litmtrans.deepseekWebCacheBytesInitialized", true);
     prefValues.set("extensions.litmtrans.promptLibraryInitialized", true);
+    const welcomeWithRuntimePrefs = await controller.getStartupNotice();
+    assert.equal(welcomeWithRuntimePrefs.type, "welcome", "a clean profile with runtime generated prefs must still receive the welcome guide");
+
+    prefValues.clear();
+    prefValues.set("extensions.litmtrans.targetLanguage", "繁体中文");
     const update = await controller.getStartupNotice();
     assert.equal(update.type, "update", "an existing profile must receive release notes");
     assert(update.entries.some(entry => String(entry).includes("首次使用指南")), "release notes must come from the bundled version entry");

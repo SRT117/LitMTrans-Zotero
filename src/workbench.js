@@ -4084,7 +4084,17 @@
     for (const entry of Array.isArray(notice.entries) ? notice.entries : []) {
       const item = document.createElement("li");
       if (typeof entry === "string") {
-        item.textContent = entry;
+        const mdMatch = entry.match(/^\s*(?:[-*]\s*)?(?:\*\*([^*]+)\*\*|__([^_]+)__)[：:]\s*(.*)$/);
+        if (mdMatch) {
+          const entryTitle = (mdMatch[1] || mdMatch[2] || "").trim();
+          const detail = (mdMatch[3] || "").trim();
+          const strong = document.createElement("strong");
+          strong.textContent = entryTitle;
+          item.appendChild(strong);
+          if (detail) item.append(`：${detail}`);
+        } else {
+          item.textContent = entry;
+        }
       }
       else {
         const entryTitle = String(entry?.title || "").trim();
@@ -9799,7 +9809,12 @@
         const gap = circumference - dash;
         const offset = -currentOffset;
         currentOffset += dash;
-        return `<circle class="donut-slice" data-key="${seg.key}" data-label="${seg.label}" data-size="${seg.formatted}" data-percent="${seg.percentFormatted}" cx="50" cy="50" r="${radius}" fill="none" stroke="${seg.color}" stroke-width="12" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 50 50)"><title>${seg.label}: ${seg.formatted} (${seg.percentFormatted})</title></circle>`;
+        const escapedKey = escapeHTML(seg.key);
+        const escapedLabel = escapeHTML(seg.label);
+        const escapedSize = escapeHTML(seg.formatted);
+        const escapedPercent = escapeHTML(seg.percentFormatted);
+        const titleText = escapeHTML(`${seg.label}: ${seg.formatted} (${seg.percentFormatted})`);
+        return `<circle class="donut-slice" data-key="${escapedKey}" data-label="${escapedLabel}" data-size="${escapedSize}" data-percent="${escapedPercent}" cx="50" cy="50" r="${radius}" fill="none" stroke="${seg.color}" stroke-width="12" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 50 50)"><title>${titleText}</title></circle>`;
       }).join("");
     }
 
@@ -9827,10 +9842,10 @@
 
     if (legendEl) {
       legendEl.innerHTML = segments.map(seg => `
-        <div class="storage-legend-item" data-key="${seg.key}" title="${seg.label}: ${seg.formatted}">
+        <div class="storage-legend-item" data-key="${escapeHTML(seg.key)}" title="${escapeHTML(seg.label)}: ${escapeHTML(seg.formatted)}">
           <span class="storage-legend-dot" style="background-color: ${seg.color}"></span>
           <span class="storage-legend-label">${escapeHTML(seg.label)}</span>
-          <span class="storage-legend-val">${seg.percentFormatted}</span>
+          <span class="storage-legend-val">${escapeHTML(seg.percentFormatted)}</span>
         </div>
       `).join("");
 
@@ -10106,7 +10121,7 @@
         <span>文献数据 (${filteredDocs.length} 篇${filter ? " / 过滤结果" : ""})</span>
       </div>
       <div class="tree-item-right">
-        <span class="tree-item-size">${currentStorageSummary.documentsTotalBytesFormatted}</span>
+        <span class="tree-item-size">${escapeHTML(currentStorageSummary.documentsTotalBytesFormatted || "0 B")}</span>
       </div>
     `;
 
@@ -10144,7 +10159,7 @@
             ${badges.join(" ")}
           </div>
           <div class="tree-item-right">
-            <span class="tree-item-size">${doc.totalBytesFormatted}</span>
+            <span class="tree-item-size">${escapeHTML(doc.totalBytesFormatted || "0 B")}</span>
             <div class="tree-item-actions">
               <button class="tree-action-link" type="button" data-action="open-doc" data-id="${escapeHTML(doc.id)}" title="在系统文件管理器中打开此文件夹">打开</button>
               <button class="tree-action-link danger" type="button" data-action="clear-doc" data-id="${escapeHTML(doc.id)}" data-title="${escapeHTML(doc.title)}" data-caj="${doc.isCAJ ? "1" : "0"}" title="清空这篇文献的全部解析和翻译缓存">清除</button>
@@ -10172,7 +10187,7 @@
               <span class="tree-sub-files">(${cat.files} 个文件)</span>
             </div>
             <div class="tree-sub-right">
-              <span class="tree-sub-size">${cat.formatted}</span>
+              <span class="tree-sub-size">${escapeHTML(cat.formatted || "0 B")}</span>
               ${cleanBtn}
             </div>
           `;
@@ -10268,7 +10283,7 @@
         <span>临时与碎片缓存 (PDF导出碎片与页面高清切图，可安全清空)</span>
       </div>
       <div class="tree-item-right">
-        <span class="tree-item-size">${currentStorageSummary.tempTotalBytesFormatted}</span>
+        <span class="tree-item-size">${escapeHTML(currentStorageSummary.tempTotalBytesFormatted || "0 B")}</span>
         <div class="tree-item-actions">
           <button class="tree-action-link" type="button" data-action="open-temp" title="打开临时目录">打开</button>
           <button class="tree-action-link danger" type="button" data-action="clean-temp" title="清空临时缓存">清空</button>
@@ -10303,7 +10318,7 @@
           <span>Edge 本地离线翻译引擎数据</span>
         </div>
         <div class="tree-item-right">
-          <span class="tree-item-size">${currentStorageSummary.edgeLocalTotalBytesFormatted}</span>
+          <span class="tree-item-size">${escapeHTML(currentStorageSummary.edgeLocalTotalBytesFormatted || "0 B")}</span>
           <div class="tree-item-actions">
             <button class="tree-action-link" type="button" data-action="open-edge" title="打开离线引擎目录">打开</button>
           </div>
@@ -10338,7 +10353,7 @@
           <span>文献检索与采集运行时 (ScanSci)</span>
         </div>
         <div class="tree-item-right">
-          <span class="tree-item-size">${currentStorageSummary.runtimeTotalBytesFormatted}</span>
+          <span class="tree-item-size">${escapeHTML(currentStorageSummary.runtimeTotalBytesFormatted || "0 B")}</span>
           <div class="tree-item-actions">
             <button class="tree-action-link" type="button" data-action="clean-runtime-cache" title="清理安装包残留与编译缓存">瘦身</button>
             <button class="tree-action-link" type="button" data-action="open-runtime" title="打开运行时目录">打开</button>

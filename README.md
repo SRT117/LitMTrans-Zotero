@@ -5,7 +5,7 @@
 <h1 align="center">LitMTrans</h1>
 
 <p align="center">
-  Zotero中的科研PDF解析、排版翻译与全文AI阅读
+  全文对照翻译、AI对话、思维导图、智能体MCP、Markdown转换、公式Latex提取
 </p>
 
 <p align="center">

@@ -145,7 +145,7 @@ auditNpmLicenses();
 if (manifest.manifest_version !== 2) fail("manifest_version must be 2");
 if (!manifest.applications?.zotero?.id) fail("applications.zotero.id is required");
 if (manifest.name !== "LitMTrans") fail("manifest name must be LitMTrans");
-if (manifest.description !== "文献解析、全文翻译、思维导图与文献对话") fail("manifest description is not the approved public copy");
+if (manifest.description !== "全文对照翻译、AI对话、思维导图、智能体MCP、Markdown转换、公式Latex提取") fail("manifest description is not the approved public copy");
 if (manifest.author !== "SRT117") fail("manifest author must be SRT117");
 if (manifest.applications.zotero.id !== "litmtrans@srt117.github.io") fail("public add-on ID changed");
 const releaseUpdateURL = process.env.LITMTRANS_RELEASE_UPDATE_URL || "";

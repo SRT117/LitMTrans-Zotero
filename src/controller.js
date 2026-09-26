@@ -391,10 +391,18 @@
       catch (_) {}
 
       const generatedPrefs = new Set([
+        "agentPort",
+        "agentTestNetworkStub",
+        "agentTestShutdownProbe",
         "announcementHistory",
+        "deepseekWebCacheAlertDismissedUntil",
+        "deepseekWebCacheBytes",
+        "deepseekWebCacheBytesInitialized",
         "dismissedAnnouncementIds",
         "lastUpdateCheckTime",
         "nonMultimodalModelMarks",
+        "promptLibraryInitialized",
+        "siliconflowThinkingCapabilities",
         "startupNoticeVersion"
       ]);
       try {
@@ -403,6 +411,11 @@
         const names = branch.getChildList("");
         return names.some(name => {
           if (generatedPrefs.has(name) || String(name).startsWith("migration.")) return false;
+          if (name === "promptLibrary") {
+            const raw = U.getPref("promptLibrary", "");
+            const defaults = JSON.stringify(LitMTrans.Constants?.DEFAULT_PROMPT_LIBRARY || []);
+            if (!raw || raw === defaults) return false;
+          }
           return Services.prefs.prefHasUserValue(`${branchName}${name}`);
         });
       }
