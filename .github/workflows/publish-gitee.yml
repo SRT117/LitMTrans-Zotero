@@ -65,6 +65,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config http.postBuffer 524288000
           git remote add gitee "https://gitee.com/$GITEE_REPOSITORY.git"
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0="http.https://gitee.com/.extraheader"
