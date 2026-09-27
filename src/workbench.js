@@ -1678,7 +1678,9 @@
       node,
       layoutBlockHTML(
         block,
-        useTranslation ? (translatedText || String(block.text || "")) : (block.sourceHTML ? "" : String(block.text || "")),
+        useTranslation
+          ? (translatedText || (block.sourceOnly && block.sourceHTML ? "" : String(block.text || "")))
+          : (block.sourceHTML ? "" : String(block.text || "")),
         useTranslation
       )
     );

@@ -33,6 +33,12 @@ async function testLayout() {
             lines: [{ spans: [{ type: "text", content: "Open Access This article is licensed." }] }]
           }]
         }
+      ],
+      discarded_blocks: [
+        { type: "header", bbox: [50, 12, 250, 28], lines: [{ spans: [{ type: "text", content: "Journal header" }] }] },
+        { type: "footer", bbox: [50, 760, 300, 776], lines: [{ spans: [{ type: "text", content: "Journal footer 4/18" }] }] },
+        { type: "footer", bbox: [580, 200, 590, 500], lines: [{ spans: [{ type: "text", content: "Side label" }] }] },
+        { type: "aside_text", bbox: [580, 300, 590, 500], lines: [{ spans: [{ type: "text", content: "Watermark" }] }] }
       ]
     }]
   };
@@ -93,6 +99,14 @@ async function testLayout() {
   assert.equal(model.pages[0].blocks[2].kind, "formula", "equation blocks with an image crop must remain semantic formulas");
   assert.equal(model.pages[0].blocks[2].imageURL, "", "formula crops must not replace the TeX renderer");
   assert.equal(model.pages[0].blocks[3].imageURL, "resource://litmtrans-data/1-ABC/assets/figure.png");
+  const furniture = model.pages[0].restoration.absoluteBlocks.filter(block => block.sourceOnly);
+  assert.deepEqual(furniture.map(block => block.text), ["Journal header", "Journal footer 4/18"],
+    "only horizontal page headers and footers must be restored, never side text");
+  assert.deepEqual(furniture.map(block => block.type), ["page_header", "page_footer"]);
+  assert(furniture.every(block => block.sourceHTML && !block.translatedText),
+    "restored page furniture must reuse its original text without changing translation records");
+  assert(model.pages[0].restoration.absoluteBlocks.some(block => block.sourceOnly),
+    "page furniture must enter the blocks before body fitting");
   const restoredFormula = model.pages[0].restoration.absoluteBlocks.find(block => block.kind === "formula");
   assert(restoredFormula, "restored layout must retain the equation as a formula block");
   assert.equal(restoredFormula.imageURL, "", "restored formula must not emit an image element");
@@ -1425,8 +1439,8 @@ function testLayoutCapacityUsesTranslatedText() {
   assert.equal(LayoutHelpers.fixedLayoutFontSize("chart_caption"), 7.6);
   assert.equal(LayoutHelpers.fixedLayoutFontSize("table_footnote"), 7.2);
   assert.equal(LayoutHelpers.fixedLayoutFontSize("image_footnote"), 7.2);
-  assert(layout.includes("cached.version === 11"));
-  assert(layout.includes("version: 11"));
+  assert(layout.includes("cached.version === 13"));
+  assert(layout.includes("version: 13"));
   assert(layout.includes("String(record?.translatedText || text)"),
     "absolute title and caption estimates must see the text that is rendered");
 }
@@ -1535,8 +1549,8 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the old 3,000-pass whole-document final collision scan must not return");
   assert(layoutCode.includes("if (isMainTitle) {\n        // A title remains the article's main title"),
     "main-title classification must not depend on whether a publisher first page exposes a body stream");
-  assert(layoutCode.includes("cached.version === 11"),
-    "models compiled before nomenclature-row paragraph restoration must be rebuilt");
+  assert(layoutCode.includes("cached.version === 13"),
+    "models compiled before page furniture restoration must be rebuilt");
   assert(!workbenchCode.includes("function runPythonParityFit("),
     "the previous parity-engine name must not leave a second callable engine behind");
   assert(workbenchCode.includes("function rectUnion(rects)"),

@@ -1868,6 +1868,29 @@
     return output;
   }
 
+  function discardedPageVisuals(page, resolveAsset) {
+    const pageFurnitureTypes = new Set([
+      "header", "page_header", "footer", "page_footer", "page_number"
+    ]);
+    const pageHeight = Number(page?.page_size?.[1] || 0);
+    const blocks = (Array.isArray(page?.discarded_blocks) ? page.discarded_blocks : [])
+      .filter(block => pageFurnitureTypes.has(String(block?.type || "").toLowerCase()));
+    return absoluteVisuals(blocks, new Map(), resolveAsset).map(block => ({
+      ...block,
+      type: ({ header: "page_header", footer: "page_footer", footnote: "page_footnote" })[block.type] || block.type,
+      sourceOnly: true
+    })).filter(block => isPageFurniture(block, pageHeight));
+  }
+
+  function isPageFurniture(block, pageHeight) {
+    const bbox = validBBox(block?.bbox);
+    if (!bbox || !(pageHeight > 0) || !String(block?.text || "").trim()) return false;
+    const [left, top, right, bottom] = bbox;
+    if (right - left <= (bottom - top) * 1.2) return false;
+    if (block.type === "page_header") return bottom <= pageHeight * .16;
+    return top >= pageHeight * .84;
+  }
+
   function modelItemTextHTML(item) {
     const direct = item?.content ?? item?.text;
     if (direct != null && String(direct).trim()) return safeLayoutTextToHTML(String(direct).trim());
@@ -2187,7 +2210,7 @@
         const cached = await this.storage.readJSON(compiledPath, null);
         if (
           cached &&
-          cached.version === 11 &&
+          cached.version === 13 &&
           cached.translationsHash === translationsHash &&
           currentFingerprint &&
           cached.sourceFingerprint === currentFingerprint &&
@@ -2325,7 +2348,8 @@
         Math.min(1.28, Math.max(1.22, inferredBodyStyle[1] + .06))
       ];
       const referenceStyle = solveUniformStreamStyle(referenceStreams, true, ocrBoxesByPage);
-      for (const page of restored) {
+      for (let index = 0; index < restored.length; index++) {
+        const page = restored[index];
         // Solve the document-wide body/reference baseline from the restored
         // boxes before widening narrow columns. Expanding first increases
         // capacity and changes the shared starting font.
@@ -2333,16 +2357,33 @@
           expandNarrowStream(stream, page.columnRights, page.barriers);
         }
         retreatIntrudingColumnBoundaries(page.streams);
+        const discardedVisuals = discardedPageVisuals(pages[index], resolveAsset);
+        page.absoluteBlocks.push(...discardedVisuals.filter(block => !page.absoluteBlocks.some(existing =>
+          existing.type === block.type && existing.text === block.text
+          && bboxContainedOverlapRatio(existing.bbox, block.bbox) >= .72
+        )));
         const occupied = [
           ...page.streams.map(stream => stream.bbox),
           ...page.absoluteBlocks.map(block => block.bbox),
         ].filter(validBBox);
-        page.absoluteBlocks.push(...modelFallbackVisuals(
+        const modelVisuals = modelFallbackVisuals(
           page.modelPage,
           page.pageWidth,
           page.pageHeight,
           occupied,
-        ));
+        );
+        page.absoluteBlocks.push(...modelVisuals.filter(block =>
+          ["page_header", "page_footer", "page_number"].includes(block.type)
+          && isPageFurniture(block, page.pageHeight)
+          && !page.absoluteBlocks.some(existing => existing.text === block.text
+            && bboxContainedOverlapRatio(existing.bbox, block.bbox) >= .72)
+        ).map(block => ({ ...block, sourceOnly: true })));
+        page.absoluteBlocks.push(...modelVisuals.filter(block =>
+          !["page_header", "page_footer", "page_number"].includes(block.type)
+          && !page.absoluteBlocks.some(existing =>
+          existing.type === block.type && existing.text === block.text
+          && bboxContainedOverlapRatio(existing.bbox, block.bbox) >= .72
+          )));
         for (const stream of page.streams) {
           const refsOnly = (stream.items || []).every(item => item.kind === "ref_text");
           const body = !refsOnly && ["body_candidate", "merged_body", "body_inherited"].includes(stream.debugRole);
@@ -2396,8 +2437,8 @@
       try {
         U.throwIfAborted(signal);
         await this.storage.writeJSON(compiledPath, {
-          // Version 11 adds per-row paragraphs for nomenclature panels.
-          version: 11,
+          // 第 13 版在排版迭代前补回页眉页脚，不修改译文数据。
+          version: 13,
           sourceFingerprint,
           assetMapHash,
           translationsHash,
