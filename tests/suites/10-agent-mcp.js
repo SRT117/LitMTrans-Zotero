@@ -317,6 +317,7 @@ module.exports = function createSuite(env) {
       assert(translationOptions.every(options => options.engine === "api" && options.aiMode === "api"));
       assert.equal(prefValues.get(chatEnginePref), "deepseek_web");
       assert.equal(context.LitMTrans.ControllerInternals.webEngineSelected({ engine: "api", aiMode: "api" }), true);
+      assert.equal(context.LitMTrans.ControllerInternals.webEngineSelected(sentOptions), false);
     }
     finally {
       if (previousChatEngine === undefined) prefValues.delete(chatEnginePref);

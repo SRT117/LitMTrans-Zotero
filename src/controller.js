@@ -10,6 +10,7 @@
   LitMTrans.FEEDBACK_FORM_URL = "https://acnndsd03tis.feishu.cn/share/base/form/shrcn3I4qD4YIyhM6H1KAEQ59zb";
 
   function webEngineSelected(payload = {}) {
+    if (payload.forceAPI === true) return false;
     return U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web"
       || payload.engine === "deepseek_web"
       || payload.aiMode === "web";
@@ -446,12 +447,6 @@
         calloutTitle: "开始使用",
         calloutText: "新用户只需先配置免费的MinerU令牌；默认网页模式无需配置API。"
       };
-      const notes = LitMTrans.ReleaseNotes?.[version] || {};
-      const entries = (Array.isArray(notes.entries) ? notes.entries : [])
-        .map(item => typeof item === "string"
-          ? item.trim()
-          : { title: String(item?.title || "").trim(), detail: String(item?.detail || "").trim() })
-        .filter(item => typeof item === "string" ? item : item.title || item.detail);
       if (!previousVersion && !await this.hasExistingUserState()) {
         return {
           type: "welcome",
@@ -463,12 +458,27 @@
         };
       }
 
+      const compare = LitMTrans.Updater?.compareVersions || ((a, b) =>
+        String(a).localeCompare(String(b), undefined, { numeric: true }));
+      const versions = Object.keys(LitMTrans.ReleaseNotes || {})
+        .filter(noteVersion => compare(noteVersion, version) <= 0
+          && (!previousVersion || compare(noteVersion, previousVersion) > 0))
+        .sort((a, b) => compare(b, a));
+      const sections = versions.map(noteVersion => {
+        const notes = LitMTrans.ReleaseNotes[noteVersion];
+        const entries = (Array.isArray(notes.entries) ? notes.entries : [])
+          .map(item => typeof item === "string"
+            ? item.trim()
+            : { title: String(item?.title || "").trim(), detail: String(item?.detail || "").trim() })
+          .filter(item => typeof item === "string" ? item : item.title || item.detail);
+        return { version: noteVersion, entries };
+      }).filter(section => section.entries.length);
+
       return {
         type: "update",
         version,
-        title: String(notes.title || `本次更新 · v${version}`),
-        date: String(notes.date || ""),
-        entries: entries.length ? entries : ["本版本暂无额外更新说明。"]
+        title: `LitMTrans ${version}`,
+        sections: sections.length ? sections : [{ version, entries: ["本版本暂无额外更新说明。"] }]
       };
     }
 
@@ -5410,7 +5420,7 @@
           return this.withOperation(runtime, "translate", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
             const prefTransProvider = U.getPref("translationProvider", "");
-            const isWeb = webEngineSelected(payload) || prefTransProvider === "deepseek_web";
+            const isWeb = !payload.forceAPI && (webEngineSelected(payload) || prefTransProvider === "deepseek_web");
             const engine = isWeb ? "deepseek_web" : (payload.engine || undefined);
             const probeMsg = `[探针2-控制器] translate: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });
@@ -5422,7 +5432,7 @@
           return this.withOperation(runtime, "layout", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
             const prefTransProvider = U.getPref("translationProvider", "");
-            const isWeb = webEngineSelected(payload) || prefTransProvider === "deepseek_web";
+            const isWeb = !payload.forceAPI && (webEngineSelected(payload) || prefTransProvider === "deepseek_web");
             const engine = isWeb ? "deepseek_web" : (payload.engine || undefined);
             const probeMsg = `[探针2-控制器] translate-layout: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });

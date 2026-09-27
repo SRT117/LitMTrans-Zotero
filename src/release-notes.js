@@ -3,7 +3,7 @@
 
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
 
-  // 发布新版本时，在 ReleaseNotes 中增加或修改对应版本的条目。
+  // 发布新版本时保留历史条目，以便跨版本升级时合并展示。
   LitMTrans.StartupContent = Object.freeze({
     welcome: Object.freeze({
       title: "欢迎使用LitMTrans",
@@ -18,6 +18,15 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.1": Object.freeze({
+      title: "LitMTrans 2.1.1",
+      entries: Object.freeze([
+        Object.freeze({ title: "排版译文", detail: "补回原文页眉、页脚和页码；调整字号后保持排版结果与字号控制一致。" }),
+        Object.freeze({ title: "翻译模式", detail: "修复 Edge 本地翻译、联网免费机翻的模式选择；网页模式与其他翻译方式的任务和设置互不串用。" }),
+        Object.freeze({ title: "AI 助手连接", detail: "连接配置中的 MCP 服务名称改为 zotero-litmtrans，便于识别；修正相关连接说明。" }),
+        Object.freeze({ title: "版本说明", detail: "跳过多个版本升级时，按版本展示尚未看过的更新内容。" })
+      ])
+    }),
     "2.1.0": Object.freeze({
       title: "LitMTrans 2.1.0",
       entries: Object.freeze([

@@ -4090,39 +4090,48 @@
     if (title) title.textContent = notice.title || "本次更新";
     if (subtitle) subtitle.textContent = notice.date ? `版本 v${notice.version} · ${notice.date}` : `版本 v${notice.version}`;
     body.replaceChildren();
+    const sections = Array.isArray(notice.sections) ? notice.sections : [{ version: notice.version, entries: notice.entries }];
     const intro = document.createElement("p");
-    intro.textContent = "感谢继续使用LitMTrans，以下是本次版本的主要变化：";
+    intro.textContent = sections.length > 1 ? "以下是尚未展示的版本更新：" : "本次更新内容：";
     body.appendChild(intro);
-    const list = document.createElement("ul");
-    list.className = "startup-notice-list";
-    for (const entry of Array.isArray(notice.entries) ? notice.entries : []) {
-      const item = document.createElement("li");
-      if (typeof entry === "string") {
-        const mdMatch = entry.match(/^\s*(?:[-*]\s*)?(?:\*\*([^*]+)\*\*|__([^_]+)__)[：:]\s*(.*)$/);
-        if (mdMatch) {
-          const entryTitle = (mdMatch[1] || mdMatch[2] || "").trim();
-          const detail = (mdMatch[3] || "").trim();
-          const strong = document.createElement("strong");
-          strong.textContent = entryTitle;
-          item.appendChild(strong);
-          if (detail) item.append(`：${detail}`);
-        } else {
-          item.textContent = entry;
-        }
+    for (const section of sections) {
+      if (sections.length > 1) {
+        const heading = document.createElement("h3");
+        heading.className = "startup-notice-version";
+        heading.textContent = `v${section.version}`;
+        body.appendChild(heading);
       }
-      else {
-        const entryTitle = String(entry?.title || "").trim();
-        const detail = String(entry?.detail || "").trim();
-        if (entryTitle) {
-          const strong = document.createElement("strong");
-          strong.textContent = entryTitle;
-          item.appendChild(strong);
+      const list = document.createElement("ul");
+      list.className = "startup-notice-list";
+      for (const entry of Array.isArray(section.entries) ? section.entries : []) {
+        const item = document.createElement("li");
+        if (typeof entry === "string") {
+          const mdMatch = entry.match(/^\s*(?:[-*]\s*)?(?:\*\*([^*]+)\*\*|__([^_]+)__)[：:]\s*(.*)$/);
+          if (mdMatch) {
+            const entryTitle = (mdMatch[1] || mdMatch[2] || "").trim();
+            const detail = (mdMatch[3] || "").trim();
+            const strong = document.createElement("strong");
+            strong.textContent = entryTitle;
+            item.appendChild(strong);
+            if (detail) item.append(`：${detail}`);
+          } else {
+            item.textContent = entry;
+          }
         }
-        if (detail) item.append(`${entryTitle ? "：" : ""}${detail}`);
+        else {
+          const entryTitle = String(entry?.title || "").trim();
+          const detail = String(entry?.detail || "").trim();
+          if (entryTitle) {
+            const strong = document.createElement("strong");
+            strong.textContent = entryTitle;
+            item.appendChild(strong);
+          }
+          if (detail) item.append(`${entryTitle ? "：" : ""}${detail}`);
+        }
+        if (item.textContent) list.appendChild(item);
       }
-      if (item.textContent) list.appendChild(item);
+      body.appendChild(list);
     }
-    body.appendChild(list);
   }
 
   function finishStartupNotice(options = {}) {

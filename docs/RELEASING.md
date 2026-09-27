@@ -128,7 +128,7 @@ https://github.com/syt2/zotero-addons-scraper
 
 1. 同步修改 `manifest.json`、`package.json` 和 `package-lock.json` 的版本号。
 2. 更新 `CHANGELOG.md`。
-3. 在 `src/release-notes.js` 中更新对应版本的工作台更新条目，确保离线也能展示本次变化。
+3. 在 `src/release-notes.js` 中增加对应版本的工作台更新条目，并保留历史版本；跨版本升级的用户会看到尚未展示的所有版本说明。
 4. 运行 `npm ci`、`npm run validate` 和 `npm run build:windows`。
 5. 在隔离 Zotero profile 中完成必要的手工测试。
 6. 提交并推送代码，再推送与版本一致的标签，例如 `v2.0.1`。

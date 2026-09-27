@@ -978,6 +978,8 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .startup-notice-callout strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 13px; }
 .startup-notice-callout p { margin: 0; }
 .startup-notice-list { margin: 0; padding-inline-start: 22px; color: var(--ink-2); font-size: 13px; line-height: 1.7; }
+.startup-notice-version { margin: 18px 0 8px; color: var(--ink); font-size: 14px; }
+.startup-notice-body > .startup-notice-version:first-of-type { margin-top: 0; }
 .startup-notice-list li + li { margin-top: 10px; }
 .startup-notice-list strong { color: var(--ink); }
 .startup-notice-tutorial { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 16px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--accent) 13%, var(--surface)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }

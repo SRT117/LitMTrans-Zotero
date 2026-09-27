@@ -441,6 +441,8 @@ function testWebPreferenceOverridesStaleAPIRequest() {
   try {
     prefValues.set(prefName, "deepseek_web");
     assert.equal(ControllerInternals.webEngineSelected({ engine: "api", aiMode: "api" }), true);
+    assert.equal(ControllerInternals.webEngineSelected({ engine: "api", aiMode: "api", forceAPI: true }), false,
+      "external background requests must remain on their explicit API transport");
     prefValues.set(prefName, "api");
     assert.equal(ControllerInternals.webEngineSelected({ engine: "deepseek_web" }), true);
     assert.equal(ControllerInternals.webEngineSelected({ aiMode: "web" }), true);

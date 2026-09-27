@@ -93,6 +93,17 @@ async function testLayout() {
   const reusedRevision = await service.ensureRevision(documentID);
   assert.equal(rawReadCount, 0, "a durable layout revision must avoid later layout.json reads");
   assert.equal(reusedRevision.assetMapHash, revision.assetMapHash);
+  const legacyCompiled = { version: 11, model: { pages: [{ blocks: [] }] } };
+  files.set("/data/1-ABC/compiled-model.json", legacyCompiled);
+  rawReadCount = 0;
+  await service.buildModel(documentID, translations, null, revision);
+  assert.equal(rawReadCount, 1, "an older compiled model must be regenerated from the saved layout");
+  assert.deepEqual(files.get("/data/1-ABC/compiled-model.json"), legacyCompiled,
+    "upgrading must leave the older compiled model untouched");
+  assert.equal(files.get("/data/1-ABC/compiled-model.v13.json")?.version, 13);
+  rawReadCount = 0;
+  await service.buildModel(documentID, translations, null, revision);
+  assert.equal(rawReadCount, 0, "the upgraded sidecar must avoid repeated layout reads");
   assert.equal(model.pages.length, 1);
   assert.equal(model.pages[0].blocks[0].id, "p001_b0001");
   assert.equal(model.pages[0].blocks[0].translatedText, "译文标题");

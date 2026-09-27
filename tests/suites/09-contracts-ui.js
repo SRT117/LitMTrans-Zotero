@@ -350,7 +350,20 @@ async function testStartupNoticeContracts() {
     prefValues.set("extensions.litmtrans.targetLanguage", "繁体中文");
     const update = await controller.getStartupNotice();
     assert.equal(update.type, "update", "an existing profile must receive release notes");
-    assert(update.entries.some(entry => String(entry).includes("首次使用指南")), "release notes must come from the bundled version entry");
+    assert(update.sections[0].entries.some(entry => String(entry).includes("首次使用指南")), "release notes must come from the bundled version entry");
+
+    const nextController = context.LitMTrans.createController({ id: "litmtrans@local", version: "2.1.1", rootURI: "file:///plugin/" });
+    const unknownHistory = await nextController.getStartupNotice();
+    assert.deepEqual(unknownHistory.sections.map(section => section.version), ["2.1.1", "2.1.0", "2.0.0"], "existing profiles without a notice record must receive retained history");
+    prefValues.set("extensions.litmtrans.startupNoticeVersion", "2.0.0");
+    const skipped = await nextController.getStartupNotice();
+    assert.deepEqual(skipped.sections.map(section => section.version), ["2.1.1", "2.1.0"], "skipped releases must appear newest first");
+    assert.equal(nextController.markStartupNoticeSeen("2.1.1"), true);
+    assert.equal(await nextController.getStartupNotice(), null, "acknowledged release notes must not reopen");
+
+    prefValues.set("extensions.litmtrans.startupNoticeVersion", "2.1.0");
+    const direct = await nextController.getStartupNotice();
+    assert.deepEqual(direct.sections.map(section => section.version), ["2.1.1"], "direct upgrades should show only the new release");
   }
   finally {
     prefValues.clear();

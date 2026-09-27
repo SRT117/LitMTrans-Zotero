@@ -2206,19 +2206,24 @@
         typeof knownRevision === "object" ? knownRevision?.assetMapHash : ""
       );
       const compiledPath = this.storage.path(documentID, "compiled-model.json");
+      const upgradedCompiledPath = this.storage.path(documentID, "compiled-model.v13.json");
+      let legacyCompiledModel = false;
       try {
-        const cached = await this.storage.readJSON(compiledPath, null);
-        if (
-          cached &&
-          cached.version === 13 &&
-          cached.translationsHash === translationsHash &&
-          currentFingerprint &&
-          cached.sourceFingerprint === currentFingerprint &&
-          knownAssetMapHash &&
-          cached.assetMapHash === knownAssetMapHash &&
-          cached.model?.pages?.length
-        ) {
-          return cached.model;
+        for (const path of [upgradedCompiledPath, compiledPath]) {
+          const cached = await this.storage.readJSON(path, null);
+          if (path === compiledPath && cached && cached.version !== 13) legacyCompiledModel = true;
+          if (
+            cached &&
+            cached.version === 13 &&
+            cached.translationsHash === translationsHash &&
+            currentFingerprint &&
+            cached.sourceFingerprint === currentFingerprint &&
+            knownAssetMapHash &&
+            cached.assetMapHash === knownAssetMapHash &&
+            cached.model?.pages?.length
+          ) {
+            return cached.model;
+          }
         }
       } catch (_) {}
 
@@ -2436,8 +2441,9 @@
 
       try {
         U.throwIfAborted(signal);
-        await this.storage.writeJSON(compiledPath, {
-          // 第 13 版在排版迭代前补回页眉页脚，不修改译文数据。
+        const preserveCompiledModel = legacyCompiledModel || Boolean(await this.storage.exists?.(compiledPath));
+        await this.storage.writeJSON(preserveCompiledModel ? upgradedCompiledPath : compiledPath, {
+          // 第 13 版在排版迭代前补回页眉页脚，旧缓存原样保留。
           version: 13,
           sourceFingerprint,
           assetMapHash,
