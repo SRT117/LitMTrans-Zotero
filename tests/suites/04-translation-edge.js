@@ -435,6 +435,38 @@ async function testWebModeOverridesMachineProvider() {
   }
 }
 
+function testWebPreferenceOverridesStaleAPIRequest() {
+  const prefName = "extensions.litmtrans.chatEngine";
+  const previous = prefValues.get(prefName);
+  try {
+    prefValues.set(prefName, "deepseek_web");
+    assert.equal(ControllerInternals.webEngineSelected({ engine: "api", aiMode: "api" }), true);
+    prefValues.set(prefName, "api");
+    assert.equal(ControllerInternals.webEngineSelected({ engine: "deepseek_web" }), true);
+    assert.equal(ControllerInternals.webEngineSelected({ aiMode: "web" }), true);
+    assert.equal(ControllerInternals.webEngineSelected({ engine: "api", aiMode: "api" }), false);
+  }
+  finally {
+    if (previous === undefined) prefValues.delete(prefName);
+    else prefValues.set(prefName, previous);
+  }
+}
+
+async function testWebCompletionNeverUsesMachineOrAPITransport() {
+  const llm = new LLMService({
+    getLLMKey: () => { throw new Error("网页模式不应读取 API 密钥"); }
+  });
+  llm.resolveConfig = () => { throw new Error("网页模式不应解析 API 配置"); };
+  llm.completeOnce = () => { throw new Error("网页模式不应请求 API"); };
+  llm.setWebProvider({ complete: async () => ({ text: "网页回答", reasoning: "" }) });
+  for (const provider of ["edge_local", "free_machine"]) {
+    const result = await llm.complete([{ role: "user", content: "翻译" }], {
+      purpose: "translation", provider, engine: "deepseek_web", aiMode: "web"
+    });
+    assert.equal(result.text, "网页回答");
+  }
+}
+
 async function testWebMachineRulesAndSettingsTransitions() {
   assert.equal(U.normalizeProviderID("google_free"), "free_machine");
   assert.equal(U.normalizeProviderID("bing_free"), "free_machine");
@@ -942,6 +974,8 @@ async function testEdgeLocalTranslationQualityHardening() {
     testEdgeLocalTranslationMigration,
     testWebMachineTranslationKeepsConfiguredProvider,
     testWebModeOverridesMachineProvider,
+    testWebPreferenceOverridesStaleAPIRequest,
+    testWebCompletionNeverUsesMachineOrAPITransport,
     testWebMachineRulesAndSettingsTransitions,
     testFullContextResume,
     testChunkedStreamingConcurrencyContinuationAndCache,

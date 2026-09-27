@@ -9,6 +9,12 @@
   const DIAGRAM_CACHE_MAX_CHARS = LitMTrans.DiagramCache.MAX_CHARS;
   LitMTrans.FEEDBACK_FORM_URL = "https://acnndsd03tis.feishu.cn/share/base/form/shrcn3I4qD4YIyhM6H1KAEQ59zb";
 
+  function webEngineSelected(payload = {}) {
+    return U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web"
+      || payload.engine === "deepseek_web"
+      || payload.aiMode === "web";
+  }
+
   function diagramCacheTaskType(value) {
     return LitMTrans.DiagramCache.taskType(value);
   }
@@ -5404,7 +5410,7 @@
           return this.withOperation(runtime, "translate", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
             const prefTransProvider = U.getPref("translationProvider", "");
-            const isWeb = payload.engine === "deepseek_web" || payload.aiMode === "web" || prefTransProvider === "deepseek_web";
+            const isWeb = webEngineSelected(payload) || prefTransProvider === "deepseek_web";
             const engine = isWeb ? "deepseek_web" : (payload.engine || undefined);
             const probeMsg = `[探针2-控制器] translate: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });
@@ -5416,7 +5422,7 @@
           return this.withOperation(runtime, "layout", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
             const prefTransProvider = U.getPref("translationProvider", "");
-            const isWeb = payload.engine === "deepseek_web" || payload.aiMode === "web" || prefTransProvider === "deepseek_web";
+            const isWeb = webEngineSelected(payload) || prefTransProvider === "deepseek_web";
             const engine = isWeb ? "deepseek_web" : (payload.engine || undefined);
             const probeMsg = `[探针2-控制器] translate-layout: doc=${context.documentID}, engine=${engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(runtime)}, hasBrowser=${Boolean(runtime?.deepSeekBrowser)}`;
             emit?.({ type: "log", message: probeMsg });
@@ -5524,10 +5530,7 @@
         case "chat-send":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const prefEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web" ? "deepseek_web" : "api";
-            const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
-              ? "deepseek_web"
-              : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
+            const engine = webEngineSelected(payload) ? "deepseek_web" : "api";
             const targetSessionID = engine === "deepseek_web"
               ? this.chat.documentSessionID("web")
               : (payload.sessionID || this.chat.documentSessionID());
@@ -5551,10 +5554,7 @@
         case "chat-resend":
           return this.withOperation(runtime, "chat", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
-            const prefEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web" ? "deepseek_web" : "api";
-            const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
-              ? "deepseek_web"
-              : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
+            const engine = webEngineSelected(payload) ? "deepseek_web" : "api";
             const targetSessionID = engine === "deepseek_web"
               ? this.chat.documentSessionID("web")
               : (payload.sessionID || this.chat.documentSessionID());
@@ -5575,10 +5575,7 @@
           const message = session.messages.find(row => row.id === payload.messageID);
           if (message?.role === "user") {
             return this.withOperation(runtime, "chat", async (signal, emit) => {
-              const prefEngine = U.getPref("chatEngine", DEFAULT_CHAT_ENGINE) === "deepseek_web" ? "deepseek_web" : "api";
-              const engine = (payload.engine === "deepseek_web" || payload.aiMode === "web")
-                ? "deepseek_web"
-                : ((payload.engine === "api" || payload.aiMode === "api") ? "api" : prefEngine);
+              const engine = webEngineSelected(payload) ? "deepseek_web" : "api";
               const targetSessionID = engine === "deepseek_web"
                 ? this.chat.documentSessionID("web")
                 : (payload.sessionID || this.chat.documentSessionID());
@@ -6464,5 +6461,5 @@
 
   LitMTrans.createController = options => new Controller(options);
   LitMTrans.Controller = Controller;
-  LitMTrans.ControllerInternals = { compiledEvidenceMatches, quoteCoverageScore, findEvidenceSegmentRanges, pdfTextHighlightRects };
+  LitMTrans.ControllerInternals = { compiledEvidenceMatches, quoteCoverageScore, findEvidenceSegmentRanges, pdfTextHighlightRects, webEngineSelected };
 })(this);

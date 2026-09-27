@@ -356,7 +356,7 @@
         else if (kind === "chat") {
           const profile = Agent.resolveBackgroundAIProfile(this.controller, "chat");
           if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
-          Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey });
+          Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey, forceAPI: true, agentExternal: true });
           const sessionID = String(payload.sessionID || "");
           const message = String(payload.message || payload.text || "").trim();
           if (!message) throw new C.AgentError("MESSAGE_REQUIRED", "问题不能为空", { recoverable: false });

@@ -1,7 +1,7 @@
 "use strict";
 
 module.exports = function createSuite(env) {
-  const { assert, context, MemoryStorage } = env;
+  const { assert, context, MemoryStorage, prefValues } = env;
   const Agent = context.LitMTrans.Agent;
 
   function testContractsAndPolicy() {
@@ -249,17 +249,79 @@ module.exports = function createSuite(env) {
     assert.equal(inherited.inherited, true);
 
     context.LitMTrans.Utils.setPref("agentBackgroundProvider", "auto");
+    const chatEnginePref = "extensions.litmtrans.chatEngine";
+    const previousChatEngine = prefValues.get(chatEnginePref);
+    prefValues.set(chatEnginePref, "deepseek_web");
     const controller = {
       tabs: new Map([["tab", { deepSeekBrowser: {}, deepSeekDriver: {} }]]),
       llm: { getStoredSettings: purpose => ({ purpose, provider: "deepseek_web", providerProfiles: { openai_compatible: { baseURL: "https://api.example.test/v1", model: "gpt-test" } } }) },
       secrets: { getLLMKey: provider => provider === "openai_compatible" ? "configured" : "" }
     };
-    const profile = Agent.resolveBackgroundAIProfile(controller, "translation");
-    assert.equal(profile.provider, "openai_compatible");
-    assert.equal(profile.mode, "api");
-    assert.equal(profile.webBackgroundAllowed, false);
-    assert.equal(profile.deepSeekWebRuntimeLoaded, true);
-    assert.equal(Agent.publicBackgroundAIProfile(profile).apiKey, undefined);
+    try {
+      const profile = Agent.resolveBackgroundAIProfile(controller, "translation");
+      assert.equal(profile.provider, "openai_compatible");
+      assert.equal(profile.mode, "api");
+      assert.equal(profile.webBackgroundAllowed, false);
+      assert.equal(profile.deepSeekWebRuntimeLoaded, true);
+      assert.equal(Agent.publicBackgroundAIProfile(profile).apiKey, undefined);
+    }
+    finally {
+      if (previousChatEngine === undefined) prefValues.delete(chatEnginePref);
+      else prefValues.set(chatEnginePref, previousChatEngine);
+    }
+  }
+
+  async function testBackgroundChatUsesAPIWhileWorkbenchUsesWeb() {
+    const chatEnginePref = "extensions.litmtrans.chatEngine";
+    const previousChatEngine = prefValues.get(chatEnginePref);
+    prefValues.set(chatEnginePref, "deepseek_web");
+    context.LitMTrans.Utils.setPref("agentBackgroundProvider", "auto");
+    let sentOptions = null;
+    const translationOptions = [];
+    const facade = {
+      ensureExternalApproval: async () => {},
+      contextRef: () => "1-A",
+      artifact: {
+        resolve: async () => ({ context: { documentID: "1-A" } }),
+        getManifest: async () => ({ documentID: "1-A" })
+      },
+      controller: {
+        llm: { getStoredSettings: () => ({ provider: "openai_compatible", baseURL: "https://api.example.test/v1", model: "gpt-test" }) },
+        secrets: { getLLMKey: () => "api-secret" },
+        chat: { send: async (_documentID, _sessionID, _message, options) => { sentOptions = options; } },
+        pipeline: {
+          translateStream: async (_context, options) => { translationOptions.push(options); },
+          translateLayout: async (_context, options) => { translationOptions.push(options); }
+        }
+      },
+      corpus: { markStale() {} },
+      literature: { updateDocumentStatus: async () => {} }
+    };
+    try {
+      const runner = Agent.AgentFacade.prototype.processingRunner.call(facade, "chat", {
+        ref: "1-A", message: "question", skipApproval: true
+      });
+      await runner({ signal: null, emit() {} });
+      assert.equal(sentOptions.engine, "api");
+      assert.equal(sentOptions.aiMode, "api");
+      assert.equal(sentOptions.provider, "openai_compatible");
+      assert.equal(sentOptions.forceAPI, true);
+      assert.equal(sentOptions.agentExternal, true);
+      for (const kind of ["stream_translation", "layout_translation"]) {
+        const translate = Agent.AgentFacade.prototype.processingRunner.call(facade, kind, {
+          ref: "1-A", skipApproval: true
+        });
+        await translate({ signal: null, emit() {} });
+      }
+      assert.equal(translationOptions.length, 2);
+      assert(translationOptions.every(options => options.engine === "api" && options.aiMode === "api"));
+      assert.equal(prefValues.get(chatEnginePref), "deepseek_web");
+      assert.equal(context.LitMTrans.ControllerInternals.webEngineSelected({ engine: "api", aiMode: "api" }), true);
+    }
+    finally {
+      if (previousChatEngine === undefined) prefValues.delete(chatEnginePref);
+      else prefValues.set(chatEnginePref, previousChatEngine);
+    }
   }
 
   async function testBoundedPoolAndParentCancellation() {
@@ -1897,6 +1959,7 @@ module.exports = function createSuite(env) {
     testMcpPortFallback,
     testModernLegacyProtocolAndApproval,
     testApprovalPersistenceAndBackgroundProfile,
+    testBackgroundChatUsesAPIWhileWorkbenchUsesWeb,
     testBoundedPoolAndParentCancellation,
     testApprovalScopeAndBatchCounts,
     testDiagramCacheBidirectionalContract,
