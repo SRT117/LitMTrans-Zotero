@@ -392,6 +392,28 @@ async function testEdgeLocalTranslationMigration() {
   }
 }
 
+async function testWebMachineTranslationKeepsConfiguredProvider() {
+  const options = {
+    provider: undefined,
+    baseURL: undefined,
+    model: undefined,
+    apiKey: undefined
+  };
+  for (const provider of ["edge_local", "free_machine"]) {
+    const llm = {
+      getSettings: () => ({ provider, targetLanguage: "简体中文" }),
+      resolveConfig: () => { throw new Error(`${provider} 不应校验 API 配置`); }
+    };
+    const stream = new TranslationService(null, llm);
+    stream.translateWebMachine = async (_documentID, _markdown, settings) => settings.provider;
+    assert.equal(await stream.translate("doc", "Source text", options), provider);
+
+    const layout = new LayoutTranslationService(null, llm);
+    layout.translateWebMachine = async (_documentID, settings) => settings.provider;
+    assert.equal(await layout.translate("doc", options), provider);
+  }
+}
+
 async function testWebMachineRulesAndSettingsTransitions() {
   assert.equal(U.normalizeProviderID("google_free"), "free_machine");
   assert.equal(U.normalizeProviderID("bing_free"), "free_machine");
@@ -897,6 +919,7 @@ async function testEdgeLocalTranslationQualityHardening() {
   return {
     testWebMachineTranslationProtection,
     testEdgeLocalTranslationMigration,
+    testWebMachineTranslationKeepsConfiguredProvider,
     testWebMachineRulesAndSettingsTransitions,
     testFullContextResume,
     testChunkedStreamingConcurrencyContinuationAndCache,

@@ -3261,7 +3261,10 @@
     }
 
     async translate(documentID, options = {}, emit = null, signal = null) {
-      let settings = { ...this.llm.getSettings(), ...options };
+      let settings = {
+        ...this.llm.getSettings(),
+        ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined))
+      };
       if (LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
         return this.translateWebMachine(documentID, settings, emit, signal);
       }

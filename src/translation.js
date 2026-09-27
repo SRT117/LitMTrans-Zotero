@@ -498,7 +498,10 @@
 
     async translate(documentID, markdown, options = {}, emit = null, signal = null) {
         if (!String(markdown || "").trim()) throw new Error("当前文档尚未完成解析");
-      const settings = { ...this.llm.getSettings("translation"), ...options };
+      const settings = {
+        ...this.llm.getSettings("translation"),
+        ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined))
+      };
       if (LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
         return this.translateWebMachine(documentID, markdown, settings, emit, signal);
       }
