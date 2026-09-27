@@ -110,7 +110,7 @@
         if (!output.resultType) output.resultType = "complete";
         output._meta = {
           ...(output._meta || {}),
-          [SERVER_INFO_META_KEY]: { name: "litmtrans", version: String(this.facade.controller?.version || "1") }
+          [SERVER_INFO_META_KEY]: { name: "zotero-litmtrans", version: String(this.facade.controller?.version || "1") }
         };
       }
       return { jsonrpc: "2.0", id, result: output };
@@ -253,7 +253,7 @@
             return this.result(id, {
               protocolVersion,
               capabilities: { tools: { listChanged: false }, resources: { subscribe: false, listChanged: false }, prompts: { listChanged: false } },
-              serverInfo: { name: "litmtrans", version: String(this.facade.controller?.version || "1") },
+              serverInfo: { name: "zotero-litmtrans", version: String(this.facade.controller?.version || "1") },
               instructions: (capabilities.instructions || []).join("\n")
             }, "legacy");
           }

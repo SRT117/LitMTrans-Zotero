@@ -5932,8 +5932,8 @@
       return {
         ready: true,
         endpoint,
-        serverName: "litmtrans",
-        instruction: LitMTrans.Agent.buildAgentBootstrapInstruction(endpoint, "litmtrans", { toolCount: tools.length })
+        serverName: "zotero-litmtrans",
+        instruction: LitMTrans.Agent.buildAgentBootstrapInstruction(endpoint, "zotero-litmtrans", { toolCount: tools.length })
       };
     }
 

@@ -238,7 +238,7 @@
         return;
       }
       if (method === "GET" && url === "/litmtrans/health") {
-        await writeJSON(200, { name: "litmtrans", status: "ok", server: this.status() });
+        await writeJSON(200, { name: "zotero-litmtrans", status: "ok", server: this.status() });
         return;
       }
       if (url !== this.path) {

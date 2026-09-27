@@ -29,7 +29,7 @@ module.exports = function createSuite(env) {
     };
     const protocol = new Agent.MCPProtocol(facade);
     const initialize = await protocol.handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } }, { sessionID: "test-session" });
-    assert.equal(initialize.result.serverInfo.name, "litmtrans");
+    assert.equal(initialize.result.serverInfo.name, "zotero-litmtrans");
     assert.equal(initialize.result.protocolVersion, "2024-11-05");
     const list = await protocol.handle({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     assert(list.result.tools.length >= 40);
@@ -96,24 +96,28 @@ module.exports = function createSuite(env) {
     const merged = Agent.ClientConfig.mergeConfig(existing, "claude-code", "http://127.0.0.1:1234/litmtrans/mcp");
     assert.deepEqual(merged.mcpServers["zotero-mcp"], existing.mcpServers["zotero-mcp"]);
     assert.deepEqual(merged.mcpServers.other, existing.mcpServers.other);
-    assert.equal(merged.mcpServers.litmtrans.url, "http://127.0.0.1:1234/litmtrans/mcp");
+    assert.equal(merged.mcpServers["zotero-litmtrans"].url, "http://127.0.0.1:1234/litmtrans/mcp");
     assert.deepEqual(merged.preferences, existing.preferences);
+    const migrated = Agent.ClientConfig.mergeConfig({ mcpServers: { litmtrans: { url: "http://127.0.0.1:1234/litmtrans/mcp" }, other: { url: "http://other" } } }, "cursor", "http://127.0.0.1:1234/litmtrans/mcp");
+    assert.equal(migrated.mcpServers.litmtrans, undefined);
+    assert.equal(migrated.mcpServers["zotero-litmtrans"].url, "http://127.0.0.1:1234/litmtrans/mcp");
+    assert.equal(migrated.mcpServers.other.url, "http://other");
     const command = Agent.ClientConfig.descriptor("codex", "http://127.0.0.1:1234/litmtrans/mcp");
     assert.equal(command.format, "command");
     assert.equal(command.verificationStatus, "verified");
-    assert.equal(command.displayText, "codex mcp add litmtrans --url \"http://127.0.0.1:1234/litmtrans/mcp\"");
-    assert(command.config.command.includes("codex mcp add litmtrans"));
+    assert.equal(command.displayText, "codex mcp add zotero-litmtrans --url \"http://127.0.0.1:1234/litmtrans/mcp\"");
+    assert(command.config.command.includes("codex mcp add zotero-litmtrans"));
     for (const [client, type, verificationStatus] of [["claude-desktop", "http", "template"], ["cline", "streamableHttp", "template"], ["cursor", "", "verified"], ["workbuddy", "http", "template"], ["trae", "streamableHttp", "template"]]) {
       const descriptor = Agent.ClientConfig.descriptor(client, "http://127.0.0.1:1234/litmtrans/mcp");
       assert.equal(descriptor.format, "json");
       assert.equal(descriptor.verificationStatus, verificationStatus);
-      assert.equal(descriptor.config.mcpServers.litmtrans.url, "http://127.0.0.1:1234/litmtrans/mcp");
-      assert.equal(descriptor.config.mcpServers.litmtrans.type || "", type);
+      assert.equal(descriptor.config.mcpServers["zotero-litmtrans"].url, "http://127.0.0.1:1234/litmtrans/mcp");
+      assert.equal(descriptor.config.mcpServers["zotero-litmtrans"].type || "", type);
     }
     assert.equal(Agent.ClientConfig.descriptor("claude-code", "http://127.0.0.1:1234/litmtrans/mcp").format, "command");
-    assert(Agent.ClientConfig.descriptor("claude-code", "http://127.0.0.1:1234/litmtrans/mcp").displayText.includes("--transport http litmtrans"));
+    assert(Agent.ClientConfig.descriptor("claude-code", "http://127.0.0.1:1234/litmtrans/mcp").displayText.includes("--transport http zotero-litmtrans"));
     const gemini = Agent.ClientConfig.descriptor("gemini-cli", "http://127.0.0.1:1234/litmtrans/mcp");
-    assert.equal(gemini.config.mcpServers.litmtrans.httpUrl, "http://127.0.0.1:1234/litmtrans/mcp");
+    assert.equal(gemini.config.mcpServers["zotero-litmtrans"].httpUrl, "http://127.0.0.1:1234/litmtrans/mcp");
     assert.equal(Agent.ClientConfig.descriptor("generic", "http://127.0.0.1:1234/litmtrans/mcp").verificationStatus, "manual");
   }
 
@@ -193,7 +197,7 @@ module.exports = function createSuite(env) {
     assert.equal(discover.result.protocolVersions, undefined);
     assert.equal(discover.result.protocolVersion, undefined);
     assert.equal(discover.result.serverInfo, undefined);
-    assert.deepEqual(discover.result._meta["io.modelcontextprotocol/serverInfo"], { name: "litmtrans", version: "2.0.0" });
+    assert.deepEqual(discover.result._meta["io.modelcontextprotocol/serverInfo"], { name: "zotero-litmtrans", version: "2.0.0" });
     assert.equal(discover.result.resultType, "complete");
     const modernInitialize = await protocol.handle({ jsonrpc: "2.0", id: 2, method: "initialize", params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } }, { era: "modern" });
     assert.equal(modernInitialize.error.code, -32601);
@@ -696,8 +700,9 @@ module.exports = function createSuite(env) {
     const fulltextResult = await library.searchItems({ libraryID: 1, fulltext: "needle", fulltextMode: "attachment", includeStatus: false });
     assert.equal(fulltextResult.total, 1);
     assert.equal(fulltextResult.items[0].key, "ITEM1");
-    const instruction = Agent.buildAgentBootstrapInstruction("http://127.0.0.1:45124/litmtrans/mcp", "litmtrans", { toolCount: 108 }, "Codex");
-    assert(instruction.includes("保留所有已有服务"));
+    const instruction = Agent.buildAgentBootstrapInstruction("http://127.0.0.1:45124/litmtrans/mcp", "zotero-litmtrans", { toolCount: 108 }, "Codex");
+    assert(instruction.includes("保留其他已有服务"));
+    assert(instruction.includes("服务名称固定为 zotero-litmtrans"));
     assert(instruction.includes("litmtrans_get_capabilities"));
     assert(instruction.includes("45124"));
     assert(!instruction.trim().startsWith("{"));

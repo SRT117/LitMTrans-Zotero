@@ -3,6 +3,7 @@
 
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const Agent = LitMTrans.Agent = LitMTrans.Agent || {};
+  const SERVER_NAME = "zotero-litmtrans";
 
   function clone(value) {
     try { return JSON.parse(JSON.stringify(value)); }
@@ -16,8 +17,8 @@
   }
 
   const REGISTRY = Object.freeze({
-    codex: { label: "Codex", kind: "cli", verificationStatus: "verified", command: endpoint => `codex mcp add litmtrans --url ${JSON.stringify(endpoint)}`, config: endpoint => ({ url: String(endpoint || "") }) },
-    "claude-code": { label: "Claude Code", kind: "cli", verificationStatus: "verified", command: endpoint => `claude mcp add --transport http litmtrans ${String(endpoint || "")}`, config: endpoint => serverEntry(endpoint, "http") },
+    codex: { label: "Codex", kind: "cli", verificationStatus: "verified", command: endpoint => `codex mcp add ${SERVER_NAME} --url ${JSON.stringify(endpoint)}`, config: endpoint => ({ url: String(endpoint || "") }) },
+    "claude-code": { label: "Claude Code", kind: "cli", verificationStatus: "verified", command: endpoint => `claude mcp add --transport http ${SERVER_NAME} ${String(endpoint || "")}`, config: endpoint => serverEntry(endpoint, "http") },
     "claude-desktop": { label: "Claude Desktop", kind: "json", verificationStatus: "template", config: endpoint => serverEntry(endpoint, "http") },
     cline: { label: "Cline", kind: "json", verificationStatus: "template", config: endpoint => serverEntry(endpoint, "streamableHttp") },
     continue: { label: "Continue", kind: "json", verificationStatus: "template", config: endpoint => serverEntry(endpoint, "streamable-http") },
@@ -46,16 +47,18 @@
     const key = resolveClient(client);
     const spec = REGISTRY[key];
     const server = spec.config(String(url || ""));
-    if (key === "codex") return { command: spec.command(String(url || "")), mcp_servers: { litmtrans: server } };
-    return { mcpServers: { litmtrans: server } };
+    if (key === "codex") return { command: spec.command(String(url || "")), mcp_servers: { [SERVER_NAME]: server } };
+    return { mcpServers: { [SERVER_NAME]: server } };
   }
 
   function mergeConfig(existing, client, url) {
     const base = clone(existing || {});
     const key = resolveClient(client);
     const incoming = configFor(key, url);
-    if (key === "codex") base.mcp_servers = { ...(base.mcp_servers || {}), litmtrans: incoming.mcp_servers.litmtrans };
-    else base.mcpServers = { ...(base.mcpServers || {}), litmtrans: incoming.mcpServers.litmtrans };
+    const field = key === "codex" ? "mcp_servers" : "mcpServers";
+    const servers = { ...(base[field] || {}) };
+    if (servers.litmtrans?.url === String(url || "") || servers.litmtrans?.httpUrl === String(url || "")) delete servers.litmtrans;
+    base[field] = { ...servers, [SERVER_NAME]: incoming[field][SERVER_NAME] };
     return base;
   }
 
@@ -77,7 +80,7 @@
       displayText: JSON.stringify(config, null, 2),
       config,
       verificationStatus: spec.verificationStatus,
-      instructions: "把 litmtrans 这一项合并到客户端的 MCP 配置中，并保留其他已有服务。"
+      instructions: `把 ${SERVER_NAME} 这一项合并到客户端的 MCP 配置中；若已有同一地址的 litmtrans 项，请将其改名，并保留其他服务。`
     };
   }
 

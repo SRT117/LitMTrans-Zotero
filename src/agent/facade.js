@@ -216,7 +216,7 @@
       const indexStats = this.literature.indexStats();
       const acquisitionDiagnostics = this.acquisition.diagnostics();
       return {
-        protocol: { name: "litmtrans", version: "1", modern: "2026-07-28", legacy: ["2025-11-25", "2025-03-26", "2024-11-05"], transport: "streamable-http", endpoint: "/litmtrans/mcp" },
+        protocol: { name: "zotero-litmtrans", version: "1", modern: "2026-07-28", legacy: ["2025-11-25", "2025-03-26", "2024-11-05"], transport: "streamable-http", endpoint: "/litmtrans/mcp" },
         product: { name: "LitMTrans Agent Backend", version: String(this.controller.version || "") },
         permissions: this.policy.capabilities(),
         settings: C.safeSettings(this.controller),
