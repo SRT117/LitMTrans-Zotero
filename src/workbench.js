@@ -8413,6 +8413,10 @@
       return "chunked";
     };
     const startTranslation = async () => {
+      if (settingsAutoSavedRevision < settingsAutoSaveRevision) {
+        try { await flushSettingsAutoSave(false); }
+        catch (error) { toast(error?.message || "无法保存翻译设置", "error"); return; }
+      }
       const translationMode = await recommendedTranslationModeForLongPDF();
       // Parsing is an implementation prerequisite, not a separate reading
       // action. The visible control remains one unambiguous "翻译" button.

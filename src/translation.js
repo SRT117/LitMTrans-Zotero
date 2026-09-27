@@ -502,10 +502,10 @@
         ...this.llm.getSettings("translation"),
         ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined))
       };
-      if (LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
+      const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...settings });
+      if (!isWeb && LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
         return this.translateWebMachine(documentID, markdown, settings, emit, signal);
       }
-      const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...options, ...settings });
       let resolvedModel;
       if (isWeb) {
         resolvedModel = { provider: "deepseek_web", model: "deepseek-web", baseURL: "" };

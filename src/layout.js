@@ -3265,14 +3265,14 @@
         ...this.llm.getSettings(),
         ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined))
       };
-      if (LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
+      const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...settings });
+      if (!isWeb && LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
         return this.translateWebMachine(documentID, settings, emit, signal);
       }
       // Layout titles and body blocks that are clearly returned unchanged need
       // one of the bounded recovery attempts. This remains a heuristic signal
       // for the model, never a conclusive instruction to rewrite content.
       settings.enableUntranslatedCheck = settings.enableUntranslatedCheck !== false;
-      const isWeb = this.llm.isWebEngineActive?.({ purpose: "translation", ...options, ...settings });
       let resolvedModel;
       if (isWeb) {
         resolvedModel = { provider: "deepseek_web", model: "deepseek-web", baseURL: "" };

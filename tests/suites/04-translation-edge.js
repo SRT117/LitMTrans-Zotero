@@ -414,6 +414,27 @@ async function testWebMachineTranslationKeepsConfiguredProvider() {
   }
 }
 
+async function testWebModeOverridesMachineProvider() {
+  for (const provider of ["edge_local", "free_machine"]) {
+    const llm = {
+      getSettings: () => ({ provider, targetLanguage: "简体中文" }),
+      isWebEngineActive: ({ engine, aiMode }) => engine === "deepseek_web" || aiMode === "web",
+      ensureConfiguredModel: () => { throw new Error("网页模式不应校验 API 配置"); }
+    };
+    const options = { provider: undefined, engine: "deepseek_web", aiMode: "web" };
+    const reachedWebRoute = new Error("已进入网页模式");
+    const stream = new TranslationService(null, llm);
+    stream.translateWebMachine = () => { throw new Error("网页模式不应进入机翻"); };
+    stream.paths = () => { throw reachedWebRoute; };
+    await assert.rejects(() => stream.translate("doc", "Source text", options), error => error === reachedWebRoute);
+
+    const layout = new LayoutTranslationService(null, llm);
+    layout.translateWebMachine = () => { throw new Error("网页模式不应进入机翻"); };
+    layout.paths = () => { throw reachedWebRoute; };
+    await assert.rejects(() => layout.translate("doc", options), error => error === reachedWebRoute);
+  }
+}
+
 async function testWebMachineRulesAndSettingsTransitions() {
   assert.equal(U.normalizeProviderID("google_free"), "free_machine");
   assert.equal(U.normalizeProviderID("bing_free"), "free_machine");
@@ -920,6 +941,7 @@ async function testEdgeLocalTranslationQualityHardening() {
     testWebMachineTranslationProtection,
     testEdgeLocalTranslationMigration,
     testWebMachineTranslationKeepsConfiguredProvider,
+    testWebModeOverridesMachineProvider,
     testWebMachineRulesAndSettingsTransitions,
     testFullContextResume,
     testChunkedStreamingConcurrencyContinuationAndCache,
