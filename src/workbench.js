@@ -1079,6 +1079,7 @@
   }
 
   function setData(data, { preserveLayout = false } = {}) {
+    const previousDocumentID = String(state.data?.item?.documentID || "");
     state.data = data || null;
     const documentID = String(data?.item?.documentID || "");
     if (state.readerViewDocumentID !== documentID) {
@@ -1127,7 +1128,9 @@
     state.layoutFontPt = Number.isFinite(savedLayoutFont) && savedLayoutFont > 0
       ? savedLayoutFont
       : 0;
-    state.detectedLayoutFontPt = 0;
+    if (!preserveLayout || previousDocumentID !== documentID || state.detectedLayoutFontPt < 4) {
+      state.detectedLayoutFontPt = 0;
+    }
     if (state.mode === "layout") {
       if (state.layoutFontPt > 0) document.body.dataset.userBodyFontPt = String(state.layoutFontPt);
       else delete document.body.dataset.userBodyFontPt;
@@ -1145,6 +1148,10 @@
       `${Number(els["reader-font-input"].value) || Number(state.settings?.readerFontPt) || 12}pt`
     );
     renderAll({ preserveLayout });
+    if (preserveLayout && state.mode === "layout") {
+      const pages = [...els["translation-layout"].querySelectorAll(".layout-page")];
+      if (pages.length) void ensureLayoutFit(pages);
+    }
     updateOperationUI();
   }
 
@@ -2693,11 +2700,16 @@
     // placeholder and a user's first "decrease" can accidentally enlarge a
     // 7 pt fitted layout to 11 pt.
     if (state.mode !== "layout" || state.layoutFontPt > 0 || container !== els["translation-layout"]) return;
-    const node = container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]');
+    const body = container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]');
+    const node = body || [...container.querySelectorAll(
+      '.layout-flow-stream[data-flow-kind="text"]:not([data-style-kind="toc"]), .layout-block.type-text'
+    )].filter(candidate => !candidate.matches('[data-style-kind="ref_text"]'))
+      .sort((a, b) => String(b.textContent || "").length - String(a.textContent || "").length)[0];
     if (!node) return;
-    const px = Number.parseFloat(getComputedStyle(node).fontSize || "0");
+    const fittedSize = /^([\d.]+)px$/.exec(String(node.style.fontSize || ""));
+    const px = fittedSize ? Number(fittedSize[1]) : 0;
     const fontPt = px > 0 ? px * 72 / 96 : 0;
-    if (!Number.isFinite(fontPt) || fontPt <= 0) return;
+    if (!Number.isFinite(fontPt) || fontPt < 4) return;
     state.detectedLayoutFontPt = Math.round(fontPt * 10) / 10;
     els["reader-font-input"].value = String(state.detectedLayoutFontPt);
     document.documentElement.style.setProperty("--reader-font-size", `${state.detectedLayoutFontPt}pt`);
