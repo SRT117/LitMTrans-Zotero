@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "mermaid": "11.16.1",
-    "pako": "2.1.0",
+    "pako": "3.0.2",
     "pdf-lib": "1.17.1"
   },
   "overrides": {
