@@ -63,7 +63,7 @@
 
   function log(message) {
     try {
-      if (typeof Zotero !== "undefined" && Zotero.debug) {
+      if (LitMTrans.Utils?.getPref("debug", false) && typeof Zotero !== "undefined" && Zotero.debug) {
         Zotero.debug(`[LitMTrans Updater] ${message}`);
       }
     } catch (_) {}

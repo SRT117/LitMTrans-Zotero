@@ -798,6 +798,94 @@ async function testAnnouncementSystemContracts() {
   assert(manifestScript.includes("compareVersionBounds"), "manifest generation must validate announcement version bounds");
 }
 
+async function testAnnouncementStartupScheduling() {
+  const values = new Map();
+  const timers = new Map();
+  let timerID = 0;
+  let fetches = 0;
+  let fail = false;
+  const logs = [];
+  const now = Date.now();
+  const notice = { id: "startup-notice", title: "服务提示", message: "解析排队", level: "alert" };
+  const sandbox = {
+    LitMTrans: {
+      Utils: { getPref: (key, fallback) => values.has(key) ? values.get(key) : fallback, setPref: (key, value) => values.set(key, value) },
+      DiagramCache: { TASK_TYPES: [], MAX_CHARS: 10000 }
+    },
+    Zotero: { debug: message => logs.push(message) },
+    setTimeout: (callback, delay) => { const id = ++timerID; timers.set(id, { callback, delay }); return id; },
+    clearTimeout: id => timers.delete(id),
+    setInterval: (callback, delay) => { const id = ++timerID; timers.set(id, { callback, delay }); return id; },
+    clearInterval: id => timers.delete(id),
+    fetch: async () => {
+      fetches++;
+      if (fail) throw new Error("离线");
+      return { ok: true, json: async () => ({
+        addons: { "litmtrans@srt117.github.io": { updates: [{ version: "2.2.0", update_hash: `sha256:${"a".repeat(64)}`, update_link: "https://example.com/plugin.xpi" }] } },
+        announcements: [notice]
+      }) };
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, "src", "updater.js"), "utf8"), sandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, "src", "controller.js"), "utf8"), sandbox);
+  const controller = Object.create(sandbox.LitMTrans.Controller.prototype);
+  controller.version = "2.1.1";
+  controller.availableUpdate = null;
+  controller.tabs = new Map();
+  const start = async () => {
+    controller.scheduleAutoUpdateCheck();
+    const id = controller.autoUpdateStartupTimer;
+    assert.equal(timers.get(id).delay, 15000);
+    const callback = timers.get(id).callback;
+    timers.delete(id);
+    callback();
+    await new Promise(resolve => setImmediate(resolve));
+  };
+
+  values.set("lastUpdateCheckTime", String(now));
+  await start();
+  assert.equal(fetches, 3, "startup must fetch announcements even within the daily update interval");
+  assert.equal(values.get("lastUpdateCheckTime"), String(now), "announcement-only fetch must not postpone version checks");
+  assert.equal(controller.availableUpdate, null, "announcement-only fetch must not announce a new version");
+  assert.equal(controller.getAnnouncementsForWorkbench().pendingAlert.id, notice.id);
+  assert.equal(logs.length, 0, "normal startup fetch must not append diagnostic logs");
+  controller.dismissAnnouncement(notice.id);
+  await start();
+  assert.equal(controller.getAnnouncementsForWorkbench().pendingAlert, null, "read announcements must stay read across startup fetches");
+
+  values.set("autoUpdate", false);
+  values.set("lastUpdateCheckTime", "0");
+  await start();
+  assert.equal(fetches, 9, "disabling version updates must not suppress startup announcements");
+  assert.equal(values.get("lastUpdateCheckTime"), "0");
+  assert.equal(controller.availableUpdate, null);
+  timers.get(controller.autoUpdateTimer).callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fetches, 9, "periodic version checks must respect the auto-update setting");
+
+  values.set("autoUpdate", true);
+  fail = true;
+  await start();
+  assert.equal(values.get("lastUpdateCheckTime"), "0", "failed automatic checks must not consume the daily interval");
+  assert.equal(logs.length, 0, "failed checks must remain quiet outside debug mode");
+  await assert.rejects(() => controller.checkForUpdates({ manual: true }), /所有节点均不可达/);
+  assert.equal(values.get("lastUpdateCheckTime"), "0", "failed manual checks must not postpone automatic retries");
+  fail = false;
+  const beforeRetry = fetches;
+  await start();
+  assert.equal(fetches, beforeRetry + 3, "due version and announcement checks must share one manifest fetch");
+  assert(Number(values.get("lastUpdateCheckTime")) >= now);
+  assert.equal(controller.availableUpdate.version, "2.2.0");
+
+  controller.scheduleAutoUpdateCheck();
+  const oldStartup = controller.autoUpdateStartupTimer;
+  const oldInterval = controller.autoUpdateTimer;
+  controller.scheduleAutoUpdateCheck();
+  assert(!timers.has(oldStartup) && !timers.has(oldInterval), "rescheduling must clear both old timers");
+  assert.equal(timers.size, 2, "startup scheduling must not leak timers");
+}
+
 async function testSettingsAutoSaveIsolationAndFailure() {
   const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   const start = workbench.indexOf("  let settingsAutoSaveTimer = null;");
@@ -935,6 +1023,7 @@ async function testSettingsAutoSaveIsolationAndFailure() {
     testUpdaterContractsAndSafety,
     testDeepSeekWebDriverSessionActionAndRetryContracts,
     testAnnouncementSystemContracts,
+    testAnnouncementStartupScheduling,
     testSettingsAutoSaveIsolationAndFailure,
   };
 };

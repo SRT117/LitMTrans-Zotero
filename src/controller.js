@@ -513,46 +513,50 @@
     }
 
     scheduleAutoUpdateCheck() {
+      if (this.autoUpdateStartupTimer) {
+        clearTimeout(this.autoUpdateStartupTimer);
+        this.autoUpdateStartupTimer = null;
+      }
       if (this.autoUpdateTimer) {
         clearInterval(this.autoUpdateTimer);
         this.autoUpdateTimer = null;
       }
 
-      const runCheckIfDue = async () => {
-        if (!U.getPref("autoUpdate", true)) return;
-        const lastCheck = Number(U.getPref("lastUpdateCheckTime", "0") || 0);
+      let checking = false;
+      const runCheckIfDue = async (startup = false) => {
+        if (checking || this._cajShuttingDown) return;
+        const lastCheck = Number(U.getPref("lastUpdateCheckTime", "0")) || 0;
         const oneDayMs = 24 * 60 * 60 * 1000;
-        if (Date.now() - lastCheck < oneDayMs) return;
+        const updateDue = U.getPref("autoUpdate", true) && Date.now() - lastCheck >= oneDayMs;
+        if (!startup && !updateDue) return;
 
+        checking = true;
         try {
-          if (!U.getPref("autoUpdate", true)) return;
-          U.setPref("lastUpdateCheckTime", String(Date.now()));
-          if (LitMTrans.Updater) {
-            const result = await LitMTrans.Updater.checkUpdate(this.version);
-            if (result && result.hasUpdate) {
-              this.availableUpdate = result;
-              this.log(`发现可用新版本: v${result.version}`);
-            }
-            if (Array.isArray(result?.announcements)) {
-              this.announcements = result.announcements;
-              this.mergeAnnouncements(result.announcements);
-            }
-          }
-        } catch (_) {}
+          // 启动时始终获取公告；版本检查到期时复用同一次清单请求。
+          await this.checkForUpdates({ announcementsOnly: !updateDue });
+        }
+        catch (error) { this.log(`公告或更新检查失败：${error?.message || error}`); }
+        finally { checking = false; }
       };
 
-      setTimeout(() => { void runCheckIfDue(); }, 15000);
+      this.autoUpdateStartupTimer = setTimeout(() => {
+        this.autoUpdateStartupTimer = null;
+        void runCheckIfDue(true);
+      }, 15000);
       this.autoUpdateTimer = setInterval(() => { void runCheckIfDue(); }, 6 * 60 * 60 * 1000);
     }
 
-    async checkForUpdates({ manual = false, onProgress = null, runtime = null } = {}) {
+    async checkForUpdates({ manual = false, onProgress = null, runtime = null, announcementsOnly = false } = {}) {
       if (!LitMTrans.Updater) throw new Error("更新模块未就绪");
-      U.setPref("lastUpdateCheckTime", String(Date.now()));
       const progressHandler = manual ? (p => {
         if (typeof onProgress === "function") onProgress(p);
         if (runtime) this.emit(runtime, { type: "update-progress", ...p });
       }) : null;
-      const result = await LitMTrans.Updater.checkUpdate(this.version, progressHandler);
+      const result = announcementsOnly
+        ? { announcements: (await LitMTrans.Updater.fetchUpdateManifest()).announcements }
+        : await LitMTrans.Updater.checkUpdate(this.version, progressHandler);
+      if (this._cajShuttingDown) return result;
+      if (!announcementsOnly) U.setPref("lastUpdateCheckTime", String(Date.now()));
       if (result && result.hasUpdate) {
         this.availableUpdate = result;
       }
@@ -635,6 +639,10 @@
       if (this.autoUpdateTimer) {
         clearInterval(this.autoUpdateTimer);
         this.autoUpdateTimer = null;
+      }
+      if (this.autoUpdateStartupTimer) {
+        clearTimeout(this.autoUpdateStartupTimer);
+        this.autoUpdateStartupTimer = null;
       }
       await this.webMachine?.shutdown?.();
       this.storage.shutdown();
