@@ -45,6 +45,11 @@ function testMindmap() {
     && webMarkdown.root.children[0].children[0].children[0].label === "具体表现"
     && webMarkdown.root.children[0].children[0].children[0].evidence[0].quote === "The  exact source sentence.",
   "web Markdown mind maps must retain nested nodes and verbatim evidence quotes");
+  const longWebOutline = ["# 论文完整知识结构图", ...Array.from({ length: 11 }, (_, branch) =>
+    [`## 分支 ${branch + 1}`, ...Array.from({ length: branch < 9 ? 5 : 4 }, (_, node) => `- **节点 ${node + 1}**：具体事实`)]).flat()].join("\n");
+  const longWebMap = MindmapV2.parse(longWebOutline, { allowMarkdown: true });
+  assert(!longWebMap.error && longWebMap.nodes.length === 65 && MindmapV2.svgForMap(longWebMap).startsWith("<svg"),
+    "web mind maps with 65 nodes must parse and render rather than disappear at the old limit");
   assert.equal(MindmapV2.parse("# 普通回答\n## 一般说明\n- 项目一\n- 项目二"), null, "ordinary Markdown must not become a V2 mind map");
   const latexEvidence = MindmapV2.parse(`${MindmapV2.MARKER}\n{"version":2,"nodes":[{"id":"root","parentId":null,"label":"结果","kind":"root","evidence":[{"type":"quote","quote":"The value is $T_{\\mathrm{b}}$."}]}]}`);
   assert(!latexEvidence.error, "bare LaTeX backslashes in model-provided mind-map evidence must be repaired");

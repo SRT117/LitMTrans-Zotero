@@ -9419,6 +9419,9 @@
               openDiagramViewerForTask(taskType, { title, mode, diagram });
             }
           }
+          else if (isWeb) {
+            toast(mapV2?.error || flowchart?.error || "回答缺少可绘制的标题和列表结构，请重试生成", "warning");
+          }
         }
         if (!isWeb) {
           await refreshChatSessions(false);

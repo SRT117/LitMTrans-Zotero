@@ -4,7 +4,7 @@
   const host = globalThis;
   const LitMTrans = host.LitMTrans = host.LitMTrans || {};
   const MARKER = "<!-- litmtrans-mindmap-v2 -->";
-  const MAX_NODES = 64;
+  const MAX_NODES = 128;
   const MAX_DEPTH = 5;
   const KIND = new Set(["root", "background", "problem", "gap", "hypothesis", "method", "data", "result", "mechanism", "comparison", "validation", "contribution", "limitation", "implication", "other"]);
 

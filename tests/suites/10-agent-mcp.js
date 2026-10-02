@@ -419,6 +419,10 @@ module.exports = function createSuite(env) {
     assert.equal(workbenchRead.sourceFingerprint, saved.sourceFingerprint);
     const agentRead = await artifact.readDiagram("1-A", "mindmap", {});
     assert.deepEqual(agentRead.diagram, diagram);
+    const largeChildren = Array.from({ length: 64 }, (_, index) => ({ id: `n${index}`, label: `Node ${index}`, evidence: [], children: [] }));
+    const largeDiagram = { nodes: [{ id: "root", label: "Root", evidence: [] }, ...largeChildren], root: { id: "root", label: "Root", parentId: null, children: largeChildren } };
+    assert(Agent.DiagramCache.build({ taskType: "paper_mindmap", mode: "mindmap", diagram: largeDiagram }),
+      "a rendered 65-node mind map must also be accepted by the persistent cache");
     const flow = { nodes: [{ id: "start", label: "Start" }, { id: "end", label: "End" }], edges: [{ from: "start", to: "end" }] };
     const flowPayload = Agent.DiagramCache.build({ taskType: "paper_logic_flow", mode: "flowchart", title: "Flow", sourceFingerprint: saved.sourceFingerprint, diagram: flow });
     await storage.writeJSON("/mem/1-A/diagrams/paper_logic_flow.json", flowPayload);

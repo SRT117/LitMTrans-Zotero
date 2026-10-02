@@ -24,7 +24,7 @@
 
   function validate(diagram, diagramMode) {
     if (!diagram || typeof diagram !== "object" || Array.isArray(diagram)) return false;
-    if (!Array.isArray(diagram.nodes) || diagram.nodes.length < 1 || diagram.nodes.length > 64) return false;
+    if (!Array.isArray(diagram.nodes) || diagram.nodes.length < 1 || diagram.nodes.length > (diagramMode === "mindmap" ? 128 : 64)) return false;
     if (diagramMode === "mindmap") {
       if (!diagram.root || typeof diagram.root !== "object" || !Array.isArray(diagram.root.children)) return false;
       const seenIDs = new Set();
@@ -38,7 +38,7 @@
       const visit = (node, depth) => {
         if (!node || typeof node !== "object" || seenNodes.has(node) || depth > 5) return false;
         if (!seenIDs.has(String(node.id || "")) || !String(node.label || "").trim()) return false;
-        if (!Array.isArray(node.children) || node.children.length > 64) return false;
+        if (!Array.isArray(node.children) || node.children.length > 128) return false;
         seenNodes.add(node);
         return node.children.every(child => visit(child, depth + 1));
       };
