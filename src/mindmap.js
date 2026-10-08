@@ -84,6 +84,7 @@
   function createMindmapImage(map) {
     const nodes = [];
     const makeEntry = (item, depth, direction, parent = null) => {
+      item = { ...item, label: LitMTrans.Utils?.diagramDisplayText?.(item.label) ?? item.label };
       const entry = { item, depth, direction, parent, ...labelMetrics(item.label), x: 0, y: 0, children: [] };
       nodes.push(entry); return entry;
     };

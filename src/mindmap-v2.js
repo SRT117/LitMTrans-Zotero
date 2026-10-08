@@ -7,12 +7,8 @@
   const MAX_NODES = 10000;
   const KIND = new Set(["root", "background", "problem", "gap", "hypothesis", "method", "data", "result", "mechanism", "comparison", "validation", "contribution", "limitation", "implication", "other"]);
 
-  const clean = value => String(value || "")
-    .replace(/<sup>(.*?)<\/sup>/gi, (_, text) => [...text].every(char => "0123456789+-=()in".includes(char))
-      ? [...text].map(char => "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁱⁿ"["0123456789+-=()in".indexOf(char)]).join("") : `^(${text})`)
-    .replace(/<sub>(.*?)<\/sub>/gi, (_, text) => [...text].every(char => "0123456789+-=()".includes(char))
-      ? [...text].map(char => "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎"["0123456789+-=()".indexOf(char)]).join("") : `_(${text})`)
-    .replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+  const clean = value => String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+  const displayText = value => clean(LitMTrans.Utils?.diagramDisplayText?.(value) ?? value);
   const cleanEvidenceQuote = value => String(value ?? "").replace(/\u0000/g, "").trim();
   function markdownEvidenceQuote(line) {
     const marked = String(line || "").match(/^>\s*\[\^(?:quote|evidence):\s*([\s\S]*?)\]\s*$/i);
@@ -195,7 +191,7 @@
   }
 
   function adaptMap(map) {
-    const nodes = map.nodes.map(({ children, ...node }) => ({ ...node, label: clean(node.label), detail: clean(node.detail), children: [] }));
+    const nodes = map.nodes.map(({ children, ...node }) => ({ ...node, label: displayText(node.label), detail: displayText(node.detail), children: [] }));
     const byID = new Map(nodes.map(node => [node.id, node]));
     const siblings = new Map();
     for (const node of nodes) {
@@ -218,7 +214,7 @@
       }
     }
     for (const node of nodes) if (node.parentId) byID.get(node.parentId)?.children.push(node);
-    return { ...map, title: clean(map.title), root: byID.get(map.root.id), nodes };
+    return { ...map, title: displayText(map.title), root: byID.get(map.root.id), nodes };
   }
 
   function layout(map) {

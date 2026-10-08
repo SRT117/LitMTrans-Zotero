@@ -436,6 +436,24 @@
     return /^粘贴图片-\d{8}-\d{6}-\d{3}-\d{2,}\.(?:png|jpe?g|webp|gif|bmp|jp2|svg)$/i.test(String(value || "").trim());
   }
 
+  function diagramDisplayText(value) {
+    const entities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", times: "×", middot: "·", plusmn: "±", minus: "−", le: "≤", ge: "≥", deg: "°", micro: "µ" };
+    const text = String(value ?? "").replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
+      if (entity[0] !== "#") return entities[entity] ?? match;
+      const code = /^#x/i.test(entity) ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+      return code >= 32 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) && !(code >= 0x7f && code <= 0x9f)
+        ? String.fromCodePoint(code) : match;
+    });
+    // 仅转换明确的上下标标签；未知字符用文本标记保留，不解析任意 HTML。
+    return text.replace(/<(sup|sub)\s*>([^<>]*?)<\/\1\s*>/gi, (_, tag, body) => {
+      const source = tag.toLowerCase() === "sup" ? "0123456789+-−=()in/" : "0123456789+-−=()aeoxhklmnpstijruv/";
+      const target = tag.toLowerCase() === "sup" ? "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁻⁼⁽⁾ⁱⁿ/" : "₀₁₂₃₄₅₆₇₈₉₊₋₋₌₍₎ₐₑₒₓₕₖₗₘₙₚₛₜᵢⱼᵣᵤᵥ/";
+      return [...body].every(char => source.includes(char))
+        ? [...body].map(char => target[source.indexOf(char)]).join("")
+        : `${tag.toLowerCase() === "sup" ? "^" : "_"}(${body})`;
+    });
+  }
+
   function escapeHTML(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -920,6 +938,7 @@
     pastedImageName,
     isIdentifiedPastedImageName,
     escapeHTML,
+    diagramDisplayText,
     escapeAttribute,
     normalizeError,
     isMinerUTokenCredentialError,

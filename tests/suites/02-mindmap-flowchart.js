@@ -13,6 +13,33 @@ module.exports = function createSuite(env) {
     ChatService, ChatInternals, ControllerInternals, DocumentPipeline
   } = env;
 
+function testDiagramDisplayCompatibility() {
+  const label = "Cxcr4<sup>-/-</sup> 与 H<sub>2</sub>O";
+  const detail = "cm<sup>−1</sup>，x<sub>i</sub> &lt; 5 &times; 10<sup>2</sup>";
+  const quote = `${label} &amp; original evidence`;
+  const evidence = [{ type: "quote", quote }];
+  const rootNode = { id: "root", parentId: null, label, detail, evidence, children: [] };
+  const cached = { root: rootNode, nodes: [rootNode], title: label };
+  const before = JSON.stringify(cached);
+  const scene = MindmapV2.layout(cached);
+  assert.equal(scene.entries[0].node.label, "Cxcr4⁻/⁻ 与 H₂O");
+  assert.equal(scene.entries[0].node.detail, "cm⁻¹，xᵢ < 5 × 10²");
+  const svg = MindmapV2.svgForMap(cached);
+  assert(svg.includes("Cxcr4⁻/⁻") && svg.includes("H₂O") && svg.includes("10²"));
+  assert(!svg.includes("&lt;sup&gt;") && !svg.includes("&lt;sub&gt;"));
+  assert.equal(JSON.stringify(cached), before, "rendering old caches must not mutate stored labels or verbatim evidence");
+  assert.equal(scene.entries[0].node.evidence[0].quote, quote);
+  const chart = { direction: "TB", nodes: [{ id: "root", type: "process", role: "other", label, detail, evidence }], edges: [{ from: "root", to: "root", label: "温度 &ge; 10<sup>2</sup>" }] };
+  const chartBefore = JSON.stringify(chart);
+  const source = Flowchart.mermaidSource(chart);
+  assert(source.includes("Cxcr4⁻/⁻ 与 H₂O") && source.includes("cm⁻¹") && source.includes("温度 ≥ 10²"));
+  assert.equal(JSON.stringify(chart), chartBefore, "flowchart display adaptation must leave old caches intact");
+  assert.equal(U.diagramDisplayText("<SUP>2</SUP> &lt;sub&gt;2&lt;/sub&gt; &#215; &#xB1;"), "² ₂ × ±");
+  assert.equal(U.diagramDisplayText("x<sup>alpha</sup> y<sub>中文</sub>"), "x^(alpha) y_(中文)");
+  assert.equal(U.diagramDisplayText("a_b x^2 $x_i$ <img src=x> &unknown; &#0; &#xD800;"), "a_b x^2 $x_i$ <img src=x> &unknown; &#0; &#xD800;",
+    "plain identifiers, LaTeX, unknown markup and invalid entities must remain literal text");
+}
+
 function testMindmap() {
   const map = Mindmap.parseMarkdownMindmap(`<!-- litmtrans-mindmap -->
 # 论文核心
@@ -214,7 +241,7 @@ function testWebMindmapHierarchyRecovery() {
   const adapted = MindmapV2.adaptMap(cached);
   assert.equal(adapted.root.children[0].children.length, 2);
   assert.equal(adapted.root.children[0].children[0].children[0].id, "fact");
-  assert.equal(adapted.nodes.find(node => node.id === "fact").label, "Cxcr4^(-/-) 与 H₂O");
+  assert.equal(adapted.nodes.find(node => node.id === "fact").label, "Cxcr4⁻/⁻ 与 H₂O");
   assert.equal(adapted.nodes.find(node => node.id === "fact").evidence[0].quote, "The original evidence.");
   assert.equal(JSON.stringify(cached), before, "runtime recovery must preserve the original cache data and node IDs");
   assert.equal(MindmapV2.layout(cached).entries.find(entry => entry.node.id === "fact").parent.node.id, "group");
@@ -399,6 +426,7 @@ function testDiagramEvidenceMatching() {
 }
 
   return {
+    testDiagramDisplayCompatibility,
     testMindmap,
     testFlowchart,
     testDiagramContentPreservation,

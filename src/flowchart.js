@@ -19,6 +19,8 @@
     return String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
   }
 
+  const displayText = value => cleanLabel(LitMTrans.Utils?.diagramDisplayText?.(value) ?? value);
+
   function cleanEvidenceQuote(value) {
     return String(value ?? "").replace(/\u0000/g, "").trim();
   }
@@ -241,13 +243,13 @@
     // Keep model-provided prose out of Mermaid Markdown/HTML syntax. Rich
     // title/detail styling is applied to the rendered SVG below, after the
     // graph parser has completed successfully.
-    const quote = value => JSON.stringify(cleanLabel(value).replace(/[\[\]{}]/g, ""));
+    const quote = value => JSON.stringify(displayText(value).replace(/[\[\]{}]/g, ""));
     const rows = [`flowchart ${chart.direction}`];
     for (const node of chart.nodes) {
       const visible = node.detail ? `${node.label}：${node.detail}` : node.label;
       rows.push(`${mermaidNodeID(node.id)}@{ shape: ${SHAPES[node.type]}, label: ${quote(visible)} };`);
     }
-    for (const edge of chart.edges) rows.push(`${mermaidNodeID(edge.from)} -->${edge.label ? `|${edge.label}|` : ""} ${mermaidNodeID(edge.to)};`);
+    for (const edge of chart.edges) rows.push(`${mermaidNodeID(edge.from)} -->${edge.label ? `|${displayText(edge.label).replace(/[|]/g, "／")}|` : ""} ${mermaidNodeID(edge.to)};`);
     // Research-atlas palette: colour encodes argumentative function. The
     // conclusion is the sole dark anchor; all working stages stay paper-light.
     rows.push("classDef terminal fill:#243947,stroke:#243947,color:#ffffff,stroke-width:1.4px;");
@@ -315,18 +317,18 @@
       if (String(label.namespaceURI || "").includes("svg") && label.localName === "text") {
         label.replaceChildren();
         const title = parsed.createElementNS("http://www.w3.org/2000/svg", "tspan");
-        title.setAttribute("x", "0"); title.setAttribute("dy", node.detail ? "-0.45em" : "0.35em"); title.classList.add("flowchart-node-title"); title.textContent = node.label; label.appendChild(title);
+        title.setAttribute("x", "0"); title.setAttribute("dy", node.detail ? "-0.45em" : "0.35em"); title.classList.add("flowchart-node-title"); title.textContent = displayText(node.label); label.appendChild(title);
         if (node.detail) {
           const detail = parsed.createElementNS("http://www.w3.org/2000/svg", "tspan");
-          detail.setAttribute("x", "0"); detail.setAttribute("dy", "1.65em"); detail.classList.add("flowchart-node-detail"); detail.textContent = node.detail; label.appendChild(detail);
+          detail.setAttribute("x", "0"); detail.setAttribute("dy", "1.65em"); detail.classList.add("flowchart-node-detail"); detail.textContent = displayText(node.detail); label.appendChild(detail);
         }
       }
       else {
         label.replaceChildren();
-        const title = parsed.createElementNS("http://www.w3.org/1999/xhtml", "strong"); title.setAttribute("class", "flowchart-node-title"); title.textContent = node.label; label.appendChild(title);
+        const title = parsed.createElementNS("http://www.w3.org/1999/xhtml", "strong"); title.setAttribute("class", "flowchart-node-title"); title.textContent = displayText(node.label); label.appendChild(title);
         if (node.detail) {
           label.appendChild(parsed.createElementNS("http://www.w3.org/1999/xhtml", "br"));
-          const detail = parsed.createElementNS("http://www.w3.org/1999/xhtml", "span"); detail.setAttribute("class", "flowchart-node-detail"); detail.textContent = node.detail; label.appendChild(detail);
+          const detail = parsed.createElementNS("http://www.w3.org/1999/xhtml", "span"); detail.setAttribute("class", "flowchart-node-detail"); detail.textContent = displayText(node.detail); label.appendChild(detail);
         }
       }
     }
@@ -435,7 +437,7 @@
     const detail = document.createElement("section");
     detail.className = "flowchart-inline-detail";
     const eyebrow = document.createElement("span"); eyebrow.className = "flowchart-inline-detail-label"; eyebrow.textContent = "原文证据"; detail.appendChild(eyebrow);
-    const heading = document.createElement("strong"); heading.textContent = node.label; detail.appendChild(heading);
+    const heading = document.createElement("strong"); heading.textContent = displayText(node.label); detail.appendChild(heading);
     const list = document.createElement("div"); list.className = "flowchart-evidence-list"; detail.appendChild(list);
     node.evidence.forEach((item, index) => {
       const quote = evidenceText(item);
