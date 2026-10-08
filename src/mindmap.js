@@ -4,8 +4,7 @@
   const host = globalThis;
   const LitMTrans = host.LitMTrans = host.LitMTrans || {};
   const MARKER = "<!-- litmtrans-mindmap -->";
-  const MAX_NODES = 80;
-  const MAX_DEPTH = 5;
+  const MAX_NODES = 10000;
   const SVG_NS = "http://www.w3.org/2000/svg";
   const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -20,17 +19,18 @@
     const outline = source.slice(markerAt + MARKER.length).trim();
     if (!outline) return null;
     const root = node("", 0), stack = [root];
-    let count = 0;
+    let count = 0, truncated = false, headingDepth = 2;
     for (const rawLine of outline.split("\n")) {
       const line = rawLine.replace(/\t/g, "  ");
       const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
       const list = line.match(/^(\s*)[-*+]\s+(.+)$/);
       if (!heading && !list) continue;
-      // Lists sit beneath the preceding heading: H2 -> top-level bullet is
-      // depth 3, and each two-space indent adds one further level.
-      const depth = heading ? heading[1].length : Math.floor(list[1].length / 2) + 3;
+      // 列表紧跟当前标题，每两格缩进增加一层。
+      const depth = heading ? heading[1].length : Math.floor(list[1].length / 2) + headingDepth + 1;
+      if (heading) headingDepth = depth;
       const label = heading ? heading[2] : list[2];
-      if (!label || depth > MAX_DEPTH || count >= MAX_NODES) continue;
+      if (!label) continue;
+      if (count >= MAX_NODES) { truncated = true; continue; }
       const item = node(label.replace(/`([^`]+)`/g, "$1"), depth);
       while (stack.length > 1 && stack[stack.length - 1].depth >= depth) stack.pop();
       stack[stack.length - 1].children.push(item); stack.push(item); count += 1;
@@ -39,7 +39,7 @@
     const first = root.children[0];
     if (first.depth === 1) { root.label = first.label; root.children = first.children; }
     else root.label = "要点导图";
-    return { root, markdown: outline, truncated: count >= MAX_NODES };
+    return { root, markdown: outline, truncated };
   }
 
   function escapeHTML(value) {
@@ -67,7 +67,7 @@
     const source = String(label || "").replace(/\$[^$]+\$|\\\([^)]*\\\)/g, "公式");
     const units = [...source].reduce((sum, character) => sum + (/[^\x00-\xff]/.test(character) ? 1 : .56), 0);
     const width = Math.max(142, Math.min(252, Math.ceil(Math.min(units, 17) * 13 + 30)));
-    const lines = Math.max(1, Math.min(4, Math.ceil(units / Math.max(8, (width - 30) / 13))));
+    const lines = Math.max(1, Math.ceil(units / Math.max(8, (width - 30) / 13)));
     return { width, height: lines * 21 + 20 };
   }
 
@@ -89,42 +89,45 @@
     };
     const descend = (item, depth, direction, parent) => {
       const entry = makeEntry(item, depth, direction, parent);
-      entry.children = item.children.map(child => descend(child, depth + 1, direction, entry));
+      const pending = [entry];
+      while (pending.length) {
+        const current = pending.pop();
+        current.children = current.item.children.map(child => makeEntry(child, current.depth + 1, direction, current));
+        for (let index = current.children.length - 1; index >= 0; index--) pending.push(current.children[index]);
+      }
       return entry;
     };
     const root = makeEntry(map.root, 0, 0);
     const branches = map.root.children.map((child, index) => descend(child, 1, index % 2 ? 1 : -1, root));
     root.children = branches;
-    const leafCount = entry => entry.children.length ? entry.children.reduce((sum, child) => sum + leafCount(child), 0) : 1;
     const left = branches.filter(item => item.direction < 0), right = branches.filter(item => item.direction > 0);
-    const sideLeaves = side => side.reduce((sum, branch) => sum + leafCount(branch), 0);
-    const leafGap = 86;
-    const sideHeight = Math.max(sideLeaves(left), sideLeaves(right), 1) * leafGap;
-    const centreY = Math.max(140, sideHeight / 2 + 38);
     const layoutSide = (side, direction) => {
-      let leafIndex = 0;
-      const place = entry => {
-        entry.children.forEach(place);
-        entry.y = entry.children.length
-          ? entry.children.reduce((sum, child) => sum + child.y, 0) / entry.children.length
-          : centreY - ((sideLeaves(side) - 1) * leafGap) / 2 + leafIndex++ * leafGap;
-      };
-      side.forEach(place);
-      const placeX = entry => {
-        if (!entry.parent) return;
-        entry.x = direction > 0
-          ? entry.parent.x + entry.parent.width + 62
-          : entry.parent.x - entry.width - 62;
-        entry.children.forEach(placeX);
-      };
-      side.forEach(placeX);
+      const ordered = [], pending = side.slice().reverse();
+      while (pending.length) {
+        const entry = pending.pop();
+        ordered.push(entry);
+        for (let index = entry.children.length - 1; index >= 0; index--) pending.push(entry.children[index]);
+      }
+      const leaves = ordered.filter(entry => !entry.children.length);
+      const totalHeight = leaves.reduce((sum, entry) => sum + entry.height, 0) + Math.max(0, leaves.length - 1) * 36;
+      let currentY = -totalHeight / 2;
+      for (const leaf of leaves) {
+        leaf.y = currentY + leaf.height / 2;
+        currentY += leaf.height + 36;
+      }
+      for (let index = ordered.length - 1; index >= 0; index--) {
+        const entry = ordered[index];
+        if (entry.children.length) entry.y = entry.children.reduce((sum, child) => sum + child.y, 0) / entry.children.length;
+      }
+      for (const entry of ordered) entry.x = direction > 0 ? entry.parent.x + entry.parent.width + 62 : entry.parent.x - entry.width - 62;
     };
-    root.x = 0; root.y = centreY;
+    root.x = 0; root.y = 0;
     layoutSide(left, -1); layoutSide(right, 1);
     const minX = Math.min(...nodes.map(item => item.x)), maxX = Math.max(...nodes.map(item => item.x + item.width));
+    const minY = Math.min(...nodes.map(item => item.y - item.height / 2)), maxY = Math.max(...nodes.map(item => item.y + item.height / 2));
     const shift = 34 - minX;
-    nodes.forEach(item => { item.x += shift; });
-    const width = Math.max(520, maxX - minX + 68), height = Math.max(280, sideHeight + 76);
+    nodes.forEach(item => { item.x += shift; item.y += 38 - minY; });
+    const width = Math.max(520, maxX - minX + 68), height = Math.max(280, maxY - minY + 76);
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("xmlns", SVG_NS); svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("width", String(width)); svg.setAttribute("height", String(height));

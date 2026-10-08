@@ -419,10 +419,14 @@ module.exports = function createSuite(env) {
     assert.equal(workbenchRead.sourceFingerprint, saved.sourceFingerprint);
     const agentRead = await artifact.readDiagram("1-A", "mindmap", {});
     assert.deepEqual(agentRead.diagram, diagram);
-    const largeChildren = Array.from({ length: 64 }, (_, index) => ({ id: `n${index}`, label: `Node ${index}`, evidence: [], children: [] }));
+    const largeChildren = Array.from({ length: 9999 }, (_, index) => ({ id: `n${index}`, label: `Node ${index}`, evidence: [], children: [] }));
     const largeDiagram = { nodes: [{ id: "root", label: "Root", evidence: [] }, ...largeChildren], root: { id: "root", label: "Root", parentId: null, children: largeChildren } };
     assert(Agent.DiagramCache.build({ taskType: "paper_mindmap", mode: "mindmap", diagram: largeDiagram }),
-      "a rendered 65-node mind map must also be accepted by the persistent cache");
+      "a rendered 10,000-node mind map with 9,999 siblings must also be accepted by the persistent cache");
+    await artifact.saveDiagram("1-A", "mindmap", largeDiagram);
+    const largeRead = await artifact.readDiagram("1-A", "mindmap", {});
+    assert.equal(largeRead.diagram.nodes.length, 10000, "large maps must survive a persistent save/read round trip");
+    assert.equal(largeRead.diagram.root.children.length, 9999, "persistent maps must retain every sibling beyond the old limit");
     const flow = { nodes: [{ id: "start", label: "Start" }, { id: "end", label: "End" }], edges: [{ from: "start", to: "end" }] };
     const flowPayload = Agent.DiagramCache.build({ taskType: "paper_logic_flow", mode: "flowchart", title: "Flow", sourceFingerprint: saved.sourceFingerprint, diagram: flow });
     await storage.writeJSON("/mem/1-A/diagrams/paper_logic_flow.json", flowPayload);

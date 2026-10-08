@@ -33,6 +33,26 @@
     return locale.startsWith("zh") ? zh : en;
   }
 
+  function filePickerClass() {
+    if (typeof Zotero.FilePicker === "function") return Zotero.FilePicker;
+    try {
+      return ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs").FilePicker;
+    }
+    catch (_) { return null; }
+  }
+
+  function filePickerPath(picker) {
+    const file = picker.file;
+    const path = typeof file === "string" ? file : String(file?.path || "");
+    if (!path) throw new Error(localize("未能读取文件路径，请重试", "Unable to read the file path. Please retry."));
+    return path;
+  }
+
+  function initNativeFilePicker(picker, target, title, mode) {
+    const platformVersion = parseInt(Services.appinfo?.platformVersion || "128", 10);
+    picker.init(platformVersion >= 128 ? target.browsingContext || target : target, title, mode);
+  }
+
   function displayTitle(item, attachment) {
     const parent = attachment?.parentID ? Zotero.Items.get(attachment.parentID) : null;
     return String(parent?.getField?.("title") || item?.getField?.("title") || attachment?.getField?.("title") || attachment?.attachmentFilename || localize("未命名文献", "Untitled document"));
@@ -3005,8 +3025,9 @@
     async selectReferenceFiles(win = null, currentPaths = []) {
       const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
       let selected = [];
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize("选择翻译参考语料", "Select translation reference documents"), picker.modeOpenMultiple);
         picker.appendFilter(
           localize("支持的参考文件", "Supported reference files"),
@@ -3020,7 +3041,7 @@
       }
       else {
         const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-        picker.init(target.browsingContext || target, localize("选择翻译参考语料", "Select translation reference documents"), Ci.nsIFilePicker.modeOpenMultiple);
+        initNativeFilePicker(picker, target, localize("选择翻译参考语料", "Select translation reference documents"), Ci.nsIFilePicker.modeOpenMultiple);
         picker.appendFilter(
           localize("支持的参考文件", "Supported reference files"),
           "*.pdf; *.doc; *.docx; *.ppt; *.pptx; *.xls; *.xlsx; *.html; *.htm; *.png; *.jpg; *.jpeg; *.webp; *.md; *.markdown; *.txt"
@@ -3040,8 +3061,9 @@
 
     async selectChatDocumentFile(win = null) {
       const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize("添加本轮对话文档", "Attach a document to this turn"), picker.modeOpen);
         picker.appendFilter(
           localize("支持的文档", "Supported documents"),
@@ -3050,100 +3072,104 @@
         picker.appendFilters(picker.filterAll);
         const result = await picker.show();
         if (result !== picker.returnOK) return "";
-        return String(picker.file?.path || "");
+        return filePickerPath(picker);
       }
       const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      picker.init(target.browsingContext || target, localize("添加本轮对话文档", "Attach a document to this turn"), Ci.nsIFilePicker.modeOpen);
+      initNativeFilePicker(picker, target, localize("添加本轮对话文档", "Attach a document to this turn"), Ci.nsIFilePicker.modeOpen);
       picker.appendFilter(
         localize("支持的文档", "Supported documents"),
         "*.pdf; *.doc; *.docx; *.ppt; *.pptx; *.xls; *.xlsx; *.html; *.htm; *.png; *.jpg; *.jpeg; *.jp2; *.webp; *.gif; *.bmp; *.md; *.markdown; *.txt; *.text; *.log; *.csv; *.tsv; *.json; *.jsonl; *.xml; *.yaml; *.yml; *.toml; *.ini; *.cfg; *.conf; *.py; *.m; *.r; *.js; *.ts; *.jsx; *.tsx; *.css; *.scss; *.less; *.java; *.c; *.h; *.cpp; *.hpp; *.cc; *.cs; *.go; *.rs; *.php; *.rb; *.swift; *.kt; *.kts; *.sh; *.bash; *.bat; *.ps1; *.sql"
       );
       picker.appendFilters(Ci.nsIFilePicker.filterAll);
       const result = await new Promise(resolve => picker.open(resolve));
-      return result === Ci.nsIFilePicker.returnOK ? String(picker.file?.path || "") : "";
+      return result === Ci.nsIFilePicker.returnOK ? filePickerPath(picker) : "";
     }
 
     async selectPDFExportPath(win, defaultName) {
       const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
       const safeName = `${U.safeStem(String(defaultName || "document").replace(/\.pdf$/i, ""), 100)}.pdf`;
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize("导出PDF", "Export PDF"), picker.modeSave);
         picker.appendFilter("PDF", "*.pdf");
         picker.defaultString = safeName;
         const result = await picker.show();
         if (result !== picker.returnOK && result !== picker.returnReplace) return "";
-        const path = String(picker.file?.path || "");
+        const path = filePickerPath(picker);
         return /\.pdf$/i.test(path) ? path : `${path}.pdf`;
       }
       const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      picker.init(target.browsingContext || target, localize("导出PDF", "Export PDF"), Ci.nsIFilePicker.modeSave);
+      initNativeFilePicker(picker, target, localize("导出PDF", "Export PDF"), Ci.nsIFilePicker.modeSave);
       picker.appendFilter("PDF", "*.pdf");
       picker.defaultString = safeName;
       const result = await new Promise(resolve => picker.open(resolve));
       if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return "";
-      const path = String(picker.file?.path || "");
+      const path = filePickerPath(picker);
       return /\.pdf$/i.test(path) ? path : `${path}.pdf`;
     }
 
     async selectMarkdownExportPath(win, defaultName) {
       const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
       const safeName = `${U.safeStem(String(defaultName || "document").replace(/\.(?:md|markdown)$/i, ""), 100)}.md`;
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize("导出Markdown", "Export Markdown"), picker.modeSave);
         picker.appendFilter("Markdown", "*.md; *.markdown");
         picker.defaultString = safeName;
         const result = await picker.show();
         if (result !== picker.returnOK && result !== picker.returnReplace) return "";
-        const path = String(picker.file?.path || "");
+        const path = filePickerPath(picker);
         return /\.(?:md|markdown)$/i.test(path) ? path : `${path}.md`;
       }
       const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      picker.init(target.browsingContext || target, localize("导出Markdown", "Export Markdown"), Ci.nsIFilePicker.modeSave);
+      initNativeFilePicker(picker, target, localize("导出Markdown", "Export Markdown"), Ci.nsIFilePicker.modeSave);
       picker.appendFilter("Markdown", "*.md; *.markdown");
       picker.defaultString = safeName;
       const result = await new Promise(resolve => picker.open(resolve));
       if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return "";
-      const path = String(picker.file?.path || "");
+      const path = filePickerPath(picker);
       return /\.(?:md|markdown)$/i.test(path) ? path : `${path}.md`;
     }
 
     async selectCAJExportPath(win, defaultName) {
       const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
       const safeName = `${U.safeStem(String(defaultName || "document").replace(/\.caj$/i, ""), 100)}.caj`;
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize("导出CAJ", "Export CAJ"), picker.modeSave);
         picker.appendFilter("CAJ", "*.caj");
         picker.defaultString = safeName;
         const result = await picker.show();
         if (result !== picker.returnOK && result !== picker.returnReplace) return "";
-        const path = String(picker.file?.path || "");
+        const path = filePickerPath(picker);
         return /\.caj$/i.test(path) ? path : `${path}.caj`;
       }
       const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      picker.init(target.browsingContext || target, localize("导出CAJ", "Export CAJ"), Ci.nsIFilePicker.modeSave);
+      initNativeFilePicker(picker, target, localize("导出CAJ", "Export CAJ"), Ci.nsIFilePicker.modeSave);
       picker.appendFilter("CAJ", "*.caj");
       picker.defaultString = safeName;
       const result = await new Promise(resolve => picker.open(resolve));
       if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return "";
-      const path = String(picker.file?.path || "");
+      const path = filePickerPath(picker);
       return /\.caj$/i.test(path) ? path : `${path}.caj`;
     }
 
     async selectDirectoryExportPath(win, title) {
       const target = win?.document ? win : Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize(title, title), picker.modeGetFolder);
         const result = await picker.show();
-        return result === picker.returnOK ? String(picker.file?.path || "") : "";
+        return result === picker.returnOK ? filePickerPath(picker) : "";
       }
       const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      picker.init(target.browsingContext || target, localize(title, title), Ci.nsIFilePicker.modeGetFolder);
+      initNativeFilePicker(picker, target, localize(title, title), Ci.nsIFilePicker.modeGetFolder);
       const result = await new Promise(resolve => picker.open(resolve));
-      return result === Ci.nsIFilePicker.returnOK ? String(picker.file?.path || "") : "";
+      return result === Ci.nsIFilePicker.returnOK ? filePickerPath(picker) : "";
     }
 
     decodeImageDataURL(dataURL, win = null) {
@@ -3155,25 +3181,26 @@
       const extensions = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp", "image/jp2": "jp2", "image/svg+xml": "svg" };
       const extension = extensions[mimeType] || "png";
       const stem = U.safeStem(String(defaultName || "generated_image").replace(/\.[^.]+$/, ""), 100);
-      if (typeof Zotero.FilePicker === "function") {
-        const picker = new Zotero.FilePicker();
+      const FilePicker = filePickerClass();
+      if (FilePicker) {
+        const picker = new FilePicker();
         picker.init(target, localize("图片另存为", "Save image as"), picker.modeSave);
         picker.appendFilter(`${extension.toUpperCase()} image`, `*.${extension}`);
-        picker.appendFilter(localize("所有文件", "All files"), "*.*");
+        picker.appendFilters(picker.filterAll);
         picker.defaultString = `${stem}.${extension}`;
         const result = await picker.show();
         if (result !== picker.returnOK && result !== picker.returnReplace) return "";
-        const path = String(picker.file?.path || "");
+        const path = filePickerPath(picker);
         return new RegExp(`\\.${extension}$`, "i").test(path) ? path : `${path}.${extension}`;
       }
       const picker = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      picker.init(target.browsingContext || target, localize("图片另存为", "Save image as"), Ci.nsIFilePicker.modeSave);
+      initNativeFilePicker(picker, target, localize("图片另存为", "Save image as"), Ci.nsIFilePicker.modeSave);
       picker.appendFilter(`${extension.toUpperCase()} image`, `*.${extension}`);
       picker.appendFilters(Ci.nsIFilePicker.filterAll);
       picker.defaultString = `${stem}.${extension}`;
       const result = await new Promise(resolve => picker.open(resolve));
       if (result !== Ci.nsIFilePicker.returnOK && result !== Ci.nsIFilePicker.returnReplace) return "";
-      const path = String(picker.file?.path || "");
+      const path = filePickerPath(picker);
       return new RegExp(`\\.${extension}$`, "i").test(path) ? path : `${path}.${extension}`;
     }
 

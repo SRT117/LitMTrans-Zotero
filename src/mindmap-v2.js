@@ -4,12 +4,16 @@
   const host = globalThis;
   const LitMTrans = host.LitMTrans = host.LitMTrans || {};
   const MARKER = "<!-- litmtrans-mindmap-v2 -->";
-  const MAX_NODES = 128;
-  const MAX_DEPTH = 5;
+  const MAX_NODES = 10000;
   const KIND = new Set(["root", "background", "problem", "gap", "hypothesis", "method", "data", "result", "mechanism", "comparison", "validation", "contribution", "limitation", "implication", "other"]);
 
-  const clean = (value, limit) => String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
-  const cleanEvidenceQuote = (value, limit = 500) => String(value ?? "").replace(/\u0000/g, "").trim().slice(0, limit);
+  const clean = value => String(value || "")
+    .replace(/<sup>(.*?)<\/sup>/gi, (_, text) => [...text].every(char => "0123456789+-=()in".includes(char))
+      ? [...text].map(char => "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁱⁿ"["0123456789+-=()in".indexOf(char)]).join("") : `^(${text})`)
+    .replace(/<sub>(.*?)<\/sub>/gi, (_, text) => [...text].every(char => "0123456789+-=()".includes(char))
+      ? [...text].map(char => "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎"["0123456789+-=()".indexOf(char)]).join("") : `_(${text})`)
+    .replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+  const cleanEvidenceQuote = value => String(value ?? "").replace(/\u0000/g, "").trim();
   function markdownEvidenceQuote(line) {
     const marked = String(line || "").match(/^>\s*\[\^(?:quote|evidence):\s*([\s\S]*?)\]\s*$/i);
     if (marked) return marked[1].trim();
@@ -37,6 +41,8 @@
     let counter = 1;
     let lastNode = null;
     const listStack = [];
+    const headingStack = [];
+    const listGroups = new Map();
     let inFence = false;
     let hasRootHeading = false;
     let hasBranchHeading = false;
@@ -53,24 +59,28 @@
       if (inFence) continue;
       const h1 = line.match(/^#\s+(.+)$/);
       if (h1 && !rootLabel) {
-        rootLabel = clean(h1[1], 120);
+        rootLabel = clean(h1[1]);
         hasRootHeading = Boolean(rootLabel);
         continue;
       }
-      const h2 = line.match(/^##+\s+(.+)$/);
+      const h2 = line.match(/^(#{2,})\s+(.+)$/);
       if (h2) {
         hasBranchHeading = true;
         listStack.length = 0;
+        listGroups.clear();
         const branchId = `branch_${counter++}`;
+        const level = h2[1].length;
+        while (headingStack.length && headingStack.at(-1).level >= level) headingStack.pop();
         const branch = {
           id: branchId,
-          parentId: "root",
-          label: clean(h2[1], 300),
+          parentId: headingStack.at(-1)?.id || "root",
+          label: clean(h2[2]),
           kind: "branch",
           importance: 3,
           evidence: []
         };
         rawNodes.push(branch);
+        headingStack.push({ level, id: branchId });
         currentParentId = branchId;
         lastNode = branch;
         continue;
@@ -81,31 +91,35 @@
         if (q) lastNode.evidence.push({ type: "quote", quote: q });
         continue;
       }
-      const itemMatch = sourceLine.match(/^(\s*)[-*+]\s+(.+)$/);
+      const itemMatch = sourceLine.match(/^(\s*)(?:[-*+]|\d+[.)])\s+(.+)$/);
       if (itemMatch) {
         hasListItem = true;
         const indent = itemMatch[1].length;
-        while (listStack.length && listStack.at(-1).indent >= indent) listStack.pop();
         const rawText = itemMatch[2].trim();
         let label = rawText;
         let detail = "";
-        const splitMatch = rawText.match(/^\*\*([^*]+)\*\*[：:\s-]*(.+)$/);
+        const splitMatch = rawText.match(/^\*\*([^*]+)\*\*[：:\s-]*(.*)$/);
         if (splitMatch) {
           label = splitMatch[1].trim();
           detail = splitMatch[2].trim();
         }
+        const isGroup = /^\*\*[^*]+\*\*\s*[：:]\s*$/.test(rawText);
+        for (const level of listGroups.keys()) if (level > indent) listGroups.delete(level);
+        if (isGroup || detail) listGroups.delete(indent);
+        while (listStack.length && listStack.at(-1).indent >= indent) listStack.pop();
         const leafId = `node_${counter++}`;
         const leaf = {
           id: leafId,
-          parentId: listStack.at(-1)?.node.id || currentParentId,
-          label: clean(label, 300),
-          detail: clean(detail, 420),
+          parentId: listGroups.get(indent)?.id || listStack.at(-1)?.node.id || currentParentId,
+          label: clean(label),
+          detail: clean(detail),
           kind: "leaf",
           importance: 2,
           evidence: []
         };
         rawNodes.push(leaf);
         listStack.push({ indent, node: leaf });
+        if (isGroup) listGroups.set(indent, leaf);
         lastNode = leaf;
       }
     }
@@ -138,11 +152,11 @@
     for (const raw of data.nodes) {
       const id = String(raw?.id || "").trim();
       const parentId = raw?.parentId == null ? null : String(raw.parentId).trim();
-      const label = clean(raw?.label, 300);
+      const label = clean(raw?.label);
       const kind = KIND.has(String(raw?.kind || "other")) ? String(raw.kind) : "other";
-      if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id) || ids.has(id) || !label) return { error: "每个思维导图节点都需要唯一 ID 和标题。" };
+      if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(id) || ids.has(id) || !label) return { error: "每个思维导图节点都需要唯一 ID 和标题。" };
       ids.add(id);
-      nodes.push({ id, parentId, label, detail: clean(raw?.detail, 420), kind, importance: Math.max(1, Math.min(3, Number(raw?.importance) || 1)), evidence: Array.isArray(raw?.evidence) ? raw.evidence.slice(0, 6) : [] });
+      nodes.push({ id, parentId, label, detail: clean(raw?.detail), kind, importance: Math.max(1, Math.min(3, Number(raw?.importance) || 1)), evidence: Array.isArray(raw?.evidence) ? raw.evidence.slice() : [] });
     }
     const roots = nodes.filter(node => !node.parentId);
     if (roots.length !== 1 || !roots[0]) return { error: "思维导图必须且只能有一个根节点。" };
@@ -154,14 +168,16 @@
       parent.children.push(node);
     }
     const root = byID.get(roots[0].id);
-    const seen = new Set(); let depthError = false;
-    const visit = (node, depth) => {
-      if (seen.has(node.id)) return false;
-      seen.add(node.id); if (depth > MAX_DEPTH) depthError = true;
-      return node.children.every(child => visit(child, depth + 1));
-    };
-    if (!visit(root, 0) || seen.size !== nodes.length || depthError) return { error: "思维导图不能有环，且层级不能超过 5 层。" };
-    return { version: 2, mode: clean(data.mode, 32) || "mindmap", title: clean(data.title, 120) || root.label, paperType: clean(data.paperType, 32), core: clean(data.core, 360), root, nodes: [...byID.values()] };
+    const seen = new Set();
+    const pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      if (seen.has(node.id)) return { error: "思维导图不能有环。" };
+      seen.add(node.id);
+      for (const child of node.children) pending.push(child);
+    }
+    if (seen.size !== nodes.length) return { error: "思维导图包含环或未连接到根节点的节点。" };
+    return { version: 2, mode: clean(data.mode) || "mindmap", title: clean(data.title) || root.label, paperType: clean(data.paperType), core: clean(data.core), root, nodes: [...byID.values()] };
   }
 
   function metrics(node) {
@@ -175,12 +191,50 @@
     const detailLines = detailUnits ? Math.ceil(detailUnits / (maxUnitsPerLine * 0.95)) : 0;
     const totalLines = labelLines + detailLines + (detailLines ? 0.6 : 0);
     
-    return { width, height: Math.max(34, Math.min(480, 18 + totalLines * 18)) };
+    return { width, height: Math.max(34, 18 + totalLines * 18) };
+  }
+
+  function adaptMap(map) {
+    const nodes = map.nodes.map(({ children, ...node }) => ({ ...node, label: clean(node.label), detail: clean(node.detail), children: [] }));
+    const byID = new Map(nodes.map(node => [node.id, node]));
+    const siblings = new Map();
+    for (const node of nodes) {
+      if (!node.parentId) continue;
+      if (!siblings.has(node.parentId)) siblings.set(node.parentId, []);
+      siblings.get(node.parentId).push(node);
+    }
+    // 旧网页提取曾丢失列表缩进；仅根据冒号占位的明确分组恢复父子关系。
+    for (const children of siblings.values()) {
+      let group = null;
+      for (const node of children) {
+        if (/^[：:]$/.test(node.detail)) {
+          node.detail = "";
+          group = node;
+        } else if (node.detail || siblings.has(node.id)) {
+          group = null;
+        } else if (group) {
+          node.parentId = group.id;
+        }
+      }
+    }
+    for (const node of nodes) if (node.parentId) byID.get(node.parentId)?.children.push(node);
+    return { ...map, title: clean(map.title), root: byID.get(map.root.id), nodes };
   }
 
   function layout(map) {
+    map = adaptMap(map);
     const entries = [];
-    const branchWeight = node => !node.children.length ? 1 : node.children.reduce((sum, child) => sum + branchWeight(child), 0);
+    const orderedNodes = [], pendingNodes = [map.root], weights = new Map();
+    while (pendingNodes.length) {
+      const node = pendingNodes.pop();
+      orderedNodes.push(node);
+      for (const child of node.children) pendingNodes.push(child);
+    }
+    for (let index = orderedNodes.length - 1; index >= 0; index--) {
+      const node = orderedNodes[index];
+      weights.set(node, node.children.length ? node.children.reduce((sum, child) => sum + weights.get(child), 0) : 1);
+    }
+    const branchWeight = node => weights.get(node);
     const make = (node, parent, side, depth) => {
       const entry = { node, parent, side, depth, children: [], ...metrics(node), x: 0, y: 0 };
       entries.push(entry);
@@ -188,7 +242,12 @@
     };
     const descend = (node, parent, side, depth) => {
       const entry = make(node, parent, side, depth);
-      entry.children = node.children.map(child => descend(child, entry, side, depth + 1));
+      const pending = [entry];
+      while (pending.length) {
+        const current = pending.pop();
+        current.children = current.node.children.map(child => make(child, current, side, current.depth + 1));
+        for (let index = current.children.length - 1; index >= 0; index--) pending.push(current.children[index]);
+      }
       return entry;
     };
     const root = make(map.root, null, 0, 0);
@@ -200,26 +259,26 @@
     const ySpacing = 36;
     const xSpacing = 64;
     const placeSide = (nodes, side) => {
-      const leaves = [];
-      const getLeaves = entry => { if (entry.children.length) entry.children.forEach(getLeaves); else leaves.push(entry); };
-      nodes.forEach(getLeaves);
+      const ordered = [], pending = nodes.slice().reverse();
+      while (pending.length) {
+        const entry = pending.pop();
+        ordered.push(entry);
+        for (let index = entry.children.length - 1; index >= 0; index--) pending.push(entry.children[index]);
+      }
+      const leaves = ordered.filter(entry => !entry.children.length);
       
       const totalHeight = leaves.reduce((sum, leaf) => sum + leaf.height, 0) + Math.max(0, leaves.length - 1) * ySpacing;
       let currentY = -totalHeight / 2;
       
-      const y = entry => {
-        if (!entry.children.length) {
-          entry.y = currentY + entry.height / 2;
-          currentY += entry.height + ySpacing;
-        } else {
-          entry.children.forEach(y);
-          entry.y = entry.children.reduce((sum, child) => sum + child.y, 0) / entry.children.length;
-        }
-      };
-      nodes.forEach(y);
-      
-      const x = entry => { entry.x = side > 0 ? entry.parent.x + entry.parent.width + xSpacing : entry.parent.x - entry.width - xSpacing; entry.children.forEach(x); };
-      nodes.forEach(x);
+      for (const leaf of leaves) {
+        leaf.y = currentY + leaf.height / 2;
+        currentY += leaf.height + ySpacing;
+      }
+      for (let index = ordered.length - 1; index >= 0; index--) {
+        const entry = ordered[index];
+        if (entry.children.length) entry.y = entry.children.reduce((sum, child) => sum + child.y, 0) / entry.children.length;
+      }
+      for (const entry of ordered) entry.x = side > 0 ? entry.parent.x + entry.parent.width + xSpacing : entry.parent.x - entry.width - xSpacing;
     };
     root.x = 0; root.y = 0;
     placeSide(root.children.filter(item => item.side < 0), -1);
@@ -366,5 +425,5 @@
     return { name: "思维导图.svg", mimeType: "image/svg+xml", dataURL: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}` };
   }
 
-  LitMTrans.MindmapV2 = { MARKER, MAX_NODES, parse, layout, render, svgForMap, imageForMap };
+  LitMTrans.MindmapV2 = { MARKER, MAX_NODES, parse, adaptMap, layout, render, svgForMap, imageForMap };
 })();

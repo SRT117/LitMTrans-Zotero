@@ -3584,7 +3584,9 @@
   const saveDiagramImage = async image => {
     try {
       const result = await hostCall("save-image", { name: image.name || "图形.svg", dataURL: image.dataURL });
-      if (!result?.cancelled) toast("图形已保存", "success");
+      if (result?.cancelled) return;
+      if (!result?.path) throw new Error("未能确认图形保存结果，请重试。");
+      toast("图形已保存", "success");
     }
     catch (error) { toast(error.message || "保存图形失败", "error"); }
   };
@@ -3607,6 +3609,7 @@
       diagram,
       onAsk: askDiagramNode,
       onExport: saveDiagramImage,
+      onError: error => toast(error.message || "导出图形失败", "error"),
       resolveEvidence,
       onLocate: locateEvidence,
       onClear: async () => {
@@ -3712,6 +3715,7 @@
         image,
         onAsk: askDiagramNode,
         onExport: saveDiagramImage,
+        onError: error => toast(error.message || "导出图形失败", "error"),
         resolveEvidence,
         onLocate: locateEvidence
       }));
@@ -3728,6 +3732,7 @@
         diagram: mapV2,
         onAsk: askDiagramNode,
         onExport: saveDiagramImage,
+        onError: error => toast(error.message || "导出图形失败", "error"),
         resolveEvidence,
         onLocate: locateEvidence
       }));

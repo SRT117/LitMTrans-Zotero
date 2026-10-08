@@ -4,7 +4,7 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
   const C = LitMTrans.Constants;
-  const MINDMAP_FORMAT_INSTRUCTION = "系统根据用户消息中的“思维导图 / 脑图 / mind map”等关键词附加了这条格式建议。请先按用户的真实意图判断是否确实要求绘制思维导图：若用户只是在讨论、引用或询问某个已有思维导图，而未要求你制作一张图，请忽略本格式建议，按正常文字回答，且不要输出任何标记。只有在用户明确希望你制作、生成、绘制或总结为思维导图时，才以思维导图格式回答：第一行必须是 <!-- litmtrans-mindmap -->；随后只输出 Markdown 层级大纲，使用一个一级标题作为中心主题、二级标题作为主分支、无序列表补充至多两层细节；每个节点必须是少于18个汉字的短语，不要完整句；不要使用代码块、Mermaid、HTML、引言或结语。";
+  const MINDMAP_FORMAT_INSTRUCTION = "系统根据用户消息中的“思维导图 / 脑图 / mind map”等关键词附加了这条格式建议。请先按用户的真实意图判断是否确实要求绘制思维导图：若用户只是在讨论、引用或询问某个已有思维导图，而未要求你制作一张图，请忽略本格式建议，按正常文字回答，且不要输出任何标记。只有在用户明确希望你制作、生成、绘制或总结为思维导图时，才以思维导图格式回答：第一行必须是 <!-- litmtrans-mindmap -->；随后只输出 Markdown 层级大纲，使用一个一级标题作为中心主题、二级标题作为主分支、无序列表按内容需要补充层级细节；节点文字应准确表达完整信息，节点数量和层级由内容决定；不要使用代码块、Mermaid、HTML、引言或结语。";
   const FLOWCHART_FORMAT_INSTRUCTION = "系统根据用户消息中的“流程图 / 算法图 / flowchart / workflow”等关键词附加了这条格式建议。请先按用户的真实意图判断是否确实要求绘制流程图：若用户只是在讨论、引用或询问某个已有流程图，而未要求你制作一张图，请忽略本格式建议，按正常文字回答，且不要输出任何标记。只有在用户明确希望你制作、生成、绘制或总结为流程图时，才以流程图格式回答：第一行必须是 <!-- litmtrans-flowchart -->；随后只输出一个 JSON 对象，包含 direction（TB 或 LR）、nodes 和 edges。nodes 中每项必须为 {id,type,label}；type 只能是 terminator、process、decision、input、output、subprocess、database。edges 中每项必须为 {from,to,label?}，其中 from 和 to 必须逐字使用 nodes 中已声明的 id，不能使用节点 label；判断分支的 label 使用“是”“否”等简短文字，循环用指回条件节点的边表示。不要使用代码块、Mermaid、HTML 或其他文字。";
   const IMAGE_CITATION_INSTRUCTION = "需要引用论文图片时，每张图片必须另起一行，并且只使用以下完整格式：[图片来源：文档来源标签] ![IMAGE_xxx](images/image_xxx.ext)。来源标签必须逐字复制随文档给出的“图片来源标签”；Markdown 图片占位符也必须从该文档正文逐字复制。即使上文已经写过文档标题，每张图仍必须重复完整来源标签。来源标签必须放在图片占位符之前；不要把图片占位符放进粗体、斜体、代码或链接中；不要改写路径、自行编号或引用未提供的图片。正确示例：[图片来源：当前文献] ![IMAGE_001](images/image_001.jpg)。错误示例：![IMAGE_001](images/image_001.jpg) [图片来源：当前文献]。界面会依据这一整行显示本地图片。";
 
@@ -40,9 +40,9 @@
 内容规则：
 
 1. 每个节点只表达一个核心信息，不合并互不相关的发现。
-2. 每个主分支通常保留一至三个关键节点；必要时方法和结果可增加一层子节点。
-3. 总节点通常控制在八至十四个，最多十六个。不得为了达到节点数量而补充次要信息。
-4. 优先保留最能体现论文新增贡献的内容。独立贡献通常保留最重要的两项；只有第三项同样属于论文核心时才保留。
+2. 每个主分支按文献内容保留关键节点；需要时增加子节点，保持层级清晰。
+3. 节点数量由文献的重要信息决定，不设固定数量目标；避免为了凑数而补充次要信息。
+4. 优先保留最能体现论文新增贡献的内容。保留文献直接支持的核心独立贡献。
 5. 数字只有在影响效应大小、比较判断、可信程度或适用条件时优先保留。
 6. 保留关键数字时，必须指明指标、单位、比较对象（如对比基线名称）或实验条件，杜绝无参照系孤立数字。
 7. 优先保留会改变结果解释的信息，例如样本或数据范围、主要基线、评价条件、效应大小、不确定性、置信区间或统计显著性。
@@ -67,7 +67,7 @@
   const EVIDENCE_JSON_ESCAPE_INSTRUCTION = "evidence quote 必须逐字保留原文；如果原文包含反斜杠，必须按照 JSON 字符串规则写成两个反斜杠，解析后仍还原为一个原文反斜杠。";
   const MINDMAP_V2_FORMAT_INSTRUCTION = `只输出图形协议：第一行必须是 <!-- litmtrans-mindmap-v2 -->，随后只输出一个 JSON 对象。对象必须包含 version:2、mode、title、nodes。nodes 只有一个 parentId 为 null 的 root；每个节点必须有唯一 ASCII id、parentId、包含完整表达语义的 label、可选 detail、kind、importance(1-3)、可选 evidence(必须是对象数组)。注意：图表引擎不支持渲染 LaTeX，请绝对不要在 label 和 detail 中使用任何 LaTeX 公式或反斜杠转义符号，必须全部使用纯文本或 Unicode 字符替代（例如用 H₂O 代替公式写法，用 cm⁻¹ 代替复杂的物理单位公式）。${EVIDENCE_JSON_ESCAPE_INSTRUCTION}不得输出 Markdown、代码围栏、颜色、SVG 或任何额外文字。${DIAGRAM_CHINESE_INSTRUCTION}`;
   const FLOWCHART_V2_FORMAT_INSTRUCTION = `只输出图形协议：第一行必须是 <!-- litmtrans-flowchart-v2 -->，随后只输出一个 JSON 对象。对象必须包含 version:2、mode、title、layout、nodes、edges。节点有唯一 ASCII id、type、role、包含完整表达语义的 label (必须且只能叫 label，不能用其他字段名)、可选 detail、importance(1-3)、可选 evidence(必须是对象数组)。注意：图表引擎不支持渲染 LaTeX，请绝对不要在节点 label/detail 或边的可见 label 中使用任何 LaTeX 公式或反斜杠转义符号，必须全部使用纯文本或 Unicode 字符替代（例如用 H₂O 代替公式写法，用 cm⁻¹ 代替复杂的物理单位公式）。${EVIDENCE_JSON_ESCAPE_INSTRUCTION}type 只可为 terminator/process/decision/io/subprocess/database/document，role 只表达科研角色。边必须有 from/to/relation 和可选短 label。不得输出 Markdown、代码围栏、颜色、SVG 或任何额外文字。${DIAGRAM_CHINESE_INSTRUCTION}`;
-  const WEB_MINDMAP_FORMAT_INSTRUCTION = `网页自动注入模式只输出可读的 Markdown 结构化笔记，不输出 JSON、Mermaid、代码围栏或解释性前后文。使用一个一级标题作为中心主题、二级标题作为主分支、无序列表作为节点；列表项使用“**节点标题**：具体事实”格式，关键节点下一行可附一条逐字原文证据，格式为“> [^quote: 原文]”。节点应保留关键数字、条件、比较对象和结论边界，不要把论文目录直接当作分支。示例：
+  const WEB_MINDMAP_FORMAT_INSTRUCTION = `网页自动注入模式只输出可读的 Markdown 结构化笔记，不输出 JSON、Mermaid、代码围栏或解释性前后文。使用一个一级标题作为中心主题、二级标题作为主分支、无序列表作为节点；需要细分时用三级及更深标题或缩进列表表达真实父子关系，同一组的事实放在该组标题下，不把分组标题与事实写成同级列表。列表项使用“**节点标题**：具体事实”格式，关键节点下一行可附一条逐字原文证据，格式为“> [^quote: 原文]”。节点应保留关键数字、条件、比较对象和结论边界，不要把论文目录直接当作分支。示例：
 # 论文核心
 ## 研究问题
 - **研究缺口**：论文明确指出的待解决问题
@@ -98,8 +98,8 @@
 ## 4. 汇合结论与边界
 - **结论**：哪些证据共同支持结论，以及结论的适用条件。`;
   const WEB_DIAGRAM_CONTENT_INSTRUCTION = "网页模式覆盖：上文的内容取舍要求仍然有效，但不要输出 evidence JSON、LitMTrans 内部标记、Mermaid 或其他协议字段；所有节点和逐字证据必须改用下方 Markdown 格式表达。";
-  const PAPER_MINDMAP_TASK_INSTRUCTION = "为当前论文建立完整科研认知地图。先判断论文类型，再围绕核心问题或贡献组织树：研究背景/缺口、问题或假设、设计与关键方法、数据或证据、主要结果、机制或推理、验证与比较、贡献、适用边界。不要把目录或 Introduction/Methods/Results/Discussion 当作分支；用 25–55 个有价值节点（短文可更少），3–4 层为主，label 应包含完整的知识认知要点，无需刻意简短或拆分；原始证据放入 evidence。为最重要的结果、方法、结论或边界节点补充 evidence：使用 {type:\"quote\",quote:\"…\"}，quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写或编造；没有可靠短句时留空。只使用文献直接支持的信息。";
-  const PAPER_LOGIC_FLOW_TASK_INSTRUCTION = "重建当前论文的研究逻辑与证据链，而不是章节目录、摘要路线图或只有‘方法—验证—结论’的空泛框架。根据论文类型组织从背景/痛点、缺口、研究问题或假设、核心设计、关键证据、结果、推理/机制、结论到边界的有向关系；边优先表达 motivates/tests/produces/supports/explains/validates/limits。通常保留 10–24 个有实际信息的节点，必要时把并行实验、对照组、消融、参数变化和相互矛盾的证据拆成独立分支后汇合。每个节点都必须回答一个具体问题：做了什么、在什么条件下、得到什么结果、支持或限制什么判断；除纯背景/问题节点外必须填写 detail，用一至三句保留关键对象、方法配置、样本或工况、数值指标、比较基线、方向与幅度、失败条件或适用阈值。禁止使用‘开展实验’‘验证与对比’‘获得结果’‘得出结论’等没有对象和结果的空洞节点；label 可以简洁，但 detail 必须直接呈现实际干货，不能把节点信息藏进点击展开区。每个包含论文事实的节点都必须补充至少一条原文逐字 evidence quote，格式为 {type:\"quote\",quote:\"…\"}；只有纯粹用于组织关系、且论文中没有对应原句的节点可以没有 evidence。不要把多个不同结果压缩成一个总结节点。只有真实条件判断才使用 decision，绝不为了装饰滥用菱形或数据库。quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写、拼接或编造，不能可靠逐字引用时不要编造。只使用文献直接支持的信息。";
+  const PAPER_MINDMAP_TASK_INSTRUCTION = "为当前论文建立完整科研认知地图。先判断论文类型，再围绕核心问题或贡献组织树：研究背景/缺口、问题或假设、设计与关键方法、数据或证据、主要结果、机制或推理、验证与比较、贡献、适用边界。不要把目录或 Introduction/Methods/Results/Discussion 当作分支；节点数量与层级按论文的实际信息量和知识关系决定，不为控制数量而省略有价值的信息；label 应包含完整的知识认知要点，无需刻意简短或拆分；原始证据放入 evidence。为最重要的结果、方法、结论或边界节点补充 evidence：使用 {type:\"quote\",quote:\"…\"}，quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写或编造；没有可靠短句时留空。只使用文献直接支持的信息。";
+  const PAPER_LOGIC_FLOW_TASK_INSTRUCTION = "重建当前论文的研究逻辑与证据链，而不是章节目录、摘要路线图或只有‘方法—验证—结论’的空泛框架。根据论文类型组织从背景/痛点、缺口、研究问题或假设、核心设计、关键证据、结果、推理/机制、结论到边界的有向关系；边优先表达 motivates/tests/produces/supports/explains/validates/limits。按研究的实际信息量保留有价值的节点，不设固定数量目标，必要时把并行实验、对照组、消融、参数变化和相互矛盾的证据拆成独立分支后汇合。每个节点都必须回答一个具体问题：做了什么、在什么条件下、得到什么结果、支持或限制什么判断；除纯背景/问题节点外必须填写 detail，用一至三句保留关键对象、方法配置、样本或工况、数值指标、比较基线、方向与幅度、失败条件或适用阈值。禁止使用‘开展实验’‘验证与对比’‘获得结果’‘得出结论’等没有对象和结果的空洞节点；label 可以简洁，但 detail 必须直接呈现实际干货，不能把节点信息藏进点击展开区。每个包含论文事实的节点都必须补充至少一条原文逐字 evidence quote，格式为 {type:\"quote\",quote:\"…\"}；只有纯粹用于组织关系、且论文中没有对应原句的节点可以没有 evidence。不要把多个不同结果压缩成一个总结节点。只有真实条件判断才使用 decision，绝不为了装饰滥用菱形或数据库。quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写、拼接或编造，不能可靠逐字引用时不要编造。只使用文献直接支持的信息。";
   const GENERIC_MINDMAP_TASK_INSTRUCTION = "把用户明确要求整理的内容转换成一张层级清晰的语义思维导图。保留用户指定的范围，不套用论文目录。label 应直接包含完整的知识描述，无需拆分到 detail。";
   const GENERIC_FLOWCHART_TASK_INSTRUCTION = "把用户明确要求的过程、算法、计划或研究逻辑转换成真实有向流程图。节点形状只表达流程语义，边表达实际关系；不要为视觉效果制造无依据分支。";
   const KEY_POINTS_SYSTEM_PROTOCOL = "这是要点提炼任务（系统内部协议）：严格根据上述要点提炼要求与倾向生成内容。为最重要的结果或结论补充原文逐字 evidence quote（{type:\"quote\",quote:\"…\"}），quote 必须逐字复制当前文献原文语言的短句，不能翻译、改写或编造；不能可靠逐字引用时留空。用户的要点提炼要求指导内容提炼倾向与认知重点，图形协议与输出结构严格遵循系统附加的思维导图格式要求。";

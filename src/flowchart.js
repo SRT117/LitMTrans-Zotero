@@ -5,11 +5,9 @@
   const LitMTrans = host.LitMTrans = host.LitMTrans || {};
   const MARKER = "<!-- litmtrans-flowchart -->";
   const V2_MARKER = "<!-- litmtrans-flowchart-v2 -->";
-  // Research-method diagrams often contain parallel numerical and experimental
-  // branches.  Sixty-four nodes still keeps Mermaid layout bounded while
-  // allowing a complete paper workflow such as the supplied 44-node example.
-  const MAX_NODES = 64;
-  const MAX_EDGES = 112;
+  const MAX_NODES = 10000;
+  const MAX_EDGES = 100000;
+  const MAX_TEXT_SIZE = 64 * 1024 * 1024;
   const NODE_TYPES = new Set(["terminator", "process", "decision", "io", "input", "output", "subprocess", "database", "document"]);
   const ROLES = new Set(["background", "gap", "question", "hypothesis", "design", "method", "evidence", "result", "inference", "mechanism", "validation", "conclusion", "limitation", "other"]);
   const SHAPES = Object.freeze({ terminator: "stadium", process: "rect", decision: "diam", io: "lean-r", input: "lean-r", output: "lean-l", subprocess: "subproc", database: "cyl", document: "doc" });
@@ -17,12 +15,12 @@
   const renderCache = new Map();
   let mermaidLoadPromise = null;
 
-  function cleanLabel(value, limit = 80) {
-    return String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
+  function cleanLabel(value) {
+    return String(value || "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
   }
 
-  function cleanEvidenceQuote(value, limit = 500) {
-    return String(value ?? "").replace(/\u0000/g, "").trim().slice(0, limit);
+  function cleanEvidenceQuote(value) {
+    return String(value ?? "").replace(/\u0000/g, "").trim();
   }
 
   function comparableID(value) {
@@ -53,15 +51,15 @@
     const createNode = rawText => {
       let label = String(rawText || "").trim();
       let detail = "";
-      const splitMatch = label.match(/^\*\*([^*]+)\*\*[：:\s-]*(.+)$/);
+      const splitMatch = label.match(/^\*\*([^*]+)\*\*[：:\s-]*(.*)$/);
       if (splitMatch) {
         label = splitMatch[1].trim();
         detail = splitMatch[2].trim();
       }
       const node = {
         id: `step_${counter++}`,
-        label: cleanLabel(label, 80),
-        detail: cleanLabel(detail, 300),
+        label: cleanLabel(label),
+        detail: cleanLabel(detail),
         type: "process",
         role: "process",
         importance: 2,
@@ -80,6 +78,7 @@
     let currentStageGroup = [];
     let headingStack = [];
     let bulletStack = [];
+    const bulletGroups = new Map();
 
     const startStage = rawText => {
       const node = createNode(rawText);
@@ -95,6 +94,7 @@
       currentStageGroup = [node];
       headingStack = [{ level: 2, node }];
       bulletStack = [];
+      bulletGroups.clear();
       lastNode = node;
       return node;
     };
@@ -109,7 +109,7 @@
       if (inFence) continue;
       const h1 = line.match(/^#\s+(.+)$/);
       if (h1 && !title) {
-        title = cleanLabel(h1[1], 80);
+        title = cleanLabel(h1[1]);
         hasRootHeading = Boolean(title);
         continue;
       }
@@ -136,19 +136,25 @@
         headingStack.push({ level, node });
         currentStageGroup.push(node);
         bulletStack = [];
+        bulletGroups.clear();
         lastNode = node;
         continue;
       }
-      const itemMatch = rawLine.match(/^(\s*)[-*+]\s+(.+)$/);
+      const itemMatch = rawLine.match(/^(\s*)(?:[-*+]|\d+[.)])\s+(.+)$/);
       if (itemMatch) {
         hasListItem = true;
         const indentation = itemMatch[1].replace(/\t/g, "  ").length;
+        const rawText = itemMatch[2].trim();
+        const node = createNode(rawText);
+        const isGroup = /^\*\*[^*]+\*\*\s*[：:]\s*$/.test(rawText);
+        for (const level of bulletGroups.keys()) if (level > indentation) bulletGroups.delete(level);
+        if (isGroup || node.detail) bulletGroups.delete(indentation);
         while (bulletStack.length && bulletStack.at(-1).indent >= indentation) bulletStack.pop();
-        const parent = bulletStack.at(-1)?.node || headingStack.at(-1)?.node || currentStage;
-        const node = createNode(itemMatch[2].trim());
+        const parent = bulletGroups.get(indentation) || bulletStack.at(-1)?.node || headingStack.at(-1)?.node || currentStage;
         if (parent) addEdge(parent.id, node.id, bulletStack.length ? "detail" : "parallel");
         currentStageGroup.push(node);
         bulletStack.push({ indent: indentation, node });
+        if (isGroup) bulletGroups.set(indentation, node);
         lastNode = node;
       }
     }
@@ -199,10 +205,10 @@
       let type = String(candidate?.type || "process").toLowerCase();
       if (type === "input" || type === "output") type = "io";
       const label = cleanLabel(candidate?.label);
-      if (!/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(id) || ids.has(id)) return { error: "每个流程图节点都需要唯一的英文字母开头 ID。" };
+      if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(id) || ids.has(id)) return { error: "每个流程图节点都需要唯一的英文字母开头 ID。" };
       if (!NODE_TYPES.has(type) || !label) return { error: "节点类型或节点文字无效。" };
       const role = ROLES.has(String(candidate?.role || "other").toLowerCase()) ? String(candidate.role).toLowerCase() : "other";
-      ids.add(id); nodes.push({ id, type, role, label, detail: cleanLabel(candidate?.detail, 420), importance: Math.max(1, Math.min(3, Number(candidate?.importance) || 1)), evidence: Array.isArray(candidate?.evidence) ? candidate.evidence.slice(0, 6) : [] });
+      ids.add(id); nodes.push({ id, type, role, label, detail: cleanLabel(candidate?.detail), importance: Math.max(1, Math.min(3, Number(candidate?.importance) || 1)), evidence: Array.isArray(candidate?.evidence) ? candidate.evidence.slice() : [] });
     }
     // Models occasionally use a display-style reference such as `no h3o`
     // for an otherwise valid `noh3o` ID.  Resolve only an unambiguous
@@ -221,21 +227,21 @@
     const edges = [];
     for (const candidate of data.edges) {
       const from = resolveID(candidate?.from), to = resolveID(candidate?.to);
-      const label = cleanLabel(candidate?.label, 24).replace(/[|]/g, "／");
+      const label = cleanLabel(candidate?.label).replace(/[|]/g, "／");
       if (!ids.has(from) || !ids.has(to)) return { error: "流程图中的边必须引用已声明的节点。" };
       edges.push({ from, to, label });
     }
     // A compact research argument is easier to scan left-to-right.  Dense
     // graphs remain top-to-bottom so labels do not collapse into a ribbon.
     if (!direction) direction = String(data.layout || "").toLowerCase() === "auto" && nodes.length <= 18 ? "LR" : "TB";
-    return { version: isV2 ? 2 : 1, mode: cleanLabel(data.mode, 40), title: cleanLabel(data.title, 120), direction, nodes, edges };
+    return { version: isV2 ? 2 : 1, mode: cleanLabel(data.mode), title: cleanLabel(data.title), direction, nodes, edges };
   }
 
   function mermaidSource(chart) {
     // Keep model-provided prose out of Mermaid Markdown/HTML syntax. Rich
     // title/detail styling is applied to the rendered SVG below, after the
     // graph parser has completed successfully.
-    const quote = value => JSON.stringify(cleanLabel(value, 260).replace(/[\[\]{}]/g, ""));
+    const quote = value => JSON.stringify(cleanLabel(value).replace(/[\[\]{}]/g, ""));
     const rows = [`flowchart ${chart.direction}`];
     for (const node of chart.nodes) {
       const visible = node.detail ? `${node.label}：${node.detail}` : node.label;
@@ -363,6 +369,8 @@
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      maxTextSize: MAX_TEXT_SIZE,
+      maxEdges: MAX_EDGES,
       theme: "base",
       themeVariables: {
         background: "#f8fafb",
@@ -379,6 +387,10 @@
     const result = await mermaid.render(id, mermaidSource(chart));
     const svg = withLightCanvas(decorateFlowchartSVG(result.svg, chart));
     return { name: "流程图.svg", mimeType: "image/svg+xml", dataURL: svgDataURL(svg), svg };
+  }
+
+  function imageForChart(chart) {
+    return cachedImage(mermaidSource(chart), () => createImage(chart));
   }
 
   function flowNodeElement(svg, nodeID) {
@@ -453,7 +465,7 @@
     target.replaceChildren();
     const notice = document.createElement("div"); notice.className = "chat-diagram-pending"; notice.textContent = "正在绘制交互流程图…"; target.appendChild(notice);
     try {
-      const asset = options.image?.svg ? options.image : await cachedImage(mermaidSource(chart), () => createImage(chart));
+      const asset = options.image?.svg ? options.image : await imageForChart(chart);
       if (!target.isConnected) return;
       const parsed = new DOMParser().parseFromString(asset.svg, "image/svg+xml");
       const parsedSVG = parsed.documentElement?.localName === "svg" ? parsed.documentElement : null;
@@ -494,7 +506,7 @@
     notice.textContent = "正在绘制流程图…";
     target.appendChild(notice);
     try {
-      const image = await cachedImage(mermaidSource(chart), () => createImage(chart));
+      const image = await imageForChart(chart);
       if (!target.isConnected) return;
       const button = document.createElement("button");
       button.type = "button"; button.className = "chat-diagram-image"; button.setAttribute("aria-label", "查看流程图");
@@ -505,5 +517,5 @@
     catch (_) { if (target.isConnected) notice.textContent = "流程图绘制失败；请查看该回复的原始 JSON。"; }
   }
 
-  LitMTrans.Flowchart = { MARKER, V2_MARKER, parseFlowchart, mermaidSource, renderFlowchart, renderInteractive };
+  LitMTrans.Flowchart = { MARKER, V2_MARKER, MAX_NODES, MAX_EDGES, parseFlowchart, mermaidSource, imageForChart, renderFlowchart, renderInteractive };
 })();

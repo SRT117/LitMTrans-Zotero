@@ -730,7 +730,7 @@
                 for (const child of children) {
                   if ((child.tagName || "").toLowerCase() === "li") {
                     const itemText = walk(child, "li").trim();
-                    if (itemText) items.push(`- ${itemText}`);
+                    if (itemText) items.push(`- ${itemText.replace(/\n/g, "\n  ")}`);
                   } else {
                     const itemText = walk(child, "ul").trim();
                     if (itemText) items.push(itemText);
@@ -745,7 +745,10 @@
                 for (const child of children) {
                   if ((child.tagName || "").toLowerCase() === "li") {
                     const itemText = walk(child, "ol").trim();
-                    if (itemText) items.push(`${index++}. ${itemText}`);
+                    if (itemText) {
+                      const prefix = `${index++}. `;
+                      items.push(`${prefix}${itemText.replace(/\n/g, `\n${" ".repeat(prefix.length)}`)}`);
+                    }
                   } else {
                     const itemText = walk(child, "ol").trim();
                     if (itemText) items.push(itemText);

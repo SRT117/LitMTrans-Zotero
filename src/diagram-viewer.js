@@ -11,11 +11,11 @@
     const content = world();
     if (content) content.style.transform = `scale(${zoom})`;
     const output = $("diagram-viewer-scale");
-    if (output) output.value = `${Math.round(zoom * 100)}%`;
+    if (output) output.value = `${Number((zoom * 100).toFixed(2))}%`;
   }
   function setZoom(value, anchor = null) {
     const viewport = stage(); const content = world(); const previous = zoom;
-    const next = Math.max(.25, Math.min(3, value));
+    const next = Math.max(.0001, Math.min(3, value));
     let anchorX = 0; let anchorY = 0;
     if (viewport && content && anchor && next !== previous) {
       const rect = content.getBoundingClientRect();
@@ -98,11 +98,24 @@
   function close() { $("diagram-viewer-dialog")?.close(); active = null; }
   async function exportDiagram() {
     if (!active?.onExport) return;
-    const image = active.mode === "mindmap"
-      ? LitMTrans.MindmapV2.imageForMap(active.diagram)
-      : active.image;
-    if (!image?.dataURL) return;
-    await active.onExport(image);
+    const payload = active;
+    const button = $("diagram-viewer-export");
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
+    try {
+      const image = payload.mode === "mindmap"
+        ? LitMTrans.MindmapV2.imageForMap(payload.diagram)
+        : payload.image || await LitMTrans.Flowchart.imageForChart(payload.diagram);
+      if (active !== payload) return;
+      if (!image?.dataURL) throw new Error("图形尚未生成，请稍后重试导出。");
+      payload.image = image;
+      await payload.onExport(image);
+    }
+    catch (error) {
+      if (active === payload) payload.onError?.(error);
+      globalThis.console?.error?.("LitMTrans diagram export failed", error);
+    }
+    finally { if (button) button.disabled = false; }
   }
   function bindPan() {
     const viewport = stage(); if (!viewport) return;
