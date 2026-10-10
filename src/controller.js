@@ -3210,7 +3210,8 @@
       const path = await this.selectImageExportPath(runtime.window, payload.name, decoded.mimeType);
       if (!path) return { cancelled: true };
       await this.storage.writeBytes(path, decoded.bytes);
-      return { cancelled: false, path, size: decoded.bytes.length };
+      const opened = await this.openExportLocation(path);
+      return { cancelled: false, path, size: decoded.bytes.length, opened };
     }
 
     copyImageData(runtime, payload) {
@@ -3319,6 +3320,18 @@
       }
     }
 
+    async openExportLocation(path, isDirectory = false) {
+      try {
+        if (isDirectory) Zotero.launchFile(path);
+        else await Zotero.File.reveal(path);
+        return true;
+      }
+      catch (error) {
+        Zotero.debug(`无法打开导出文件夹：${error?.message || error}`);
+        return false;
+      }
+    }
+
     async openTokenGuide() {
       const resourceURL = this.rootURI + "assets/docs/token-guide.pdf";
       const guideDir = PathUtils.join(this.storage.root, "guides");
@@ -3416,6 +3429,9 @@
       const providedPath = String(payload.path || "");
       const outPath = providedPath || await this.selectPDFExportPath(runtime.window, defaultName);
       if (!outPath) return { cancelled: true };
+      if (await this.isOriginalAttachmentPath(context, outPath)) {
+        throw new Error("导出路径不能覆盖原始附件");
+      }
       const browsingContext = runtime.browser?.browsingContext;
       if (!browsingContext?.print) throw new Error("当前Zotero版本不支持浏览上下文PDF打印");
 
@@ -3494,12 +3510,8 @@
               throw new Error(`排版PDF页数异常：预期 ${expectedPages} 页，实际 ${printedPDF.getPageCount()} 页`);
             }
           }
-          // The export is complete only after the output file becomes stable.
-          // Launch user-requested exports then, so the system PDF application
-          // receives a fully written document. Internal attachment generation
-          // provides a path and must remain a non-interactive background task.
-          const opened = !providedPath;
-          if (opened) this.openWithDefaultApplication(outPath);
+          // 文件写入稳定后打开导出位置；后台生成附件不打开文件夹。
+          const opened = !providedPath && await this.openExportLocation(outPath);
           return { cancelled: false, path: outPath, size, opened };
         }
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -3518,10 +3530,44 @@
 
     sameFilePath(left, right) {
       const normalize = value => String(value || "")
+        .normalize("NFC")
         .replace(/\\/g, "/")
         .replace(/\/+$/, "")
         .toLocaleLowerCase();
       return Boolean(left && right && normalize(left) === normalize(right));
+    }
+
+    async originalAttachmentPaths(context) {
+      const paths = new Set(context?.filePath ? [context.filePath] : []);
+      const candidates = [];
+      const seenItems = new Set();
+      const addItem = item => {
+        if (!item || this.isGeneratedExportAttachment(item)) return;
+        const id = Number(item.id || 0);
+        if (id && seenItems.has(id)) return;
+        if (id) seenItems.add(id);
+        candidates.push(item);
+      };
+      addItem(context?.attachment);
+      const parent = context?.parent?.isRegularItem?.()
+        ? context.parent
+        : (context?.attachment?.parentID ? Zotero.Items.get(context.attachment.parentID) : null);
+      for (const id of parent?.getAttachments?.() || []) addItem(Zotero.Items.get(id));
+
+      for (const attachment of candidates) {
+        try {
+          const path = await this.attachmentPath(attachment);
+          paths.add(path);
+        }
+        catch (_) {}
+      }
+      return Array.from(paths);
+    }
+
+    async isOriginalAttachmentPath(context, targetPath) {
+      if (!targetPath) return false;
+      const paths = await this.originalAttachmentPaths(context);
+      return paths.some(path => this.sameFilePath(path, targetPath));
     }
 
     async exportAttachmentForKind(context, kind) {
@@ -3561,14 +3607,14 @@
     }
 
     async nextAvailableExportFilePath(outputDir, fileName, reserved = new Set()) {
-      let safeName = PathUtils.filename(String(fileName || "").replace(/\\/g, "/"));
+      let safeName = String(fileName || "").replace(/\\/g, "/").split("/").pop();
       safeName = safeName
         .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
         .replace(/[. ]+$/g, "");
       if (!safeName) safeName = "image.png";
       const extension = /\.[^.]+$/.test(safeName) ? safeName.slice(safeName.lastIndexOf(".")) : "";
       const base = (extension ? safeName.slice(0, -extension.length) : safeName) || "image";
-      const keyFor = name => Zotero.isWin ? name.toLocaleLowerCase() : name;
+      const keyFor = name => (Zotero.isWin || Zotero.isMac) ? name.normalize("NFC").toLowerCase() : name;
       for (let serial = 1; serial < 1000; serial++) {
         const candidate = serial === 1 ? `${base}${extension}` : `${base}-${serial}${extension}`;
         const key = keyFor(candidate);
@@ -3678,7 +3724,7 @@
       }
 
       const replacementText = replacement => {
-        const relative = `${directory.name}/${this.encodeMarkdownAssetPath(replacement.reference.relative)}${replacement.reference.suffix}`;
+        const relative = `${this.encodeMarkdownAssetPath(directory.name + "/" + replacement.reference.relative)}${replacement.reference.suffix}`;
         if (replacement.reference.wrapped || /\s/.test(relative)) return `<${relative}>`;
         return relative;
       };
@@ -3723,13 +3769,15 @@
         if (bundle.assetDirectory) await this.storage.remove(bundle.assetDirectory, true);
         throw error;
       }
+      const opened = await this.openExportLocation(outputPath);
       return {
         cancelled: false,
         path: outputPath,
         size: bundle.markdown.length,
         assetDirectory: bundle.assetDirectory,
         assetCount: bundle.assetCount,
-        missingCount: bundle.missingCount
+        missingCount: bundle.missingCount,
+        opened
       };
     }
 
@@ -3750,15 +3798,16 @@
             reserved
           );
           reserved.add(selected.key);
-          await this.storage.copyFile(sourcePath, selected.path);
           copied.push(selected.path);
+          await this.storage.copyFile(sourcePath, selected.path);
         }
       }
       catch (error) {
         await Promise.all(copied.map(path => this.storage.remove(path, false)));
         throw error;
       }
-      return { cancelled: false, path: outputDir, files: copied, count: copied.length, defaultName };
+      const opened = await this.openExportLocation(outputDir, true);
+      return { cancelled: false, path: outputDir, files: copied, count: copied.length, defaultName, opened };
     }
 
     async exportOriginalFile(runtime, payload = {}) {
@@ -3771,10 +3820,11 @@
         ? await this.selectPDFExportPath(runtime.window, defaultName)
         : await this.selectCAJExportPath(runtime.window, defaultName);
       if (!outputPath) return { cancelled: true };
-      if (this.sameFilePath(source.path, outputPath)) throw new Error("导出路径不能覆盖原始附件");
+      if (await this.isOriginalAttachmentPath(context, outputPath)) throw new Error("导出路径不能覆盖原始附件");
       await this.storage.copyFile(source.path, outputPath);
       const stat = await this.storage.stat(outputPath);
-      return { cancelled: false, path: outputPath, size: Number(stat?.size || 0) };
+      const opened = await this.openExportLocation(outputPath);
+      return { cancelled: false, path: outputPath, size: Number(stat?.size || 0), opened };
     }
 
     async exportCapabilities(runtime) {
@@ -3810,7 +3860,7 @@
       const defaultName = `${U.safeStem(context.title || "document", 90)}-排版对照版.pdf`;
       const outputPath = await this.selectPDFExportPath(runtime.window, defaultName);
       if (!outputPath) return { cancelled: true };
-      if (this.sameFilePath(sourcePath, outputPath)) throw new Error("导出路径不能覆盖原始附件");
+      if (await this.isOriginalAttachmentPath(context, outputPath)) throw new Error("导出路径不能覆盖原始附件");
       const staging = this.storage.temporaryDir("compare");
       const translationPath = PathUtils.join(staging, "translation.pdf");
       try {
@@ -3823,9 +3873,9 @@
           layoutPaper: payload.layoutPaper
         });
         await this.createLayoutComparisonPDF(sourcePath, translationPath, outputPath);
-        this.openWithDefaultApplication(outputPath);
         const stat = await this.storage.stat(outputPath);
-        return { cancelled: false, path: outputPath, size: Number(stat?.size || 0), opened: true };
+        const opened = await this.openExportLocation(outputPath);
+        return { cancelled: false, path: outputPath, size: Number(stat?.size || 0), opened };
       }
       finally {
         await this.storage.remove(staging, true);
@@ -3843,7 +3893,8 @@
         signal,
         emit
       });
-      return { cancelled: false, path: outputDir, ...result };
+      const opened = await this.openExportLocation(outputDir, true);
+      return { cancelled: false, path: outputDir, ...result, opened };
     }
 
     async createGeneratedPDFAttachment(context, filePath, title) {

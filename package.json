@@ -22,6 +22,7 @@
     "llm"
   ],
   "scripts": {
+    "postinstall": "node scripts/patch-scaffold.mjs",
     "sync-vendor": "node scripts/sync-vendor.mjs",
     "map": "node scripts/generate-repo-map.mjs",
     "map:watch": "node scripts/generate-repo-map.mjs --watch",

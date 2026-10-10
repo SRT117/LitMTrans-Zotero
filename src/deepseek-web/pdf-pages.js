@@ -769,11 +769,12 @@
       const images = [];
       await this.storage.ensureDir(outputDir);
       const baseStem = U.safeStem(String(options.stem || "document"), 80, "document");
-      const existingNames = new Set((await this.storage.walk(outputDir)).map(path => PathUtils.filename(path)));
+      const nameKey = name => (Zotero.isWin || Zotero.isMac) ? name.normalize("NFC").toLowerCase() : name;
+      const existingNames = new Set((await this.storage.walk(outputDir)).map(path => nameKey(PathUtils.filename(path))));
       let stem = "";
       for (let serial = 1; serial < 1000; serial++) {
         const candidate = serial === 1 ? baseStem : `${baseStem}-${serial}`;
-        const prefix = `${candidate}-第`;
+        const prefix = nameKey(`${candidate}-第`);
         const conflict = [...existingNames].some(name => name.startsWith(prefix) && name.endsWith("页.png"));
         if (!conflict) {
           stem = candidate;
@@ -830,8 +831,8 @@
             `${stem}-第${String(pageNumber).padStart(String(numPages).length, "0")}页.png`
           );
           const imageBytes = addPNGResolution(dataURLToUint8Array(dataURL), 300);
-          await this.storage.writeBytes(outputPath, imageBytes);
           images.push(outputPath);
+          await this.storage.writeBytes(outputPath, imageBytes);
         }
       }
       catch (error) {

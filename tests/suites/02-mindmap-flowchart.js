@@ -407,6 +407,249 @@ async function testFilePickerCompatibility() {
   }
 }
 
+async function testDocumentImageExportPaths() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const originalFilename = context.PathUtils.filename;
+  const originalIsWin = context.Zotero.isWin;
+  const storage = new MemoryStorage();
+  const sources = ["C:/profile/images/图1.png", "C:/profile/images/nested/图1.png"];
+  sources.forEach((file, index) => storage.bytes.set(file, new Uint8Array([index + 1])));
+  storage.bytes.set("C:/export/图1.png", new Uint8Array([9]));
+  controller.storage = storage;
+  controller.attachmentContext = async () => ({ documentID: "1-TEST", title: "文献" });
+  controller.documentImageFiles = async () => sources;
+  controller.selectDirectoryExportPath = async () => "C:/export";
+  const openedLocations = [];
+  controller.openExportLocation = async (...args) => { openedLocations.push(args); return true; };
+  try {
+    context.Zotero.isWin = true;
+    context.PathUtils.filename = value => {
+      if (!path.win32.isAbsolute(value)) throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+      return path.win32.basename(value);
+    };
+    const result = await controller.exportDocumentImages({ attachmentID: 1, window: {} });
+    assert.equal(result.count, 2);
+    assert.deepEqual(openedLocations, [["C:/export", true]]);
+    assert.deepEqual(Array.from(result.files), ["C:/export/图1-2.png", "C:/export/图1-3.png"]);
+    assert.deepEqual(Array.from(storage.bytes.get("C:/export/图1.png")), [9]);
+    assert.deepEqual(Array.from(storage.bytes.get(result.files[0])), [1]);
+    assert.deepEqual(Array.from(storage.bytes.get(result.files[1])), [2]);
+    for (const name of ["图2.png", "images/图2.png", "C:\\images\\图2.png"]) {
+      assert.equal((await controller.nextAvailableExportFilePath("C:/export", name)).name, "图2.png");
+    }
+    assert.equal((await controller.nextAvailableExportFilePath("C:/export", "")).name, "image.png");
+    assert.equal((await controller.nextAvailableExportFilePath("C:/export", "图2.png", new Set(["图2.png"]))).name, "图2-2.png");
+    storage.copyFile = async (source, destination) => {
+      storage.bytes.set(destination, new Uint8Array([0]));
+      throw new Error("write failed");
+    };
+    await assert.rejects(controller.exportDocumentImages({ attachmentID: 1, window: {} }), /write failed/);
+    assert(!storage.bytes.has("C:/export/图1-4.png"));
+    assert.equal(openedLocations.length, 1);
+    controller.selectDirectoryExportPath = async () => "";
+    assert((await controller.exportDocumentImages({ attachmentID: 1 })).cancelled);
+    assert.equal(openedLocations.length, 1);
+  }
+  finally {
+    context.PathUtils.filename = originalFilename;
+    context.Zotero.isWin = originalIsWin;
+  }
+}
+
+async function testExportFileProtectionAndMarkdownAssets() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const sourcePath = "C:/library/original.pdf";
+  controller.attachmentContext = async () => ({ filePath: sourcePath, attachment: {}, title: "文献" });
+  controller.exportAttachmentForKind = async () => ({ path: sourcePath });
+  controller.selectPDFExportPath = async () => "c:\\LIBRARY\\original.pdf";
+  await assert.rejects(controller.printWorkbenchPDF({ attachmentID: 1 }), /不能覆盖原始附件/);
+  await assert.rejects(controller.printWorkbenchPDF({ attachmentID: 1 }, { path: sourcePath }), /不能覆盖原始附件/);
+
+  // 多附件场景：父条目下存在第二个原始附件时，导出选择第二个原始附件路径同样必须拦截
+  const secondPDFPath = "C:/library/supplement.pdf";
+  const mockParent = {
+    isRegularItem: () => true,
+    getAttachments: () => [101, 102]
+  };
+  const mockItems = {
+    101: { id: 101, isAttachment: () => true },
+    102: { id: 102, isAttachment: () => true }
+  };
+  const origItems = context.Zotero.Items;
+  try {
+    context.Zotero.Items = { get: id => mockItems[id] || null };
+    const checkedItems = [];
+    controller.attachmentPath = async item => {
+      checkedItems.push(item.id);
+      return item.id === 102 ? secondPDFPath : sourcePath;
+    };
+    controller.attachmentContext = async () => ({
+      filePath: sourcePath,
+      attachment: mockItems[101],
+      parent: mockParent,
+      title: "多附件文献"
+    });
+    controller.isGeneratedExportAttachment = () => false;
+    controller.selectPDFExportPath = async () => "c:\\library\\SUPPLEMENT.pdf";
+    await assert.rejects(controller.printWorkbenchPDF({ attachmentID: 1 }), /不能覆盖原始附件/);
+    assert.deepEqual(checkedItems, [101, 102]);
+    await assert.rejects(controller.exportOriginalFile({ attachmentID: 1 }), /不能覆盖原始附件/);
+  }
+  finally {
+    context.Zotero.Items = origItems;
+  }
+
+  const storage = new MemoryStorage();
+  storage.documentDir = () => "/mem/document";
+  storage.bytes.set("/mem/document/images/图1.png", new Uint8Array([1]));
+  controller.storage = storage;
+  const markdown = '![图片](images/图1.png)\n<img src="images/图1.png">';
+  const bundle = await controller.exportMarkdownImageBundle(markdown, "1-TEST", "/export/paper #1%.md");
+  assert.equal(bundle.assetCount, 1);
+  assert(!bundle.markdown.includes("#1"), "resource directory names must not introduce URL fragments");
+  const target = bundle.markdown.match(/!\[图片\]\((.*?)\)/)[1].replace(/^<|>$/g, "");
+  assert(storage.bytes.has(context.PathUtils.join("/export", decodeURIComponent(target))));
+  assert(bundle.markdown.includes(`src="${target}"`));
+}
+
+async function testPDFPageImageExportProtection() {
+  if (!context.LitMTrans.DeepSeekWeb?.PDFPageRenderer) {
+    vm.runInContext(fs.readFileSync(path.join(root, "src/deepseek-web/pdf-pages.js"), "utf8"), context);
+  }
+  const storage = new MemoryStorage();
+  storage.walk = async () => Array.from(storage.bytes.keys());
+  const existing = "/export/PAPER-第1页.PNG";
+  storage.bytes.set(existing, new Uint8Array([9]));
+  const renderer = new context.LitMTrans.DeepSeekWeb.PDFPageRenderer({ storage });
+  renderer.getPreviewIframeContext = () => ({
+    pdfDocument: { numPages: 1 },
+    cw: { eval: async () => JSON.stringify({ ok: true, dataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1kAAAAASUVORK5CYII=" }) }
+  });
+  const originalIsWin = context.Zotero.isWin;
+  try {
+    context.Zotero.isWin = true;
+    const result = await renderer.renderPagesToDirectory({}, "/export", { stem: "paper" });
+    assert.equal(result.images[0], "/export/paper-2-第1页.png");
+    assert(Buffer.from(storage.bytes.get(result.images[0])).includes(Buffer.from("pHYs")));
+    assert.deepEqual(Array.from(storage.bytes.get(existing)), [9]);
+    storage.writeBytes = async (file, bytes) => {
+      storage.bytes.set(file, bytes);
+      throw new Error("write failed");
+    };
+    await assert.rejects(renderer.renderPagesToDirectory({}, "/export", { stem: "paper" }), /write failed/);
+    assert(!storage.bytes.has("/export/paper-3-第1页.png"));
+    assert(storage.bytes.has(result.images[0]));
+  }
+  finally { context.Zotero.isWin = originalIsWin; }
+}
+
+async function testExportLocationCompatibility() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const original = { file: context.Zotero.File, launch: context.Zotero.launchFile };
+  const calls = [];
+  try {
+    for (const directory of ["C:/export/导出 文件夹", "/Volumes/Export/导出 文件夹"]) {
+      const file = `${directory}/论文 #1.pdf`;
+      context.Zotero.File = { reveal: async value => calls.push(["reveal", value]) };
+      context.Zotero.launchFile = value => calls.push(["launch", value]);
+      assert(await controller.openExportLocation(file));
+      assert.deepEqual(calls.pop(), ["reveal", file]);
+      assert(await controller.openExportLocation(directory, true));
+      assert.deepEqual(calls.pop(), ["launch", directory]);
+      context.Zotero.File.reveal = async () => { throw new Error("reveal unavailable"); };
+      assert.equal(await controller.openExportLocation(file), false);
+      assert.equal(calls.length, 0);
+      context.Zotero.launchFile = () => { throw new Error("launch unavailable"); };
+      assert.equal(await controller.openExportLocation(directory, true), false);
+    }
+  }
+  finally {
+    context.Zotero.File = original.file; context.Zotero.launchFile = original.launch;
+  }
+}
+
+async function testMacExportNameCollisions() {
+  if (!context.LitMTrans.DeepSeekWeb?.PDFPageRenderer) {
+    vm.runInContext(fs.readFileSync(path.join(root, "src/deepseek-web/pdf-pages.js"), "utf8"), context);
+  }
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  controller.storage = new MemoryStorage();
+  const original = { isMac: context.Zotero.isMac, isWin: context.Zotero.isWin };
+  try {
+    context.Zotero.isWin = false;
+    context.Zotero.isMac = true;
+    const first = await controller.nextAvailableExportFilePath("/Volumes/Export", "Café.PNG");
+    const second = await controller.nextAvailableExportFilePath("/Volumes/Export", "cafe\u0301.png", new Set([first.key]));
+    assert.equal(second.name, "cafe\u0301-2.png");
+    assert(controller.sameFilePath("/Volumes/Export/Café.pdf", "/Volumes/Export/cafe\u0301.pdf"));
+    const renderer = new context.LitMTrans.DeepSeekWeb.PDFPageRenderer({ storage: controller.storage });
+    controller.storage.walk = async () => ["/Volumes/Export/Cafe\u0301-第1页.PNG"];
+    renderer.getPreviewIframeContext = () => ({ pdfDocument: { numPages: 1 }, cw: { eval: async () => JSON.stringify({ ok: true, dataURL: "data:image/png;base64,AQ==" }) } });
+    const result = await renderer.renderPagesToDirectory({}, "/Volumes/Export", { stem: "café" });
+    assert.equal(result.images[0], "/Volumes/Export/café-2-第1页.png");
+  }
+  finally { context.Zotero.isMac = original.isMac; context.Zotero.isWin = original.isWin; }
+}
+
+async function testExportSuccessRevealsLocation() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const opened = [];
+  controller.openExportLocation = async (...args) => { opened.push(args); return true; };
+  controller.storage = new MemoryStorage();
+  controller.attachmentContext = async () => ({ documentID: "1-TEST", filePath: "/library/paper.pdf", attachment: {}, title: "paper" });
+  controller.exportAttachmentForKind = async () => ({ path: "/library/paper.pdf" });
+  controller.selectPDFExportPath = async () => "/export/paper.pdf";
+  controller.selectCAJExportPath = async () => "/export/paper.caj";
+  controller.selectMarkdownExportPath = async () => "/export/paper.md";
+  controller.selectDirectoryExportPath = async () => "/export/images";
+  controller.selectImageExportPath = async () => "/export/diagram.png";
+  controller.streamMarkdownForExport = async () => "source";
+  controller.exportMarkdownImageBundle = async text => ({ markdown: text, assetCount: 0 });
+  controller.decodeImageDataURL = () => ({ bytes: new Uint8Array([1]), mimeType: "image/png" });
+  controller.deepSeekWebProvider = { pageRenderer: { renderPagesToDirectory: async () => ({ pageCount: 1 }) } };
+  const runtime = { attachmentID: 1 };
+  await controller.exportOriginalFile(runtime);
+  await controller.exportOriginalFile(runtime, { kind: "caj" });
+  await controller.exportStreamMarkdown(runtime);
+  await controller.exportPDFPages(runtime);
+  await controller.saveImageData(runtime, {});
+  assert.deepEqual(opened, [["/export/paper.pdf"], ["/export/paper.caj"], ["/export/paper.md"], ["/export/images", true], ["/export/diagram.png"]]);
+  controller.storage.bytes.set("/library/paper.pdf", new Uint8Array([1]));
+  controller.storage.temporaryDir = () => "/tmp/compare";
+  controller.printWorkbenchPDF = async (value, payload) => { assert.equal(payload.path, "/tmp/compare/translation.pdf"); };
+  controller.createLayoutComparisonPDF = async () => {};
+  await controller.exportLayoutComparisonPDF(runtime);
+  assert.deepEqual(opened[5], ["/export/paper.pdf"]);
+  controller.selectMarkdownExportPath = async () => "";
+  assert((await controller.exportStreamMarkdown(runtime)).cancelled);
+  assert.equal(opened.length, 6);
+}
+
+async function testPDFExportLocationAfterPrint() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  controller.attachmentContext = async () => ({ filePath: "/library/source.pdf", title: "paper", attachment: {} });
+  controller.exportAttachmentForKind = async () => ({ path: "/library/source.pdf" });
+  controller.selectPDFExportPath = async () => "/export/paper.pdf";
+  let printed = false;
+  const opened = [];
+  controller.storage = { stat: async () => { assert(printed); return { size: 2048 }; } };
+  controller.openExportLocation = async value => { assert(printed); opened.push(value); return true; };
+  const original = { cc: context.Cc, ci: context.Ci };
+  try {
+    context.Ci = { nsIPrintSettingsService: {}, nsIPrintSettings: { kOutputDestinationFile: 1, kOutputFormatPDF: 2 } };
+    context.Cc = { "@mozilla.org/gfx/printsettings-service;1": { getService() { return { createNewPrintSettings: () => ({}) }; } } };
+    const runtime = { attachmentID: 1, browser: { browsingContext: { print: async () => { printed = true; } } } };
+    const result = await controller.printWorkbenchPDF(runtime);
+    assert(result.opened);
+    assert.deepEqual(opened, ["/export/paper.pdf"]);
+    printed = false;
+    const internal = await controller.printWorkbenchPDF(runtime, { path: "/tmp/translation.pdf" });
+    assert.equal(internal.opened, false);
+    assert.equal(opened.length, 1);
+  }
+  finally { context.Cc = original.cc; context.Ci = original.ci; }
+}
+
 function testDiagramEvidenceMatching() {
   const compiled = { model: { pages: [{ index: 10, width: 1000, height: 1400, blocks: [
     { id: "unrelated", text: "The experimental configuration and pressure measurements are described here.", bbox: [10, 20, 500, 80] },
@@ -435,6 +678,13 @@ function testDiagramEvidenceMatching() {
     testFlowchartExportCache,
     testDiagramViewerExport,
     testFilePickerCompatibility,
+    testDocumentImageExportPaths,
+    testExportFileProtectionAndMarkdownAssets,
+    testPDFPageImageExportProtection,
+    testExportLocationCompatibility,
+    testMacExportNameCollisions,
+    testExportSuccessRevealsLocation,
+    testPDFExportLocationAfterPrint,
     testDiagramEvidenceMatching,
   };
 };

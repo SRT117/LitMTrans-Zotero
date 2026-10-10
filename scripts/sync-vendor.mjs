@@ -2,6 +2,7 @@ import { copyFile, mkdir, access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { patchScaffold } from "./patch-scaffold.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const files = [
@@ -17,3 +18,5 @@ for (const [sourceRelative, targetRelative] of files) {
   await mkdir(dirname(target), { recursive: true });
   await copyFile(source, target);
 }
+
+await patchScaffold();
