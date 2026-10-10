@@ -238,6 +238,7 @@ user_pref("app.update.lastUpdateTime.addon-background-update-timer", 0);
 user_pref("extensions.autoDisableScopes", 0);
 user_pref("extensions.enabledScopes", 15);
 user_pref("extensions.checkCompatibility", false);
+user_pref("extensions.litmtrans.agentPort", 19879);
 "@
     Set-Content -LiteralPath $userJs -Value $prefsContent -Encoding utf8
 

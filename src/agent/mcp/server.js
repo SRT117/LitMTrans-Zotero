@@ -4,6 +4,8 @@
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const Agent = LitMTrans.Agent = LitMTrans.Agent || {};
   const C = Agent.Contracts;
+  const DEFAULT_PORT = 19877;
+  const START_RETRY_DELAYS = [1000, 2000, 4000];
 
   function headerMap(raw) {
     const output = {};
@@ -105,6 +107,7 @@
       this.host = "127.0.0.1";
       this.path = "/litmtrans/mcp";
       this.startedAt = "";
+      this.lastError = "";
     }
 
     get url() {
@@ -115,36 +118,53 @@
       if (this.socket) return this.status();
       this.host = String(options.host || LitMTrans.Utils?.getPref?.("agentHost", "127.0.0.1") || "127.0.0.1");
       if (this.host !== "127.0.0.1" && this.host !== "localhost") this.host = "127.0.0.1";
-      const requestedPort = Math.max(0, Number(options.port ?? LitMTrans.Utils?.getPref?.("agentPort", 0)) || 0);
+      const savedPort = Number(LitMTrans.Utils?.getPref?.("agentPort", DEFAULT_PORT)) || 0;
+      const portPinned = LitMTrans.Utils?.getPref?.("agentPortPinned", false) === true;
+      // 默认端口写回时 Gecko 可能清除用户值标记，使用独立标记保存固定状态。
+      const hasSavedPort = savedPort > 0 && (portPinned || Services.prefs.prefHasUserValue("extensions.litmtrans.agentPort"));
+      const requestedPort = Number(options.port ?? savedPort) || DEFAULT_PORT;
+      const canAllocatePort = options.port == null && !hasSavedPort;
       let server = Cc?.["@mozilla.org/network/server-socket;1"]?.createInstance?.(Ci?.nsIServerSocket);
-      if (!server) throw new C.AgentError("AGENT_SERVER_UNAVAILABLE", "当前 Zotero 运行环境没有可用的本地 HTTP 监听器", { recoverable: true });
-      try {
-        server.init(requestedPort, true, -1);
+      if (!server) {
+        this.lastError = "当前 Zotero 无法启动连接服务。";
+        throw new C.AgentError("AGENT_SERVER_UNAVAILABLE", this.lastError, { recoverable: true });
       }
-      catch (error) {
-        if (!requestedPort) throw error;
-        try { server.close(); } catch (_) {}
-        // Zotero-mcp 或其他本地服务可能已经占用首选端口；继续使用
-        // 系统分配的 loopback 端口，并把真实端口写回设置供配置工具读取。
-        server = Cc?.["@mozilla.org/network/server-socket;1"]?.createInstance?.(Ci?.nsIServerSocket);
-        if (!server) throw error;
-        server.init(0, true, -1);
-      }
-      this.socket = server;
-      this.port = Number(server.port || requestedPort);
-      this.startedAt = C.now();
       const listener = {
         onSocketAccepted: (_socket, transport) => { void this.handleTransport(transport); },
         onStopListening: () => {}
       };
+      try {
+        try { server.init(requestedPort, true, -1); }
+        catch (error) {
+          if (!canAllocatePort) throw error;
+          // 首次接入前允许系统分配空闲端口，接入后永久复用保存的地址。
+          try { server.close(); } catch (_) {}
+          server = Cc["@mozilla.org/network/server-socket;1"].createInstance(Ci.nsIServerSocket);
+          server.init(0, true, -1);
+        }
+        server.asyncListen(listener);
+      }
+      catch (error) {
+        try { server.close(); } catch (_) {}
+        // 保留已配置的地址，避免客户端继续连接被静默替换的旧端口。
+        this.lastError = "连接服务未能启动，连接地址可能被其他程序占用。";
+        throw error;
+      }
+      this.socket = server;
+      this.port = Number(server.port || requestedPort);
+      this.startedAt = C.now();
       this.listener = listener;
-      server.asyncListen(listener);
-      if (this.port) LitMTrans.Utils?.setPref?.("agentPort", this.port);
+      this.lastError = "";
+      if (this.port && (!portPinned || savedPort !== this.port)) {
+        LitMTrans.Utils?.setPref?.("agentPort", this.port);
+        LitMTrans.Utils?.setPref?.("agentPortPinned", true);
+        Services.prefs.savePrefFile(null);
+      }
       return this.status();
     }
 
     status() {
-      return { running: Boolean(this.socket), host: this.host, port: this.port, url: this.socket ? this.url : "", path: this.path, startedAt: this.startedAt };
+      return { running: Boolean(this.socket), host: this.host, port: this.port, url: this.socket ? this.url : "", path: this.path, startedAt: this.startedAt, lastError: this.lastError };
     }
 
     stop() {
@@ -154,6 +174,7 @@
       this.socket = null;
       this.port = 0;
       this.startedAt = "";
+      this.lastError = "";
     }
 
     async handleTransport(transport) {
@@ -348,6 +369,9 @@
       this.recentClients = new Map();
       this.protocol.onClientActivity = activity => this.recordClientActivity(activity);
       this.initialized = false;
+      this.retryTimer = null;
+      this.retryCount = 0;
+      this.starting = false;
     }
 
     recordClientActivity(activity = {}) {
@@ -380,29 +404,56 @@
     async init() {
       await this.facade.init();
       this.initialized = true;
-      if (this.facade.policy.settings().enabled) {
-        try { await this.server.start(); }
-        catch (error) { this.controller.log?.(`Agent endpoint 启动失败: ${error?.message || error}`); }
+      await this.applySettings();
+    }
+
+    cancelStartRetry() {
+      if (this.retryTimer != null) clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.retryCount = 0;
+    }
+
+    async startServer() {
+      if (this.starting || !this.initialized || !this.facade.policy.settings().enabled) return;
+      this.starting = true;
+      try {
+        await this.server.start();
+        this.cancelStartRetry();
       }
+      catch (error) {
+        if (!this.initialized || !this.facade.policy.settings().enabled) return;
+        const delay = START_RETRY_DELAYS[this.retryCount++];
+        if (delay != null) {
+          this.retryTimer = setTimeout(() => {
+            this.retryTimer = null;
+            void this.startServer();
+          }, delay);
+        }
+        else this.controller.log?.(`Agent endpoint 启动失败: ${error?.message || error}`);
+      }
+      finally { this.starting = false; }
     }
 
     async applySettings() {
       if (!this.initialized) return;
-      if (this.facade.policy.settings().enabled) {
-        if (!this.server.socket) {
-          try { await this.server.start(); }
-          catch (error) { this.controller.log?.(`Agent endpoint 启动失败: ${error?.message || error}`); }
-        }
+      if (!this.facade.policy.settings().enabled) {
+        this.cancelStartRetry();
+        this.server.stop();
       }
-      else this.server.stop();
+      else if (!this.server.socket && this.retryTimer == null) {
+        this.retryCount = 0;
+        await this.startServer();
+      }
     }
 
     settingsSnapshot() {
       const developer = this.facade.policy.settings().mode === "developer";
-      return { ...this.facade.policy.capabilities(), server: this.server.status(), connection: this.connectionSnapshot(developer) };
+      return { ...this.facade.policy.capabilities(), server: { ...this.server.status(), retrying: this.retryTimer != null }, connection: this.connectionSnapshot(developer) };
     }
 
     async shutdown() {
+      this.initialized = false;
+      this.cancelStartRetry();
       this.server.stop();
       await this.facade.shutdown();
       this.initialized = false;
@@ -410,5 +461,6 @@
   }
 
   Agent.MCPHTTPServer = MCPHTTPServer;
+  Agent.DEFAULT_PORT = DEFAULT_PORT;
   Agent.AgentBackend = AgentBackend;
 })(this);

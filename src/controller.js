@@ -419,6 +419,7 @@
 
       const generatedPrefs = new Set([
         "agentPort",
+        "agentPortPinned",
         "agentTestNetworkStub",
         "agentTestShutdownProbe",
         "announcementHistory",

@@ -19,6 +19,14 @@ $env:ZOTERO_PLUGIN_ZOTERO_BIN_PATH = $testVersion.BinaryPath
 $env:ZOTERO_PLUGIN_PROFILE_PATH = $testVersion.ProfilePath
 $env:ZOTERO_PLUGIN_DATA_DIR = $testVersion.DataPath
 
+# 每个隔离测试库使用独立端口，不继承正式实例的连接地址。
+$agentUserJs = Join-Path $testVersion.ProfilePath "user.js"
+$agentUserPrefs = if (Test-Path -LiteralPath $agentUserJs) { Get-Content -LiteralPath $agentUserJs -Raw } else { "" }
+$agentUserPrefs = [regex]::Replace($agentUserPrefs, '(?m)^user_pref\("extensions\.litmtrans\.agentPort",.*\r?\n?', '')
+$agentTestPort = 19880 + [int]$ZoteroMajor
+$agentUserPrefs += "`nuser_pref(`"extensions.litmtrans.agentPort`", $agentTestPort);`n"
+[System.IO.File]::WriteAllText($agentUserJs, $agentUserPrefs, [System.Text.UTF8Encoding]::new($false))
+
 Write-Host "测试目标：Zotero $($testVersion.Version)" -ForegroundColor Green
 Write-Host "程序：$($testVersion.BinaryPath)" -ForegroundColor DarkGray
 Write-Host "Profile：$($testVersion.ProfilePath)" -ForegroundColor DarkGray

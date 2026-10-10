@@ -121,12 +121,19 @@ module.exports = function createSuite(env) {
     assert.equal(Agent.ClientConfig.descriptor("generic", "http://127.0.0.1:1234/litmtrans/mcp").verificationStatus, "manual");
   }
 
-  async function testMcpPortFallback() {
+  async function testMcpStablePort() {
     const originalCc = context.Cc;
     const originalCi = context.Ci;
+    const originalSavePrefFile = context.Services.prefs.savePrefFile;
+    let savedToDisk = 0;
+    context.Services.prefs.savePrefFile = () => { savedToDisk++; };
     const originalPort = context.LitMTrans.Utils.getPref("agentPort", null);
+    const originalPinned = context.LitMTrans.Utils.getPref("agentPortPinned", null);
     const attempts = [];
     let closed = 0;
+    let occupied = true;
+    let listenFails = false;
+    let allocatedPort = 0;
     context.Ci = { nsIServerSocket: function nsIServerSocket() {} };
     context.Cc = {
       "@mozilla.org/network/server-socket;1": {
@@ -134,31 +141,214 @@ module.exports = function createSuite(env) {
           return {
             init(port) {
               attempts.push(port);
-              if (port === 45123) throw new Error("occupied");
-              this.port = 45124;
+              if (occupied && port !== 0) throw new Error("occupied");
+              this.port = port || allocatedPort;
             },
-            asyncListen(listener) { this.listener = listener; },
+            asyncListen(listener) { if (listenFails) throw new Error("listen failed"); this.listener = listener; },
             close() { closed += 1; }
           };
         }
       }
     };
     context.LitMTrans.Utils.setPref("agentPort", 45123);
+    context.LitMTrans.Utils.clearPref("agentPortPinned");
     try {
       const server = new Agent.MCPHTTPServer({}, {});
-      const status = await server.start({ port: 45123 });
-      assert.deepEqual(attempts, [45123, 0]);
-      assert.equal(status.port, 45124);
-      assert.equal(context.LitMTrans.Utils.getPref("agentPort", 0), 45124);
+      await assert.rejects(server.start(), /occupied/);
+      assert.deepEqual(attempts, [45123]);
+      assert.equal(server.status().running, false);
+      assert(server.status().lastError);
+      assert.equal(context.LitMTrans.Utils.getPref("agentPort", 0), 45123);
+      occupied = false;
+      const status = await server.start();
+      assert.equal(status.port, 45123);
+      assert.equal(status.lastError, "");
       server.stop();
       assert.equal(closed, 2);
+      await server.start();
+      assert.equal(server.status().port, 45123);
+      server.stop();
+      context.LitMTrans.Utils.setPref("agentPort", 0);
+      await server.start();
+      assert.equal(server.status().port, 19877);
+      assert.equal(context.LitMTrans.Utils.getPref("agentPort", 0), 19877);
+      server.stop();
+      listenFails = true;
+      await assert.rejects(server.start(), /listen failed/);
+      assert.equal(server.status().running, false);
+      assert.equal(context.LitMTrans.Utils.getPref("agentPort", 0), 19877);
+      listenFails = false;
+      occupied = true;
+      allocatedPort = 45124;
+      context.LitMTrans.Utils.clearPref("agentPort");
+      context.LitMTrans.Utils.clearPref("agentPortPinned");
+      const firstStart = await server.start();
+      assert.deepEqual(attempts.slice(-2), [19877, 0]);
+      assert.equal(firstStart.port, 45124);
+      assert.equal(context.LitMTrans.Utils.getPref("agentPort", 0), 45124);
+      assert.equal(savedToDisk, 3);
+      server.stop();
+      const callsBeforeRestart = attempts.length;
+      await assert.rejects(server.start(), /occupied/);
+      assert.deepEqual(attempts.slice(callsBeforeRestart), [45124]);
+      assert.equal(context.LitMTrans.Utils.getPref("agentPort", 0), 45124);
+      context.LitMTrans.Utils.clearPref("agentPort");
+      context.LitMTrans.Utils.clearPref("agentPortPinned");
+      await assert.rejects(server.start({ port: 19890 }), /occupied/);
+      assert.equal(attempts.at(-1), 19890);
     }
     finally {
       context.Cc = originalCc;
       context.Ci = originalCi;
+      context.Services.prefs.savePrefFile = originalSavePrefFile;
       if (originalPort === null) context.LitMTrans.Utils.clearPref("agentPort");
       else context.LitMTrans.Utils.setPref("agentPort", originalPort);
+      if (originalPinned === null) context.LitMTrans.Utils.clearPref("agentPortPinned");
+      else context.LitMTrans.Utils.setPref("agentPortPinned", originalPinned);
     }
+  }
+
+  async function testMcpDefaultPortPinnedWithGeckoPreferences() {
+    const fs = require("fs");
+    const path = require("path");
+    const vm = require("vm");
+    const fixture = require("../harness").createTestContext().context;
+    const defaults = new Map();
+    const users = new Map();
+    let disk = new Map();
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../../src/prefs.js"), "utf8"), {
+      pref: (key, value) => defaults.set(key, value)
+    });
+    fixture.Zotero.Prefs.get = key => users.has(key) ? users.get(key) : defaults.get(key);
+    fixture.Zotero.Prefs.set = (key, value) => {
+      // 模拟 Gecko：写入默认值会清除用户值，落盘只保存用户值。
+      if (defaults.get(key) === value) users.delete(key);
+      else users.set(key, value);
+    };
+    fixture.Services.prefs.prefHasUserValue = key => users.has(key);
+    fixture.Services.prefs.savePrefFile = () => { disk = new Map(users); };
+    let occupied = false;
+    let listenFails = true;
+    const attempts = [];
+    fixture.Ci = { nsIServerSocket: function nsIServerSocket() {} };
+    fixture.Cc = {
+      "@mozilla.org/network/server-socket;1": {
+        createInstance: () => ({
+          init(port) {
+            attempts.push(port);
+            if (occupied && port !== 0) throw new Error("occupied");
+            this.port = port || 45124;
+          },
+          asyncListen() { if (listenFails) throw new Error("listen failed"); },
+          close() {}
+        })
+      }
+    };
+    const first = new fixture.LitMTrans.Agent.MCPHTTPServer({}, {});
+    await assert.rejects(first.start(), /listen failed/);
+    assert.equal(users.has("extensions.litmtrans.agentPortPinned"), false);
+    listenFails = false;
+    assert.equal((await first.start()).port, 19877);
+    assert.equal(fixture.Services.prefs.prefHasUserValue("extensions.litmtrans.agentPort"), false);
+    assert.equal(disk.has("extensions.litmtrans.agentPort"), false);
+    assert.equal(disk.get("extensions.litmtrans.agentPortPinned"), true);
+    first.stop();
+    users.clear();
+    for (const [key, value] of disk) users.set(key, value);
+    occupied = true;
+    attempts.length = 0;
+    const restarted = new fixture.LitMTrans.Agent.MCPHTTPServer({}, {});
+    await assert.rejects(restarted.start(), /occupied/);
+    assert.deepEqual(attempts, [19877]);
+    assert.equal(restarted.status().running, false);
+    assert.equal(fixture.LitMTrans.Utils.getPref("agentPort", 0), 19877);
+    assert.equal(fixture.LitMTrans.Utils.getPref("agentPortPinned", false), true);
+  }
+
+  async function testMcpStartupRetries() {
+    const originalSetTimeout = context.setTimeout;
+    const originalClearTimeout = context.clearTimeout;
+    const timers = new Map();
+    const delays = [];
+    let nextID = 0;
+    context.setTimeout = (callback, delay) => { delays.push(delay); timers.set(++nextID, callback); return nextID; };
+    context.clearTimeout = id => timers.delete(id);
+    let enabled = true;
+    let occupied = true;
+    let attempts = 0;
+    const logs = [];
+    const backend = Object.create(Agent.AgentBackend.prototype);
+    Object.assign(backend, {
+      initialized: false, retryTimer: null, retryCount: 0, starting: false,
+      controller: { log: message => logs.push(message) },
+      facade: { init: async () => {}, shutdown: async () => {}, policy: { settings: () => ({ enabled }) } },
+      server: {
+        socket: null,
+        async start() { attempts++; if (occupied) throw new Error("occupied"); this.socket = {}; },
+        stop() { this.socket = null; }
+      }
+    });
+    const tick = async () => {
+      const [id, callback] = timers.entries().next().value;
+      timers.delete(id);
+      callback();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+    try {
+      await backend.init();
+      assert.equal(attempts, 1);
+      await backend.applySettings();
+      assert.equal(attempts, 1);
+      await tick();
+      occupied = false;
+      await tick();
+      assert.equal(attempts, 3);
+      assert(backend.server.socket);
+      assert.equal(timers.size, 0);
+      assert.equal(logs.length, 0);
+
+      backend.server.stop();
+      occupied = true;
+      await backend.applySettings();
+      await tick(); await tick(); await tick();
+      assert.equal(attempts, 7);
+      assert.equal(timers.size, 0);
+      assert.equal(logs.length, 1);
+      assert.deepEqual(delays, [1000, 2000, 1000, 2000, 4000]);
+
+      await backend.applySettings();
+      enabled = false;
+      await backend.applySettings();
+      assert.equal(timers.size, 0);
+      enabled = true;
+      await backend.applySettings();
+      await backend.shutdown();
+      assert.equal(timers.size, 0);
+      assert.equal(backend.initialized, false);
+    }
+    finally {
+      context.setTimeout = originalSetTimeout;
+      context.clearTimeout = originalClearTimeout;
+    }
+  }
+
+  function testMcpStartupStatusHints() {
+    const fs = require("fs");
+    const path = require("path");
+    const vm = require("vm");
+    const sandbox = {};
+    vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../../src/settings-view-model.js"), "utf8"), sandbox);
+    const view = sandbox.LitMTrans.AgentSettingsViewModel;
+    const agent = { enabled: true, server: { running: false, lastError: "occupied", retrying: true } };
+    assert.equal(view.statusText(agent), "正在重试连接服务");
+    assert(!view.statusHint(agent).includes("准备好"));
+    agent.server.retrying = false;
+    assert.equal(view.statusText(agent), "连接服务未能启动");
+    agent.server.running = true;
+    agent.server.lastError = "";
+    assert.equal(view.statusText(agent), "等待智能体连接");
+    assert(view.statusHint(agent).includes("准备好"));
   }
 
   async function testModernLegacyProtocolAndApproval() {
@@ -1965,7 +2155,10 @@ module.exports = function createSuite(env) {
     testImportAndCitationHelpers,
     testTaskPersistenceAndCancellation,
     testClientCoexistence,
-    testMcpPortFallback,
+    testMcpStablePort,
+    testMcpDefaultPortPinnedWithGeckoPreferences,
+    testMcpStartupRetries,
+    testMcpStartupStatusHints,
     testModernLegacyProtocolAndApproval,
     testApprovalPersistenceAndBackgroundProfile,
     testBackgroundChatUsesAPIWhileWorkbenchUsesWeb,

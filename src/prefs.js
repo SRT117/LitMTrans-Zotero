@@ -57,5 +57,6 @@ pref("extensions.litmtrans.agentAccessMode", "full");
 pref("extensions.litmtrans.agentAllowConfiguredServices", true);
 pref("extensions.litmtrans.agentAllowChatHistory", true);
 pref("extensions.litmtrans.agentBackgroundProvider", "auto");
-pref("extensions.litmtrans.agentPort", 0);
+pref("extensions.litmtrans.agentPort", 19877);
+pref("extensions.litmtrans.agentPortPinned", false);
 pref("extensions.litmtrans.agentHost", "127.0.0.1");

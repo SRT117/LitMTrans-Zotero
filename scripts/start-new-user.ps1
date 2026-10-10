@@ -134,6 +134,7 @@ user_pref("extensions.update.enabled", false);
 user_pref("extensions.autoDisableScopes", 0);
 user_pref("extensions.enabledScopes", 15);
 user_pref("extensions.checkCompatibility", false);
+user_pref("extensions.litmtrans.agentPort", 19878);
 "@
     Set-Content -LiteralPath $userJs -Value $prefsContent -Encoding utf8
 
