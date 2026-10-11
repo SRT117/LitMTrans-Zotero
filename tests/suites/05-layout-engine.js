@@ -381,7 +381,7 @@ async function testLayoutCodeAndContentsRules() {
     workbenchSource.includes("tuneEach('.layout-flow-stream.debug-text[data-flow-kind=\"text\"][data-original-lines=\"multi\"],"),
     "multi-line text must retain its fitting selector alongside single-line abstracts"
   );
-  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v25:"), "layout fitting must invalidate snapshots that predate the abstract body guard");
+  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v26:"), "layout fitting must invalidate snapshots that predate final text clearance");
   assert(workbenchSource.includes('U.hashString(String(node.textContent || "").replace(/\\s+/g, " ").trim())'),
     "a retranslated page must not reuse a fit snapshot for different text");
   assert(workbenchSource.includes('pending = restored.size === active.length ? [] : active;'),
@@ -1568,8 +1568,8 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the parity fitter must define the rendered-text union helper used by title recovery");
   assert(workbenchCode.includes("contentBounds: contentGeometry.bounds"),
     "the parity fitter must retain the union broad phase before exact glyph collision tests");
-  assert(workbenchCode.includes("layout-fit-v45-abstract-body-guard"),
-    "the parity engine must invalidate styles created before the abstract body guard");
+  assert(workbenchCode.includes("layout-fit-v46-final-text-clearance"),
+    "the parity engine must invalidate styles created before final text clearance");
   const shortTitleRepair = workbenchCode.slice(
     workbenchCode.indexOf("function keepShortTitlesOnOneLine(selector, options = {})"),
     workbenchCode.indexOf("// Monotone collision-constrained growth")
@@ -1695,10 +1695,10 @@ function testAbstractRecognitionAndBodyProtection() {
     { dataset: { abstractBody: '1', styleKind: 'body_text' }, style: { fontSize: '10px' } },
     { dataset: { abstractBody: '1', blockKind: 'body_text' }, style: { fontSize: '10px' } }
   ];
-  const start = source.indexOf("      for (const node of scopedNodes('[data-abstract-body=\"1\"]'))");
-  const adjustment = source.slice(start, source.indexOf('      publishBodyIterationInspection(', start));
-  vm.runInNewContext(adjustment, {
+  const clearanceSource = source.slice(source.indexOf('  function applyFinalTextClearance('), source.indexOf('  function titleFrameFill('));
+  vm.runInNewContext(`${clearanceSource}\napplyFinalTextClearance(new Map())`, {
     shouldAdjustAbstractFont: guard, scopedNodes: () => nodes,
+    isOrdinaryMultilineText: () => false,
     layoutControlFontSize: node => parseFloat(node.style.fontSize) / Number(node.dataset.layoutFontScale || 1)
   });
   assert.deepEqual(nodes.map(node => node.style.fontSize), ['9.50px', '19.00px', '10px', '10px']);
@@ -1709,7 +1709,66 @@ function testAbstractRecognitionAndBodyProtection() {
   assert.equal(nodes[2].style.fontSize, '9pt', 'manual body font must ignore an erroneous abstract marker');
 }
 
+function testFinalTextClearanceBoundaries() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helpers = source.slice(source.indexOf('  function isOrdinaryMultilineText('), source.indexOf('  function titleFrameFill('));
+  let peers = [];
+  const page = { querySelectorAll: () => peers };
+  const makeNode = (kind, box, font = 12.5, scale = 1) => ({
+    dataset: { styleKind: kind === 'body' ? 'body_text' : 'text', layoutFontScale: String(scale) },
+    style: { fontSize: `${font * scale}px`, lineHeight: '1.015' }, box,
+    closest: () => page,
+    matches: selector => selector.startsWith('.layout-title')
+      ? ['title', 'caption'].includes(kind) : ['ordinary', 'body', 'caption'].includes(kind)
+  });
+  const api = vm.runInNewContext(`${helpers}\n({stoppedAtNextLowerBlock, applyFinalTextClearance})`, {
+    scopedNodes: () => peers.filter(n => n.dataset.abstractBody === '1'),
+    shouldAdjustAbstractFont: n => n.dataset.abstractBody === '1' && n.dataset.styleKind !== 'body_text',
+    elementBoxInPage: n => n.box,
+    horizontalBoxesOverlap: (a, b, tolerance) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > tolerance,
+    layoutControlFontSize: n => parseFloat(n.style.fontSize) / Number(n.dataset.layoutFontScale || 1)
+  });
+  const own = { left: 10, right: 100, top: 10, bottom: 100 };
+  const lower = { left: 10, right: 100, top: 110, bottom: 130 };
+  const node = makeNode('ordinary', own);
+  const blocker = makeNode('title', lower);
+  peers = [node, blocker];
+  const result = { fontSize: 12.5, stopReason: 'block-overlap', collision: { source: node, blocker, rect: { bottom: 115 } } };
+  assert.equal(api.stoppedAtNextLowerBlock(node, result), true);
+  assert.equal(api.stoppedAtNextLowerBlock(node, { ...result, stopReason: 'max-font' }), false);
+  assert.equal(api.stoppedAtNextLowerBlock(node, { ...result, collision: { ...result.collision, blocker: null } }), false);
+  for (const box of [{ ...lower, top: 0, bottom: 8 }, { ...lower, left: 110, right: 200 }]) {
+    blocker.box = box;
+    assert.equal(api.stoppedAtNextLowerBlock(node, result), false);
+  }
+  blocker.box = lower;
+  peers.push(makeNode('title', { ...lower, top: 103 }));
+  assert.equal(api.stoppedAtNextLowerBlock(node, result), false, 'must stop at the nearest lower block');
+  peers.pop();
+  const body = makeNode('body', own), caption = makeNode('caption', own), title = makeNode('title', own);
+  for (const protectedNode of [body, caption, title]) {
+    assert.equal(api.stoppedAtNextLowerBlock(protectedNode, { ...result, collision: { ...result.collision, source: protectedNode } }), false);
+  }
+  const repaired = makeNode('ordinary', own, 12.25);
+  const scaled = makeNode('ordinary', own, 12.5, 2);
+  const abstract = makeNode('ordinary', own);
+  abstract.dataset.abstractBody = '1';
+  peers.push(abstract);
+  const fitted = new Map([node, body, caption, title, repaired, scaled, abstract].map(n => [n, 12.5]));
+  api.applyFinalTextClearance(fitted);
+  assert.equal(node.style.fontSize, '12.00px');
+  assert.equal(node.style.lineHeight, '1.015');
+  assert.equal(scaled.style.fontSize, '24.00px');
+  assert.equal(abstract.style.fontSize, '12.00px', 'abstract must not shrink twice');
+  assert.equal(repaired.style.fontSize, '12.25px', 'final repairs must not receive another reduction');
+  for (const n of [body, caption, title]) assert.equal(n.style.fontSize, '12.5px');
+  api.applyFinalTextClearance(new Map([[node, 12.5]]));
+  assert.equal(node.style.fontSize, '12.00px', 'ordinary clearance must not accumulate');
+  assert(source.indexOf('      applyFinalTextClearance(fittedTexts);') > source.indexOf('      enforceFinalTextCollisionSafety();'));
+}
+
   return {
+    testFinalTextClearanceBoundaries,
     testAbstractRecognitionAndBodyProtection,
     testLayout,
     testLayoutEquationBarrier,

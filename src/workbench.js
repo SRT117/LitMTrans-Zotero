@@ -2109,7 +2109,7 @@
 
   function layoutFitStorageKey(key) {
     // Change this namespace whenever cached fitting rules become incompatible.
-    return `litmtrans-layout-fit-runtime:v25:${U.hashString(key)}`;
+    return `litmtrans-layout-fit-runtime:v26:${U.hashString(key)}`;
   }
 
   function applyLayoutBodyFont(pages) {
@@ -10734,7 +10734,7 @@
   // Limit fitting to the pages scheduled by the reader.
   let activeFitPages = null;
   // This namespace invalidates incompatible browser-side fit caches.
-  const fitCacheVersion = 'layout-fit-v45-abstract-body-guard';
+  const fitCacheVersion = 'layout-fit-v46-final-text-clearance';
   // A narrow transition may back off without changing the shared body font.
   const ALLOW_INHERITED_BODY_FONT_BACKOFF = true;
   let bodyIterationInspectionRound = 0;
@@ -11513,7 +11513,49 @@
   function tuneEach(selector, options) {
     const nodes = scopedNodes(selector);
     for (const node of nodes) {
-      tuneNodes([node], options);
+      const result = tuneNodes([node], options);
+      options.onFitted?.(node, result);
+    }
+  }
+
+  function isOrdinaryMultilineText(node) {
+    return node.matches('.layout-flow-stream.debug-text[data-flow-kind="text"][data-original-lines="multi"], .layout-block.type-text[data-original-lines="multi"], .layout-block.type-abstract')
+      && !node.matches('.layout-title, .layout-caption')
+      && node.dataset.styleKind !== 'body_text'
+      && node.dataset.blockKind !== 'body_text';
+  }
+
+  function stoppedAtNextLowerBlock(node, result) {
+    const collision = result?.collision;
+    if (!isOrdinaryMultilineText(node) || result?.stopReason !== 'block-overlap'
+        || collision?.source !== node || !collision.blocker) return false;
+    const page = node.closest('.layout-page');
+    if (!page || collision.blocker.closest('.layout-page') !== page) return false;
+    const own = elementBoxInPage(node);
+    const blocker = elementBoxInPage(collision.blocker);
+    if (blocker.top < own.bottom - 1.5 || !horizontalBoxesOverlap(own, blocker, 1.5)
+        || !collision.rect || collision.rect.bottom <= own.bottom) return false;
+    // 只接受同列下方紧邻块，排除侧边、上方和页面边界限制。
+    return !Array.from(page.querySelectorAll('.layout-flow-stream, .layout-block')).some(peer => {
+      if (peer === node || peer === collision.blocker) return false;
+      const box = elementBoxInPage(peer);
+      return box.top >= own.bottom - 1.5 && box.top < blocker.top - 1.5
+        && horizontalBoxesOverlap(own, box, 1.5);
+    });
+  }
+
+  function applyFinalTextClearance(fittedTexts) {
+    const nodes = new Set([...fittedTexts.keys(), ...scopedNodes('[data-abstract-body="1"]')]);
+    for (const node of nodes) {
+      const abstract = shouldAdjustAbstractFont(node);
+      const fittedFont = fittedTexts.get(node);
+      const font = layoutControlFontSize(node);
+      // 后续安全修正已缩小时不再追加；摘要与普通段落最多共同减小一次。
+      const ordinary = isOrdinaryMultilineText(node) && Number.isFinite(fittedFont)
+        && font >= fittedFont - 0.001;
+      if (!abstract && !ordinary) continue;
+      const scale = Number(node.dataset.layoutFontScale || 1);
+      node.style.fontSize = `${(Math.max(abstract ? 0.1 : 4.8, font - 0.5) * scale).toFixed(2)}px`;
     }
   }
 
@@ -12150,6 +12192,10 @@
       // then fill until actual glyphs collide. The explicit strict-source view
       // remains an opt-in no-overflow inspection mode.
       const collisionFirstTextFit = !strictSourceFit;
+      const fittedTexts = new Map();
+      const rememberLowerBlockStop = (node, result) => {
+        if (stoppedAtNextLowerBlock(node, result)) fittedTexts.set(node, result.fontSize);
+      };
       clearAllCollisionDebugLayers();
 
       // Apply the page scale before measuring glyphs. Geometry helpers convert
@@ -12258,6 +12304,7 @@
       // column.  Treating it as generic multi-line prose lets the fitter
       // change its fixed 8.2px/1.22 baseline and can clip a dense directory.
       tuneEach('.layout-flow-stream.debug-text[data-flow-kind="text"][data-original-lines="multi"], .layout-flow-stream[data-abstract-body="1"]:not([data-style-kind="body_text"]):not([data-original-lines="multi"])', {
+        onFitted: rememberLowerBlockStop,
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
@@ -12273,6 +12320,7 @@
         showLimiter: debugMode
       });
       tuneEach('.layout-block.type-text[data-original-lines="multi"], .layout-block.type-text[data-abstract-body="1"], .layout-block.type-abstract', {
+        onFitted: rememberLowerBlockStop,
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
@@ -12319,12 +12367,7 @@
       clampTranslatedOverflow();
       clampTranslatedCodeOverflow();
       enforceFinalTextCollisionSafety();
-      // 摘要正文在最终适配后缩小，保留行距比例和原始缓存数据。
-      for (const node of scopedNodes('[data-abstract-body="1"]')) {
-        if (!shouldAdjustAbstractFont(node)) continue;
-        const scale = Number(node.dataset.layoutFontScale || 1);
-        node.style.fontSize = `${(Math.max(0.1, layoutControlFontSize(node) - 0.5) * scale).toFixed(2)}px`;
-      }
+      applyFinalTextClearance(fittedTexts);
       publishBodyIterationInspection(scopedNodes(
         '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])'
       ));
