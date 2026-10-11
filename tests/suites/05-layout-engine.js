@@ -378,10 +378,10 @@ async function testLayoutCodeAndContentsRules() {
   assert(workbenchCSS.includes("line-height: inherit;"), "code line-height must inherit the fitted parent value");
   assert(workbenchSource.includes("renderLayoutTocRows"), "the workbench must use the dedicated contents row renderer");
   assert(
-    workbenchSource.includes("tuneEach('.layout-flow-stream.debug-text[data-flow-kind=\"text\"][data-original-lines=\"multi\"]', {"),
-    "multi-line text must use the same Python-parity fitting selector"
+    workbenchSource.includes("tuneEach('.layout-flow-stream.debug-text[data-flow-kind=\"text\"][data-original-lines=\"multi\"],"),
+    "multi-line text must retain its fitting selector alongside single-line abstracts"
   );
-  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v23:"), "layout fitting must invalidate snapshots that predate inherited single-column body text");
+  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v25:"), "layout fitting must invalidate snapshots that predate the abstract body guard");
   assert(workbenchSource.includes('U.hashString(String(node.textContent || "").replace(/\\s+/g, " ").trim())'),
     "a retranslated page must not reuse a fit snapshot for different text");
   assert(workbenchSource.includes('pending = restored.size === active.length ? [] : active;'),
@@ -1568,8 +1568,8 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the parity fitter must define the rendered-text union helper used by title recovery");
   assert(workbenchCode.includes("contentBounds: contentGeometry.bounds"),
     "the parity fitter must retain the union broad phase before exact glyph collision tests");
-  assert(workbenchCode.includes("layout-fit-v43-logical-span-lines"),
-    "the parity engine must invalidate styles created before embedded span lines were counted");
+  assert(workbenchCode.includes("layout-fit-v45-abstract-body-guard"),
+    "the parity engine must invalidate styles created before the abstract body guard");
   const shortTitleRepair = workbenchCode.slice(
     workbenchCode.indexOf("function keepShortTitlesOnOneLine(selector, options = {})"),
     workbenchCode.indexOf("// Monotone collision-constrained growth")
@@ -1667,7 +1667,50 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "fit diagnostics must never leak into ordinary reader pages");
 }
 
+function testAbstractRecognitionAndBodyProtection() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helpers = source.slice(source.indexOf('  function abstractBlockIDs(model) {'), source.indexOf('  function buildLayoutDocument('));
+  const detect = vm.runInNewContext(`${helpers}\nabstractBlockIDs`);
+  const block = (id, type, text) => ({ id, type, text });
+  for (const text of ['Abstract This paper describes a method.', 'Abstract\nThis paper describes a method.', 'Abstract. This paper describes a method.', 'Abstract—This paper describes a method.', '摘要：本文介绍方法。', '摘要\n本文介绍方法。']) {
+    assert.deepEqual(Array.from(detect({ pages: [{ blocks: [block('a', 'text', text), block('end', 'text', 'Index Terms—Methods'), block('b', 'text', 'Body')] }] })), ['a']);
+  }
+  for (const text of ['Abstract', '1. Abstract', 'I. ABSTRACT', '摘 要']) {
+    assert.deepEqual(Array.from(detect({ pages: [{ blocks: [block('heading', 'title', text), block('a', 'text', 'Summary'), block('end', 'text', '1. Motivation'), block('b', 'text', 'Body')] }] })), ['a']);
+  }
+  assert.deepEqual(Array.from(detect({ pages: [
+    { blocks: [block('heading', 'title', 'Abstract'), block('a', 'text', 'Summary')] },
+    { blocks: [block('b', 'text', 'Body on a later page without a heading')] }
+  ] })), ['a']);
+  const blocks = [block('heading', 'title', 'Abstract'), block('a', 'text', 'Summary'), block('body', 'text', 'Classified body'), block('following', 'text', 'Following body')];
+  assert.deepEqual(Array.from(detect({ pages: [{ blocks, restoration: { streams: [{ styleKind: 'body_text', items: [{ id: 'merged', parts: [{ id: 'body' }] }] }] } }] })), ['a']);
+  assert.deepEqual(Array.from(detect({ pages: [{ blocks: [block('heading', 'title', 'Abstract'), block('body', 'body_text', 'Body'), block('following', 'text', 'Following body')] }] })), []);
+  const guard = vm.runInNewContext(`${helpers}\nshouldAdjustAbstractFont`);
+  assert.equal(guard({ dataset: { abstractBody: '1', styleKind: 'body_text' } }), false);
+  assert.equal(guard({ dataset: { abstractBody: '1', blockKind: 'body_text' } }), false);
+  assert.equal(guard({ dataset: { styleKind: 'text' } }), false);
+  const nodes = [
+    { dataset: { abstractBody: '1', styleKind: 'text', layoutFontScale: '1' }, style: { fontSize: '10px' } },
+    { dataset: { abstractBody: '1', styleKind: 'text', layoutFontScale: '2' }, style: { fontSize: '20px' } },
+    { dataset: { abstractBody: '1', styleKind: 'body_text' }, style: { fontSize: '10px' } },
+    { dataset: { abstractBody: '1', blockKind: 'body_text' }, style: { fontSize: '10px' } }
+  ];
+  const start = source.indexOf("      for (const node of scopedNodes('[data-abstract-body=\"1\"]'))");
+  const adjustment = source.slice(start, source.indexOf('      publishBodyIterationInspection(', start));
+  vm.runInNewContext(adjustment, {
+    shouldAdjustAbstractFont: guard, scopedNodes: () => nodes,
+    layoutControlFontSize: node => parseFloat(node.style.fontSize) / Number(node.dataset.layoutFontScale || 1)
+  });
+  assert.deepEqual(nodes.map(node => node.style.fontSize), ['9.50px', '19.00px', '10px', '10px']);
+  const manualStart = source.indexOf('  function applyLayoutBodyFont(pages) {');
+  const manualSource = source.slice(manualStart, source.indexOf('  function applyLayoutFitSnapshot(', manualStart));
+  const manual = vm.runInNewContext(`${manualSource}\napplyLayoutBodyFont`, { state: { layoutFontPt: 9 } });
+  manual([{ querySelectorAll: () => [nodes[2]] }]);
+  assert.equal(nodes[2].style.fontSize, '9pt', 'manual body font must ignore an erroneous abstract marker');
+}
+
   return {
+    testAbstractRecognitionAndBodyProtection,
     testLayout,
     testLayoutEquationBarrier,
     testSingleColumnBodyPromotion,

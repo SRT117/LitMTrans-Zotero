@@ -2109,7 +2109,7 @@
 
   function layoutFitStorageKey(key) {
     // Change this namespace whenever cached fitting rules become incompatible.
-    return `litmtrans-layout-fit-runtime:v23:${U.hashString(key)}`;
+    return `litmtrans-layout-fit-runtime:v25:${U.hashString(key)}`;
   }
 
   function applyLayoutBodyFont(pages) {
@@ -2413,9 +2413,65 @@
     fitLayoutPages(documentRoot ? [...documentRoot.querySelectorAll(".layout-page")] : [pageNode]);
   }
 
+  function abstractBlockIDs(model) {
+    const ids = new Set();
+    const bodyIDs = new Set();
+    const collectBody = (item) => {
+      if (item.id) bodyIDs.add(item.id);
+      for (const part of item.parts || []) collectBody(part);
+      for (const paragraph of item.paragraphs || []) {
+        for (const part of paragraph.parts || []) collectBody(part);
+      }
+    };
+    for (const page of model?.pages || []) {
+      for (const stream of page.restoration?.streams || []) {
+        if (stream.styleKind === 'body_text') {
+          for (const item of stream.items || []) collectBody(item);
+        }
+      }
+    }
+    for (const page of model?.pages || []) {
+      // 缺少明确边界时不跨页延续摘要状态，正文分类始终优先。
+      let inAbstract = false;
+      for (const block of page.blocks || []) {
+        const type = String(block.type || '').toLowerCase();
+        const text = String(block.text || '').replace(/\s+/g, ' ').trim();
+        const label = /^(?:(?:\d+|[IVX]+)[.)．、]?\s+)?(?:abstract\b|摘\s*要)/i.exec(text);
+        const remainder = label ? text.slice(label[0].length) : '';
+        const heading = Boolean(label && /^[\s:：.．—–-]*$/.test(remainder));
+        const inlineAbstract = Boolean(label && /^(?:\s*[:：.．—–-]\s*|\s+)\S/.test(remainder));
+        if (type === 'body_text' || block.styleKind === 'body_text' || bodyIDs.has(block.id)) {
+          inAbstract = false;
+          continue;
+        }
+        if (heading || type === 'abstract_title') {
+          inAbstract = true;
+          continue;
+        }
+        if (type === 'title' || type === 'ref_text' || /^(?:key\s*words?\b|index\s+terms?\b|关\s*键\s*词|關\s*鍵\s*詞)/i.test(text) ||
+            /^(?:(?:\d+(?:\.\d+)*|[IVX]+)[.)．、]?\s*)?(?:introduction|background|materials\s+and\s+methods|methods|results|discussion|conclusions?|引言|绪论|緒論|背景|方法|结果|結論|结论)\s*[:：.．—–-]?\s*$/i.test(text) ||
+            (text.length <= 100 && /^(?:\d+(?:\.\d+)*|[IVX]+)[.)．、]?\s+\p{L}[^。!?！？]*$/u.test(text))) {
+          inAbstract = false;
+        }
+        if (inlineAbstract || type === 'abstract') inAbstract = true;
+        if (type === 'abstract' || inlineAbstract || (inAbstract && type === 'text')) {
+          if (block.id) ids.add(block.id);
+        }
+      }
+    }
+    return ids;
+  }
+
+  function shouldAdjustAbstractFont(node) {
+    return node.dataset.abstractBody === '1'
+      && node.dataset.styleKind !== 'body_text'
+      && node.dataset.blockKind !== 'body_text';
+  }
+
   function buildLayoutDocument(model, useTranslation) {
     const root = document.createDocumentFragment();
     const observers = [];
+    const abstractIDs = abstractBlockIDs(model);
     for (const page of model?.pages || []) {
 
       // scales the completed page for the reader viewport.  Keeping 920px as
@@ -2447,15 +2503,22 @@
       if (!showAwaitingOverlay) {
         if (restoration?.streams?.length || restoration?.absoluteBlocks?.length) {
           for (const stream of restoration.streams || []) {
-            pageNode.appendChild(buildFlowStreamNode(stream, page, useTranslation));
+            const node = buildFlowStreamNode(stream, page, useTranslation);
+            const parts = (stream.items || []).flatMap(item => item.parts || [item]);
+            if (stream.styleKind !== 'body_text' && parts.length && parts.every(part => abstractIDs.has(part.id))) node.dataset.abstractBody = '1';
+            pageNode.appendChild(node);
           }
           for (const block of restoration.absoluteBlocks || []) {
-            pageNode.appendChild(buildAbsoluteLayoutNode(block, page, useTranslation));
+            const node = buildAbsoluteLayoutNode(block, page, useTranslation);
+            if (abstractIDs.has(block.id)) node.dataset.abstractBody = '1';
+            pageNode.appendChild(node);
           }
         }
         else {
           for (const block of page.blocks || []) {
-            pageNode.appendChild(buildAbsoluteLayoutNode(block, page, useTranslation));
+            const node = buildAbsoluteLayoutNode(block, page, useTranslation);
+            if (abstractIDs.has(block.id)) node.dataset.abstractBody = '1';
+            pageNode.appendChild(node);
           }
         }
       }
@@ -2714,7 +2777,8 @@
     // placeholder and a user's first "decrease" can accidentally enlarge a
     // 7 pt fitted layout to 11 pt.
     if (state.mode !== "layout" || state.layoutFontPt > 0 || container !== els["translation-layout"]) return;
-    const body = container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]');
+    const body = container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-abstract-body="1"])')
+      || container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]');
     const node = body || [...container.querySelectorAll(
       '.layout-flow-stream[data-flow-kind="text"]:not([data-style-kind="toc"]), .layout-block.type-text'
     )].filter(candidate => !candidate.matches('[data-style-kind="ref_text"]'))
@@ -10670,7 +10734,7 @@
   // Limit fitting to the pages scheduled by the reader.
   let activeFitPages = null;
   // This namespace invalidates incompatible browser-side fit caches.
-  const fitCacheVersion = 'layout-fit-v43-logical-span-lines';
+  const fitCacheVersion = 'layout-fit-v45-abstract-body-guard';
   // A narrow transition may back off without changing the shared body font.
   const ALLOW_INHERITED_BODY_FONT_BACKOFF = true;
   let bodyIterationInspectionRound = 0;
@@ -12193,7 +12257,7 @@
       // A recognized contents stream owns its row grid, indentation and page
       // column.  Treating it as generic multi-line prose lets the fitter
       // change its fixed 8.2px/1.22 baseline and can clip a dense directory.
-      tuneEach('.layout-flow-stream.debug-text[data-flow-kind="text"][data-original-lines="multi"]', {
+      tuneEach('.layout-flow-stream.debug-text[data-flow-kind="text"][data-original-lines="multi"], .layout-flow-stream[data-abstract-body="1"]:not([data-style-kind="body_text"]):not([data-original-lines="multi"])', {
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
@@ -12208,7 +12272,7 @@
         stopWhenFilled: !collisionFirstTextFit,
         showLimiter: debugMode
       });
-      tuneEach('.layout-block.type-text[data-original-lines="multi"]', {
+      tuneEach('.layout-block.type-text[data-original-lines="multi"], .layout-block.type-text[data-abstract-body="1"], .layout-block.type-abstract', {
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
@@ -12255,6 +12319,12 @@
       clampTranslatedOverflow();
       clampTranslatedCodeOverflow();
       enforceFinalTextCollisionSafety();
+      // 摘要正文在最终适配后缩小，保留行距比例和原始缓存数据。
+      for (const node of scopedNodes('[data-abstract-body="1"]')) {
+        if (!shouldAdjustAbstractFont(node)) continue;
+        const scale = Number(node.dataset.layoutFontScale || 1);
+        node.style.fontSize = `${(Math.max(0.1, layoutControlFontSize(node) - 0.5) * scale).toFixed(2)}px`;
+      }
       publishBodyIterationInspection(scopedNodes(
         '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])'
       ));
