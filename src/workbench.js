@@ -2089,6 +2089,7 @@
     const structure = nodes.map(node => [
       node.dataset.blockId || node.id || "",
       node.dataset.styleKind || "",
+      node.dataset.bodyFontCandidate || "",
       node.dataset.flowKind || "",
       // Fitting may correct MinerU's single-line classification.
       node.dataset.originalLines || "",
@@ -2109,7 +2110,7 @@
 
   function layoutFitStorageKey(key) {
     // Change this namespace whenever cached fitting rules become incompatible.
-    return `litmtrans-layout-fit-runtime:v26:${U.hashString(key)}`;
+    return `litmtrans-layout-fit-runtime:v29:${U.hashString(key)}`;
   }
 
   function applyLayoutBodyFont(pages) {
@@ -2127,7 +2128,7 @@
   function applyLayoutFitSnapshot(pages, snapshot) {
     const restored = new Set();
     const requested = (pages || []).filter(Boolean);
-    if (snapshot?.version !== 11 || !Array.isArray(snapshot.pages)) return restored;
+    if (snapshot?.version !== 12 || !Array.isArray(snapshot.pages)) return restored;
     // Document-wide groups must be restored as one atomic fit.
     if (!requested.length || snapshot.pages.length !== requested.length) return restored;
     const byKey = new Map(snapshot.pages.map(page => [page.key, page]));
@@ -2143,6 +2144,7 @@
       for (let index = 0; index < nodes.length; index++) {
         nodes[index].style.fontSize = record.styles[index].fontSize;
         nodes[index].style.lineHeight = record.styles[index].lineHeight;
+        nodes[index].style.textAlign = record.styles[index].textAlign || '';
       }
       page.dataset.layoutFitKey = pageKey;
       restored.add(page);
@@ -2155,7 +2157,7 @@
     if (pane === "source") return new Set();
     const key = layoutFitSnapshotKey(pane);
     const snapshot = state.data?.layout?.fitSnapshot;
-    if (snapshot?.version !== 11 || !Array.isArray(snapshot.pages)) return new Set();
+    if (snapshot?.version !== 12 || !Array.isArray(snapshot.pages)) return new Set();
     layoutFitSnapshots.set(key, snapshot);
     return applyLayoutFitSnapshot(pages, snapshot);
   }
@@ -2175,7 +2177,7 @@
         try { snapshot = JSON.parse(localStorage.getItem(layoutFitStorageKey(key)) || "null"); }
         catch (_) { snapshot = null; }
       }
-      if (snapshot?.version === 11 && Array.isArray(snapshot.pages)) layoutFitSnapshots.set(key, snapshot);
+      if (snapshot?.version === 12 && Array.isArray(snapshot.pages)) layoutFitSnapshots.set(key, snapshot);
     }
     return applyLayoutFitSnapshot(pages, snapshot);
   }
@@ -2183,12 +2185,12 @@
   function saveLayoutFitSnapshot(pages) {
     const key = layoutFitSnapshotKey(layoutFitPaneForPages(pages));
     const snapshot = {
-      version: 11,
+      version: 12,
       pages: (pages || []).map(page => {
         const nodes = [...page.querySelectorAll(".layout-block, .layout-flow-stream")];
         return {
           key: layoutFitPageKey(page),
-          styles: nodes.map(node => ({ fontSize: node.style.fontSize, lineHeight: node.style.lineHeight }))
+          styles: nodes.map(node => ({ fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign }))
         };
       })
     };
@@ -2256,6 +2258,7 @@
       fitLayoutPages(pending);
       applyLayoutBodyFont(pending);
       fitLayoutFormulas(pending, { expand: true });
+      inheritFinalDualColumnBodyFont(pending);
       saveLayoutFitSnapshot(active);
     }
     finally {
@@ -2468,10 +2471,60 @@
       && node.dataset.blockKind !== 'body_text';
   }
 
+  function dualColumnBodyFontCandidates(model) {
+    const candidates = new Set();
+    const profiles = [];
+    const laneBox = (stream, page) => {
+      const box = stream.bbox;
+      if (!Array.isArray(box) || box.length < 4 || !(page.width > 0 && page.height > 0)) return null;
+      const [left, top, right, bottom] = box.map(Number);
+      const width = (right - left) / page.width;
+      if (![left, top, right, bottom].every(Number.isFinite) || width < .28 || width > .50 || bottom <= top) return null;
+      return { left: left / page.width, right: right / page.width, top: top / page.height, bottom: bottom / page.height };
+    };
+    for (const page of model?.pages || []) {
+      for (const stream of page.restoration?.streams || []) {
+        if (stream.styleKind !== 'body_text' || stream.bodyInherited) continue;
+        const box = laneBox(stream, page);
+        if (box) profiles.push(box);
+      }
+    }
+    if (!profiles.length) return candidates;
+    for (const page of model?.pages || []) {
+      // 首页作者、摘要和出版信息保持原处理；这里只补后续双栏页的长正文。
+      if (!(page.index > 1)) continue;
+      const streams = page.restoration?.streams || [];
+      const lanes = streams.filter(s => ['text', 'body_text'].includes(s.styleKind) && !s.refsOnly)
+        .map(s => laneBox(s, page)).filter(Boolean);
+      const dualColumn = lanes.some(a => lanes.some(b =>
+        b.left >= a.right + .02 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) >= .08));
+      if (!dualColumn) continue;
+      for (const stream of streams) {
+        if (stream.styleKind !== 'text' || stream.debugRole !== 'text' || stream.refsOnly) continue;
+        const box = laneBox(stream, page);
+        if (!box || box.top < .06 || box.bottom > .94 || !profiles.some(p =>
+          Math.abs(p.left - box.left) <= .025 && Math.abs(p.right - box.right) <= .025)) continue;
+        const parts = (stream.items || []).flatMap(item => item.parts || [item]);
+        if (!parts.length || parts.some(p => p.kind !== 'text' || p.fromList || p.symbolGlossary || p.tocRows?.length)) continue;
+        const sourceLines = parts.reduce((sum, p) => sum + Number(p.originalLineCount || 0), 0);
+        const text = parts.map(p => p.roleText || p.text || '').join(' ').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        if (sourceLines < 4 || /^(?:abstract\b|摘要|fig(?:ure)?\.?\s*\d|table\s*\d|图\s*\d|表\s*\d|citation:|copyright|funding:|received:|accepted:|published:|correspondence:|keywords?\s*:|doi\s*:)/i.test(text)
+            || /https?:\/\/|www\.|@|©/.test(text)) continue;
+        if (Layout?.affiliationLikeText?.(text) || Layout?.authorBylineLikeText?.(text) || Layout?.bibliographyLikeText?.(text)) continue;
+        const words = text.match(/[A-Za-z][A-Za-z'-]{2,}/g) || [];
+        const cjk = text.match(/[\u3400-\u9fff]/g) || [];
+        const sentences = (text.match(/[.!?。！？]/g) || []).length;
+        if (sentences >= 2 && ((words.length >= 32 && text.length >= 180) || cjk.length >= 80)) candidates.add(stream);
+      }
+    }
+    return candidates;
+  }
+
   function buildLayoutDocument(model, useTranslation) {
     const root = document.createDocumentFragment();
     const observers = [];
     const abstractIDs = abstractBlockIDs(model);
+    const bodyFontCandidates = dualColumnBodyFontCandidates(model);
     for (const page of model?.pages || []) {
 
       // scales the completed page for the reader viewport.  Keeping 920px as
@@ -2504,6 +2557,7 @@
         if (restoration?.streams?.length || restoration?.absoluteBlocks?.length) {
           for (const stream of restoration.streams || []) {
             const node = buildFlowStreamNode(stream, page, useTranslation);
+            if (bodyFontCandidates.has(stream)) node.dataset.bodyFontCandidate = '1';
             const parts = (stream.items || []).flatMap(item => item.parts || [item]);
             if (stream.styleKind !== 'body_text' && parts.length && parts.every(part => abstractIDs.has(part.id))) node.dataset.abstractBody = '1';
             pageNode.appendChild(node);
@@ -10734,7 +10788,7 @@
   // Limit fitting to the pages scheduled by the reader.
   let activeFitPages = null;
   // This namespace invalidates incompatible browser-side fit caches.
-  const fitCacheVersion = 'layout-fit-v46-final-text-clearance';
+  const fitCacheVersion = 'layout-fit-v49-final-body-line-compression';
   // A narrow transition may back off without changing the shared body font.
   const ALLOW_INHERITED_BODY_FONT_BACKOFF = true;
   let bodyIterationInspectionRound = 0;
@@ -10858,6 +10912,7 @@
         const node = nodes[index];
         if (value.f) node.style.fontSize = value.f;
         if (value.l) node.style.lineHeight = value.l;
+        if (value.a !== undefined) node.style.textAlign = value.a;
         if (value.o) node.dataset.originalLines = value.o;
         if (value.n === '1' && value.w) {
           node.style.width = value.w;
@@ -10891,6 +10946,7 @@
       const styles = nodes.map((node) => ({
         f: node.style.fontSize || '',
         l: node.style.lineHeight || '',
+        a: node.style.textAlign || '',
         o: node.dataset.originalLines || '',
         n: node.dataset.shortTitleNoWrap === '1' ? '1' : '',
         w: node.dataset.shortTitleNoWrap === '1' ? (node.style.width || '') : '',
@@ -11559,6 +11615,56 @@
     }
   }
 
+  function inheritFinalDualColumnBodyFont(pages = null) {
+    if (document.body.classList.contains('layout-source-strict-fit')) return;
+    const selector = '.layout-flow-stream[data-body-font-candidate="1"]';
+    const candidates = pages ? pages.flatMap(page => Array.from(page.querySelectorAll(selector))) : scopedNodes(selector);
+    for (const node of candidates) {
+      if (!isOrdinaryMultilineText(node) || node.dataset.abstractBody === '1') continue;
+      const pane = node.closest('#source-layout, #translation-layout');
+      const bodyNodes = Array.from(pane?.querySelectorAll('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])') || []);
+      const fonts = bodyNodes.map(body => /pt$/i.test(body.style?.fontSize || '')
+        ? parseFloat(body.style.fontSize) * 4 / 3 / Number(body.dataset.layoutFontScale || 1)
+        : layoutControlFontSize(body, 0)).filter(font => Number.isFinite(font) && font > 0);
+      if (!fonts.length || fonts.some(font => Math.abs(font - fonts[0]) > .01)) continue;
+      const page = node.closest('.layout-page');
+      const own = elementBoxInPage(node);
+      const neighbors = bodyNodes.filter(body => body.closest('.layout-page') === page && !body.classList.contains('equation-dense'));
+      const donor = neighbors.sort((a, b) => {
+        const overlap = body => {
+          const box = elementBoxInPage(body);
+          return Math.max(0, Math.min(own.bottom, box.bottom) - Math.max(own.top, box.top));
+        };
+        return overlap(b) - overlap(a);
+      })[0];
+      if (!donor) continue;
+      let lineRatio = parseFloat(donor.style.lineHeight || donor.dataset.lineRatio || '');
+      if (!Number.isFinite(lineRatio) || lineRatio <= 0) continue;
+      const originalStyle = { fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign };
+      const scale = Number(node.dataset.layoutFontScale || 1);
+      node.style.fontSize = `${(fonts[0] * scale).toFixed(2)}px`;
+      node.style.lineHeight = String(lineRatio);
+      node.style.textAlign = window.getComputedStyle(donor).textAlign;
+      const hasCollision = () => {
+        if (textCollisionDetails([node], {
+          checkAllTextForCollisions: true, avoidPageOverflow: true, includeGroupPeers: true
+        })) return true;
+        const rects = textRectsInPage(node);
+        return Array.from(page.querySelectorAll('.layout-flow-stream, .layout-block')).some(peer =>
+          peer !== node && renderedContentRectsInPage(peer).some(other => rects.some(rect => rectsOverlap(rect, other, 1.5))));
+      };
+      // 最后继承正文样式；碰撞时只压缩行距，仍无法避让才整体恢复。
+      let collision = hasCollision();
+      const minLineRatio = 1.02;
+      while (collision && lineRatio > minLineRatio + .001) {
+        lineRatio = Math.max(minLineRatio, Number((lineRatio - .025).toFixed(3)));
+        node.style.lineHeight = String(lineRatio);
+        collision = hasCollision();
+      }
+      if (collision) Object.assign(node.style, originalStyle);
+    }
+  }
+
   function titleFrameFill(node) {
     const own = elementBoxInPage(node);
     const ownWidth = Math.max(1, own.right - own.left);
@@ -12192,6 +12298,7 @@
       // then fill until actual glyphs collide. The explicit strict-source view
       // remains an opt-in no-overflow inspection mode.
       const collisionFirstTextFit = !strictSourceFit;
+      for (const node of scopedNodes('.layout-flow-stream[data-body-font-candidate="1"]')) node.style.textAlign = '';
       const fittedTexts = new Map();
       const rememberLowerBlockStop = (node, result) => {
         if (stoppedAtNextLowerBlock(node, result)) fittedTexts.set(node, result.fontSize);

@@ -381,7 +381,7 @@ async function testLayoutCodeAndContentsRules() {
     workbenchSource.includes("tuneEach('.layout-flow-stream.debug-text[data-flow-kind=\"text\"][data-original-lines=\"multi\"],"),
     "multi-line text must retain its fitting selector alongside single-line abstracts"
   );
-  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v26:"), "layout fitting must invalidate snapshots that predate final text clearance");
+  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v29:"), "layout fitting must invalidate snapshots that predate inherited body line compression");
   assert(workbenchSource.includes('U.hashString(String(node.textContent || "").replace(/\\s+/g, " ").trim())'),
     "a retranslated page must not reuse a fit snapshot for different text");
   assert(workbenchSource.includes('pending = restored.size === active.length ? [] : active;'),
@@ -1568,8 +1568,8 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the parity fitter must define the rendered-text union helper used by title recovery");
   assert(workbenchCode.includes("contentBounds: contentGeometry.bounds"),
     "the parity fitter must retain the union broad phase before exact glyph collision tests");
-  assert(workbenchCode.includes("layout-fit-v46-final-text-clearance"),
-    "the parity engine must invalidate styles created before final text clearance");
+  assert(workbenchCode.includes("layout-fit-v49-final-body-line-compression"),
+    "the parity engine must invalidate styles created before final body style inheritance");
   const shortTitleRepair = workbenchCode.slice(
     workbenchCode.indexOf("function keepShortTitlesOnOneLine(selector, options = {})"),
     workbenchCode.indexOf("// Monotone collision-constrained growth")
@@ -1609,7 +1609,7 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "top-edge glyph collisions must move the first baseline down instead of farther up");
   assert(workbenchCode.includes("const overflowTolerance = 1.5 * coordinateScale"),
     "canonical-page height measurements must scale the Python source-pixel tolerance");
-  assert(workbenchCode.includes("snapshot?.version !== 11")
+  assert(workbenchCode.includes("snapshot?.version !== 12")
     && workbenchCode.includes("snapshot.pages.length !== requested.length")
     && workbenchCode.includes("return restored;"),
     "the runtime must reject old or partial snapshots instead of mixing per-page solves");
@@ -1767,7 +1767,121 @@ function testFinalTextClearanceBoundaries() {
   assert(source.indexOf('      applyFinalTextClearance(fittedTexts);') > source.indexOf('      enforceFinalTextCollisionSafety();'));
 }
 
+function testDualColumnBodyFontCandidateProtection() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function dualColumnBodyFontCandidates('), source.indexOf('  function buildLayoutDocument('));
+  const find = vm.runInNewContext(`${helper}\ndualColumnBodyFontCandidates`, { Layout: LayoutHelpers });
+  const prose = 'According to the theory, researchers measured atmospheric turbulence using repeated observations. The structure function can be calculated from the wind speed fluctuation term, and these measurements provide evidence for the relationship between energy dissipation and atmospheric motion.';
+  const stream = (box, styleKind = 'text') => ({ bbox: box, styleKind, debugRole: styleKind === 'text' ? 'text' : 'merged_body',
+    items: [{ id: 'candidate', kind: 'text', text: prose, originalLineCount: 20 }] });
+  const candidate = stream([42, 99, 290, 722]);
+  const baseline = stream([302, 62, 550, 471], 'body_text');
+  const model = { pages: [
+    { index: 1, width: 595, height: 842, restoration: { streams: [stream([43, 340, 289, 665], 'body_text')] } },
+    { index: 2, width: 595, height: 842, restoration: { streams: [candidate, baseline] } }
+  ] };
+  const original = JSON.stringify(model);
+  assert.deepEqual([...find(model)], [candidate]);
+  assert.equal(JSON.stringify(model), original, 'marking must not mutate the cached model or merge streams');
+  const cases = [
+    m => { m.pages[1].index = 1; },
+    m => { m.pages[0].restoration.streams = []; m.pages[1].restoration.streams[1].styleKind = 'text'; },
+    m => { m.pages[1].restoration.streams.pop(); },
+    m => { m.pages[1].restoration.streams[0].bbox = [195, 99, 576, 722]; },
+    m => { m.pages[1].restoration.streams[0].items[0].text = 'Figure 2. ' + prose; },
+    m => { m.pages[1].restoration.streams[0].items[0].fromList = true; },
+    m => { m.pages[1].restoration.streams[0].items[0].originalLineCount = 3; },
+    m => { m.pages[1].restoration.streams[0].refsOnly = true; }
+  ];
+  for (const change of cases) {
+    const m = JSON.parse(original); change(m);
+    assert.equal(find(m).size, 0);
+  }
+}
+
+function testFinalBodyFontInheritanceCollisionRollback() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function inheritFinalDualColumnBodyFont('), source.indexOf('  function titleFrameFill('));
+  let fonts = [11.5, 11.5], collision = false, incoming = false, ordinary = true, strict = false;
+  let safeLineRatio = null, incomingSafeLineRatio = null;
+  const probedRatios = [];
+  const peer = {};
+  const pane = { querySelectorAll: () => fonts.map(font => ({
+    style: { lineHeight: '1.2' }, dataset: {}, closest: () => page, classList: { contains: () => false },
+    box: { top: 10, bottom: 100 }, ...(typeof font === 'number' ? { font } : font)
+  })) };
+  const page = { querySelectorAll: () => [node, peer] };
+  const node = { dataset: { layoutFontScale: '2' }, style: { fontSize: '25.00px', lineHeight: '1.19', textAlign: 'left' }, box: { top: 10, bottom: 100 },
+    closest: selector => selector === '.layout-page' ? page : pane };
+  const inherit = vm.runInNewContext(`${helper}\ninheritFinalDualColumnBodyFont`, {
+    document: { body: { classList: { contains: () => strict } } },
+    scopedNodes: () => [node], isOrdinaryMultilineText: () => ordinary,
+    layoutControlFontSize: body => body.font, elementBoxInPage: n => n.box,
+    window: { getComputedStyle: () => ({ textAlign: 'justify' }) },
+    textCollisionDetails: (_nodes, options) => {
+      assert.equal(options.checkAllTextForCollisions, true);
+      assert.equal(options.avoidPageOverflow, true);
+      const ratio = Number(node.style.lineHeight);
+      probedRatios.push(ratio);
+      return collision || (safeLineRatio !== null && ratio > safeLineRatio) ? { blocker: peer } : null;
+    },
+    textRectsInPage: () => [{}], renderedContentRectsInPage: () => [{}],
+    rectsOverlap: () => incoming || (incomingSafeLineRatio !== null && Number(node.style.lineHeight) > incomingSafeLineRatio)
+  });
+  inherit();
+  assert.equal(node.style.fontSize, '23.00px');
+  assert.equal(node.style.lineHeight, '1.2');
+  assert.equal(node.style.textAlign, 'justify');
+  fonts = [{ style: { fontSize: '9pt', lineHeight: '1.2' }, dataset: { layoutFontScale: '1' } }];
+  inherit();
+  assert.equal(node.style.fontSize, '24.00px', 'inherit the final manual body size after converting pt to source px');
+  for (const direction of ['outgoing', 'incoming']) {
+    safeLineRatio = direction === 'outgoing' ? 1.15 : null;
+    incomingSafeLineRatio = direction === 'incoming' ? 1.15 : null;
+    probedRatios.length = 0;
+    inherit();
+    assert.equal(node.style.fontSize, '24.00px', 'compression must retain the inherited body size');
+    assert.equal(node.style.lineHeight, '1.15', 'stop at the first collision-free line ratio');
+    assert.equal(node.style.textAlign, 'justify');
+    assert.deepEqual(probedRatios, [1.2, 1.175, 1.15]);
+  }
+  safeLineRatio = 1.02; incomingSafeLineRatio = null;
+  inherit();
+  assert.equal(node.style.lineHeight, '1.02', 'try the body safety floor before abandoning inheritance');
+  safeLineRatio = null;
+  for (const reason of ['outgoing', 'incoming', 'missing-baseline', 'mixed-baseline', 'protected', 'abstract', 'strict-source']) {
+    Object.assign(node.style, { fontSize: '25.00px', lineHeight: '1.19', textAlign: 'left' });
+    collision = reason === 'outgoing'; incoming = reason === 'incoming'; strict = reason === 'strict-source';
+    fonts = reason === 'missing-baseline' ? [] : reason === 'mixed-baseline' ? [11.5, 12] : [11.5, 11.5];
+    ordinary = reason !== 'protected'; node.dataset.abstractBody = reason === 'abstract' ? '1' : '0';
+    inherit();
+    assert.equal(node.style.fontSize, '25.00px', reason);
+    assert.equal(node.style.lineHeight, '1.19');
+    assert.equal(node.style.textAlign, 'left', 'collision rollback must restore all inherited styles');
+    assert(probedRatios.every(ratio => ratio >= 1.02), 'compression must not exceed the body safety floor');
+  }
+  const solve = source.slice(source.indexOf('  async function runLayoutFit('), source.indexOf('  function ensureLayoutFit('));
+  assert(solve.indexOf('      inheritFinalDualColumnBodyFont(pending);') > solve.indexOf('      applyLayoutBodyFont(pending);'));
+  assert(solve.indexOf('      inheritFinalDualColumnBodyFont(pending);') < solve.lastIndexOf('      saveLayoutFitSnapshot(active);'));
+}
+
+function testInheritedBodyAlignmentSnapshot() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function applyLayoutFitSnapshot('), source.indexOf('  function restoreInjectedLayoutFitSnapshot('));
+  const node = { style: { fontSize: '10px', lineHeight: '1.1', textAlign: '' } };
+  const page = { dataset: {}, querySelectorAll: () => [node] };
+  const restore = vm.runInNewContext(`${helper}\napplyLayoutFitSnapshot`, { layoutFitPageKey: () => 'key' });
+  const snapshot = { version: 12, pages: [{ key: 'key', styles: [{ fontSize: '12px', lineHeight: '1.2', textAlign: 'justify' }] }] };
+  assert.equal(restore([page], { ...snapshot, version: 11 }).size, 0);
+  assert.equal(node.style.textAlign, '');
+  assert.equal(restore([page], snapshot).size, 1);
+  assert.deepEqual(node.style, snapshot.pages[0].styles[0]);
+}
+
   return {
+    testInheritedBodyAlignmentSnapshot,
+    testDualColumnBodyFontCandidateProtection,
+    testFinalBodyFontInheritanceCollisionRollback,
     testFinalTextClearanceBoundaries,
     testAbstractRecognitionAndBodyProtection,
     testLayout,
