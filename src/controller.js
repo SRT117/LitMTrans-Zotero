@@ -1330,6 +1330,7 @@
     async runDeveloperDiagnostic(command) {
       const operation = String(command.operation || "");
       if (operation === "snapshot") return this.developerDiagnosticSnapshot();
+      if (operation === "reader-theme-probe") return this.runReaderThemeProbe(command);
       if (operation === "multimodal-probe") return this.runMultimodalProbe(command);
       if (operation === "document-multimodal-probe") return this.runDocumentMultimodalProbe(command);
       if (operation === "document-streaming-probe") {
@@ -1344,6 +1345,128 @@
       if (operation === "caj-reader-probe") return this.runCAJReaderProbe(command);
       if (operation === "caj-storage-probe") return this.runCAJStorageProbe(command);
       throw new Error(`不支持的检查操作：${operation}`);
+    }
+
+    async runReaderThemeProbe(command = {}) {
+      const items = await Zotero.Items.getAll(Zotero.Libraries.userLibraryID, false, false);
+      let attachment;
+      for (const item of items) {
+        if (!item.isAttachment() || item.attachmentContentType !== "application/pdf") continue;
+        if (command.printPDF) {
+          const data = await this.stateForAttachment(item.id);
+          if (!data.layout?.meta?.complete || !data.layout?.model?.pages?.length) continue;
+        }
+        attachment = item;
+        break;
+      }
+      if (!attachment) throw new Error("隔离测试库中没有 PDF 附件");
+      const alreadyOpen = this.tabs.has(this.tabIDForAttachment(attachment.id));
+      const getState = this.stateForAttachment;
+      this.stateForAttachment = async (...args) => {
+        const data = await getState.apply(this, args);
+        return Number(args[0]) === attachment.id ? { ...data, item: { ...data.item, readerMode: "stream" } } : data;
+      };
+      let tabID;
+      try { tabID = await this.openWorkbench(attachment); }
+      catch (error) { this.stateForAttachment = getState; throw error; }
+      const runtime = this.tabs.get(tabID);
+      let view = null;
+      let originalTheme;
+      let originalScheme;
+      let probe = null;
+      let originalUseDarkMode;
+      try {
+        let page;
+        for (let attempt = 0; attempt < 200; attempt++) {
+          page = runtime.browser.contentWindow?.wrappedJSObject || runtime.browser.contentWindow;
+          const button = page?.document?.getElementById("layout-mode-button");
+          if (button && runtime.bridgeInstalled && page.document.documentElement.dataset.readerTheme) break;
+          await Zotero.Promise.delay(100);
+        }
+        this.stateForAttachment = getState;
+        if (runtime.pdfPreview || page.__LitMTrans_DIAGNOSTIC_READER_MODE__() !== "stream") throw new Error("未在流式首次打开状态完成主题同步");
+        const initialTheme = {
+          paper: page.document.documentElement.style.getPropertyValue("--reader-paper"),
+          ink: page.document.documentElement.style.getPropertyValue("--reader-ink")
+        };
+        page.__LitMTrans_DIAGNOSTIC_READER_MODE__("layout");
+        for (let attempt = 0; attempt < 600; attempt++) {
+          view = runtime.pdfPreview?._internalReader?._primaryView;
+          if (view?._iframeWindow?.PDFViewerApplication?.pdfViewer && runtime.pdfPreviewCleanup) break;
+          await Zotero.Promise.delay(100);
+        }
+        if (!view || !runtime.pdfPreviewCleanup) throw new Error("原始 PDF 未完成加载");
+        originalTheme = view._darkTheme;
+        originalScheme = view._forcedColorScheme !== undefined
+          ? view._forcedColorScheme : view._iframeWindow.document.documentElement.dataset.colorScheme || null;
+        originalUseDarkMode = view._useDarkMode;
+        const doc = page.document;
+        probe = doc.createElement("div");
+        probe.className = "layout-page";
+        const text = doc.createElement("span");
+        text.className = "layout-block";
+        text.textContent = "阅读主题验证";
+        probe.appendChild(text);
+        doc.getElementById("translation-layout").appendChild(probe);
+        const records = [];
+        const modern = typeof view.setDarkTheme === "function";
+        const themes = modern ? [
+          { id: "dark", background: "#2E3440", foreground: "#D8DEE9" },
+          { id: "sepia", background: "#F4ECD8", foreground: "#5B4636" }
+        ] : [
+          { id: "content-dark-on", background: "#000000", foreground: "#ffffff", enabled: true },
+          { id: "content-dark-off", background: "#ffffff", foreground: "#121212", enabled: false }
+        ];
+        for (const theme of themes) {
+          if (modern) view.setDarkTheme(Components.utils.cloneInto(theme, view._iframeWindow));
+          else view.setUseDarkMode(theme.enabled);
+          view.setColorScheme("dark");
+          await Zotero.Promise.delay(250);
+          const reader = this.pdfReaderTheme(runtime);
+          const paper = page.getComputedStyle(probe).backgroundColor;
+          const ink = page.getComputedStyle(text).color;
+          const expected = color => {
+            const value = Number.parseInt(color.slice(1), 16);
+            return `rgb(${value >> 16}, ${(value >> 8) & 255}, ${value & 255})`;
+          };
+          if (reader?.background !== theme.background || paper !== expected(theme.background) || ink !== expected(theme.foreground)) {
+            throw new Error(`阅读主题未同步: ${JSON.stringify({ reader, paper, ink })}`);
+          }
+          records.push({ theme: theme.id, paper, ink });
+        }
+        probe.remove();
+        probe = null;
+        const pdfs = [];
+        if (command.printPDF) {
+          if (modern) view.setDarkTheme(Components.utils.cloneInto({
+            id: "dark", background: "#2E3440", foreground: "#D8DEE9"
+          }, view._iframeWindow));
+          else view.setUseDarkMode(true);
+          view.setColorScheme("dark");
+          await Zotero.Promise.delay(250);
+          for (const label of ["dark", "light"]) {
+            view.setColorScheme(label);
+            await Zotero.Promise.delay(250);
+            for (const variant of ["layout", "stream-source"]) {
+              const result = await page.__LitMTrans_DIAGNOSTIC_EXPORT__(variant, label);
+              pdfs.push({ variant, label, ...result });
+            }
+          }
+        }
+        return { profile: "isolated-development", pdfLoaded: true, streamFirstOpen: true, initialTheme, records, pdfs };
+      }
+      finally {
+        probe?.remove();
+        this.stateForAttachment = getState;
+        if (view && originalTheme !== undefined) {
+          view.setDarkTheme(originalTheme);
+        }
+        if (view && typeof originalUseDarkMode === "boolean") view.setUseDarkMode(originalUseDarkMode);
+        if (view) view.setColorScheme(originalScheme);
+        if (!alreadyOpen) {
+          try { runtime.window.Zotero_Tabs.close(tabID); } catch (_) { this.cleanupTab(tabID); }
+        }
+      }
     }
 
     async runCAJProbe(command) {
@@ -4576,6 +4699,7 @@
         try { task.cancel?.(); } catch (_) {}
       }
       try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
+      try { runtime.readerThemeCleanup?.(); } catch (_) {}
       try { runtime.pdfPreview?.uninit?.(); } catch (_) {}
       try { runtime.deepSeekNativePopup?.remove?.(); } catch (_) {}
       try { runtime.popupset?.remove?.(); } catch (_) {}
@@ -4620,6 +4744,11 @@
         this.log("LitMTrans bridge 未建立：页面不可见 __LitMTrans_HOST_CALL__");
         return false;
       }
+      try {
+        runtime.readerThemeCleanup?.();
+        runtime.readerThemeCleanup = this.observeWorkbenchReaderTheme(runtime);
+      }
+      catch (error) { this.log(`监听阅读主题失败: ${error}`); }
       const readySent = this.sendToPage(runtime, { type: "host-ready", payload: { version: this.version } });
       runtime.hostReadySent = readySent;
       if (!readySent) {
@@ -4645,6 +4774,118 @@
         this.log(`Page message failed: ${error}`);
         return false;
       }
+    }
+
+    pdfReaderTheme(runtime) {
+      const view = runtime.pdfPreview?._internalReader?._primaryView;
+      const pdfWindow = view?._iframeWindow;
+      const color = (value, fallback) => /^#(?:[\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i.test(String(value || "")) ? String(value) : fallback;
+      const white = { background: "#ffffff", foreground: "#121212" };
+      if (pdfWindow?.document) {
+        const contentWindow = pdfWindow.wrappedJSObject || pdfWindow;
+        if ("theme" in contentWindow) {
+          return {
+            background: color(contentWindow.theme?.background, white.background),
+            foreground: color(contentWindow.theme?.foreground, white.foreground)
+          };
+        }
+        // Zotero 7 通过内容开关和页面滤镜实现深色，不提供 theme 对象。
+        const scheme = pdfWindow.document.documentElement?.dataset?.colorScheme;
+        const dark = scheme ? scheme === "dark" : Boolean(pdfWindow.matchMedia?.("(prefers-color-scheme: dark)").matches);
+        const enabled = typeof view._useDarkMode === "boolean" ? view._useDarkMode : Zotero.Prefs.get("reader.contentDarkMode") !== false;
+        return dark && enabled ? { background: "#000000", foreground: "#ffffff" } : white;
+      }
+      // 流式首次打开不创建 PDF 预览，直接从 Zotero 的阅读首选项解析主题。
+      const win = runtime.browser?.contentWindow || runtime.window;
+      const dark = Boolean(win?.matchMedia?.("(prefers-color-scheme: dark)").matches);
+      const darkTheme = Zotero.Prefs.get("reader.darkTheme");
+      if (darkTheme === undefined) {
+        return dark && Zotero.Prefs.get("reader.contentDarkMode") !== false
+          ? { background: "#000000", foreground: "#ffffff" } : white;
+      }
+      const id = Zotero.Prefs.get(dark ? "reader.darkTheme" : "reader.lightTheme") || (dark ? "dark" : "light");
+      const themes = [
+        { id: "dark", background: "#2E3440", foreground: "#D8DEE9" },
+        { id: "black", background: "#000000", foreground: "#FFFFFF" },
+        { id: "snow", background: "#ECEFF4", foreground: "#3B4252" },
+        { id: "sepia", background: "#F4ECD8", foreground: "#5B4636" },
+        ...(Zotero.SyncedSettings?.get(Zotero.Libraries?.userLibraryID, "readerCustomThemes") || [])
+      ];
+      const theme = themes.find(theme => theme.id === id);
+      return {
+        background: color(theme?.background, white.background),
+        foreground: color(theme?.foreground, white.foreground)
+      };
+    }
+
+    observeWorkbenchReaderTheme(runtime) {
+      const tokens = [];
+      const media = runtime.browser?.contentWindow?.matchMedia?.("(prefers-color-scheme: dark)");
+      const update = () => {
+        try {
+          this.emit(runtime, { type: "reader-theme", attachmentID: runtime.attachmentID, theme: this.pdfReaderTheme(runtime) });
+        }
+        catch (error) { this.log(`同步阅读主题失败: ${error}`); }
+      };
+      for (const key of ["reader.contentDarkMode", "reader.lightTheme", "reader.darkTheme"]) {
+        try { tokens.push(Zotero.Prefs.registerObserver(key, () => setTimeout(update, 0))); } catch (_) {}
+      }
+      let notifier = null;
+      try {
+        notifier = Zotero.Notifier.registerObserver({ notify: (_event, _type, ids) => {
+          if (!ids?.includes(`${Zotero.Libraries.userLibraryID}/readerCustomThemes`)) return;
+          try {
+            const preview = runtime.pdfPreview;
+            if (preview?._internalReader?.setCustomThemes) {
+              const themes = Zotero.SyncedSettings.get(Zotero.Libraries.userLibraryID, "readerCustomThemes") || [];
+              preview._internalReader.setCustomThemes(Components.utils.cloneInto(themes, preview._iframeWindow));
+            }
+            update();
+          }
+          catch (error) { this.log(`更新 PDF 自定义主题失败: ${error}`); }
+        } }, ["setting"], "litmtrans-reader-theme");
+      } catch (_) {}
+      media?.addEventListener("change", update);
+      return () => {
+        for (const token of tokens) Zotero.Prefs.unregisterObserver(token);
+        if (notifier !== null) Zotero.Notifier.unregisterObserver(notifier);
+        media?.removeEventListener("change", update);
+      };
+    }
+
+    observePDFReaderTheme(runtime, attachmentID) {
+      let observer = null;
+      let lastTheme = "";
+      const emitTheme = () => {
+        try {
+          const theme = this.pdfReaderTheme(runtime);
+          const identity = JSON.stringify(theme);
+          if (!theme || identity === lastTheme) return;
+          if (this.sendToPage(runtime, { type: "event", payload: { type: "reader-theme", attachmentID, theme } })) lastTheme = identity;
+        }
+        catch (error) { this.log(`读取 PDF 阅读主题失败: ${error}`); }
+      };
+      emitTheme();
+      try {
+        const pdfWindow = runtime.pdfPreview?._internalReader?._primaryView?._iframeWindow;
+        if (pdfWindow?.document) {
+          observer = new pdfWindow.MutationObserver(emitTheme);
+          // 内容窗口不能直接读取特权沙箱的参数对象，需克隆到目标窗口。
+          const options = Components.utils.cloneInto({
+            attributes: true, attributeFilter: ["style", "data-color-scheme"]
+          }, pdfWindow);
+          observer.observe(pdfWindow.document.documentElement, options);
+          if (pdfWindow.document.body) observer.observe(pdfWindow.document.body, Components.utils.cloneInto({
+            attributes: true, attributeFilter: ["class"]
+          }, pdfWindow));
+        }
+      }
+      catch (error) {
+        try { observer?.disconnect(); } catch (_) {}
+        observer = null;
+        this.log(`监听 PDF 阅读主题失败: ${error}`);
+      }
+      return () => { observer?.disconnect(); };
     }
 
     emit(runtime, event) {
@@ -4872,8 +5113,10 @@
           return this.pdfPageCount(attachmentID);
 
         case "initialize":
-        case "refresh":
-          return this.stateForAttachment(attachmentID);
+        case "refresh": {
+          const data = await this.stateForAttachment(attachmentID);
+          return { ...data, readerTheme: this.pdfReaderTheme(runtime), developerDiagnosticsEnabled: Boolean(this.diagnosticTimer) };
+        }
 
         case "viewport": {
           const rect = runtime.browser?.getBoundingClientRect?.() || runtime.container?.getBoundingClientRect?.();
@@ -4942,7 +5185,7 @@
           const attachment = context.attachment;
           if (U.extension(context.filePath) !== ".pdf") return { available: false };
           ensureTaskActive();
-          if (runtime.pdfPreview && Number(runtime.pdfPreviewAttachmentID) === attachmentID) return { available: true };
+          if (runtime.pdfPreview && Number(runtime.pdfPreviewAttachmentID) === attachmentID) return { available: true, theme: this.pdfReaderTheme(runtime) };
           if (runtime.pdfPreview) {
             try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
             try { runtime.pdfPreview.uninit?.(); } catch (_) {}
@@ -5183,6 +5426,11 @@
             if (task.openStarted && !task.openSettled) return;
             if (task.cleanupDone) return;
             task.cleanupDone = true;
+            if (runtime.pdfPreview === preview) {
+              try { runtime.pdfPreviewCleanup?.(); } catch (_) {}
+              runtime.pdfPreview = null;
+              runtime.pdfPreviewAttachmentID = 0;
+            }
             try { popupset.remove(); } catch (_) {}
             try { preview.uninit?.(); } catch (_) {}
             finishTask();
@@ -5282,6 +5530,7 @@
           ensureTaskActive();
           runtime.pdfPreview = preview;
           runtime.pdfPreviewAttachmentID = attachmentID;
+          const stopReaderTheme = this.observePDFReaderTheme(runtime, attachmentID);
           const eventBus = pdfWindow.PDFViewerApplication?.eventBus;
           if (eventBus?.on) {
             eventBus.on("pagesloaded", fitPDFToWidth);
@@ -5371,8 +5620,9 @@
             // escape the iframe as an application/browser zoom gesture.
             viewerContainer.addEventListener("wheel", zoomOriginalPDF, { capture: true, passive: false });
           }
-          if (eventBus?.on || viewerContainer) {
+          {
             runtime.pdfPreviewCleanup = () => {
+              try { stopReaderTheme(); } catch (_) {}
               try { eventBus?.off?.("pagesloaded", fitPDFToWidth); } catch (_) {}
               try { eventBus?.off?.("pagesinit", fitPDFToWidth); } catch (_) {}
               try { eventBus?.off?.("pagechanging", emitLocation); } catch (_) {}
@@ -5387,7 +5637,7 @@
               runtime.pdfPreviewCleanup = null;
             };
           }
-          return { available: true, page: Number(pdfViewer.currentPageNumber || 1) };
+          return { available: true, page: Number(pdfViewer.currentPageNumber || 1), theme: this.pdfReaderTheme(runtime) };
           };
           try {
             return await initializePreview();
@@ -5884,6 +6134,23 @@
 
         case "open-feedback":
           return this.openFeedback();
+
+        case "diagnostic-print-pdf": {
+          if (!await this.storage.exists(this.developerDiagnosticsPaths().marker)) throw new Error("隔离诊断未启用");
+          if (!["layout", "frozen", "stream", "stream-source"].includes(payload.kind)) throw new Error("未知的导出诊断类型");
+          const directory = PathUtils.join(this.storage.root, "dev-diagnostics", "reader-theme-pdfs");
+          await this.storage.ensureDir(directory);
+          const label = payload.label === "light" ? "light" : "dark";
+          const path = PathUtils.join(directory, `${payload.kind}-${label}.pdf`);
+          const result = await this.printWorkbenchPDF(runtime, { ...payload, path });
+          if (payload.kind === "layout") {
+            const context = await this.attachmentContext(attachmentID);
+            const comparisonPath = PathUtils.join(directory, `comparison-${label}.pdf`);
+            await this.createLayoutComparisonPDF(context.filePath, path, comparisonPath);
+            return { ...result, comparisonPath };
+          }
+          return result;
+        }
 
         case "export-pdf":
           return this.withOperation(runtime, "export", async () => this.printWorkbenchPDF(runtime, payload));

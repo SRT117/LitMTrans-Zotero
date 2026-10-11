@@ -1,10 +1,11 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("snapshot", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
+    [ValidateSet("snapshot", "reader-theme-probe", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
     [string]$Operation = "multimodal-probe",
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
     [switch]$NoLaunch,
+    [switch]$PrintPDF,
     [string]$CajDirectory = "",
     [int]$TimeoutSeconds = 210
 )
@@ -68,6 +69,7 @@ $command = @{
     expectedToken = $expectedToken
     imageFileName = $probeFileName
     createdAt = [DateTime]::UtcNow.ToString("o")
+    printPDF = [bool]$PrintPDF
 }
 if ($Operation -in @("caj-probe", "caj-reader-probe", "caj-storage-probe")) {
     if (-not (Test-Path -LiteralPath $CajDirectory -PathType Container)) {
@@ -76,7 +78,7 @@ if ($Operation -in @("caj-probe", "caj-reader-probe", "caj-storage-probe")) {
     $command.directory = (Resolve-Path -LiteralPath $CajDirectory).Path
 }
 $temporaryCommand = "$commandPath.tmp"
-$command | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporaryCommand -Encoding utf8
+[System.IO.File]::WriteAllText($temporaryCommand, ($command | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
 Move-Item -LiteralPath $temporaryCommand -Destination $commandPath -Force
 
 $isolatedZotero = Get-CimInstance Win32_Process -Filter "Name = 'zotero.exe'" |

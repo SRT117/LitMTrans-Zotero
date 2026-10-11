@@ -13,6 +13,193 @@ module.exports = function createSuite(env) {
     ChatService, ChatInternals, ControllerInternals, DocumentPipeline
   } = env;
 
+function testPDFReaderThemeCrossWindowAndFailureIsolation() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const events = [];
+  const logs = [];
+  const clones = new WeakSet();
+  let notify;
+  let failObserve = false;
+  let disconnected = 0;
+  const pdfWindow = {
+    document: { documentElement: {} },
+    wrappedJSObject: { theme: { background: "#2E3440", foreground: "#D8DEE9" } },
+    MutationObserver: class {
+      constructor(callback) { notify = callback; }
+      observe(root, options) {
+        assert(clones.has(options), "内容窗口必须收到本窗口的参数对象");
+        assert.equal(root, pdfWindow.document.documentElement);
+        assert.equal(options.attributes, true);
+        if (failObserve) throw new Error("observer unavailable");
+      }
+      disconnect() { disconnected++; }
+    }
+  };
+  const runtime = { pdfPreview: { _internalReader: { _primaryView: { _iframeWindow: pdfWindow } } } };
+  controller.sendToPage = (_, message) => { events.push(message.payload); return true; };
+  controller.log = message => logs.push(message);
+  const previousComponents = context.Components;
+  context.Components = { utils: { cloneInto(value, target) {
+    assert.equal(target, pdfWindow);
+    const clone = JSON.parse(JSON.stringify(value));
+    clones.add(clone);
+    return clone;
+  } } };
+  try {
+    const cleanup = controller.observePDFReaderTheme(runtime, 42);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].theme.background, "#2E3440");
+    notify();
+    assert.equal(events.length, 1);
+    pdfWindow.wrappedJSObject.theme = { background: "#F4ECD8", foreground: "#5B4636" };
+    notify();
+    assert.equal(events[1].theme.background, "#F4ECD8");
+    assert.equal(events[1].attachmentID, 42);
+    cleanup();
+    assert.equal(disconnected, 1);
+    failObserve = true;
+    assert.doesNotThrow(() => controller.observePDFReaderTheme(runtime, 42)());
+    assert.equal(events.length, 3, "监听失败仍应同步初始颜色");
+    assert.equal(disconnected, 2);
+    assert(logs.some(message => message.includes("observer unavailable")));
+  }
+  finally { context.Components = previousComponents; }
+}
+
+function testReaderThemeWithoutPreviewAndLegacyContentSwitch() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const keys = ["reader.darkTheme", "reader.lightTheme", "reader.contentDarkMode"];
+  const saved = keys.map(key => [key, prefValues.has(key), prefValues.get(key)]);
+  const runtime = { window: { matchMedia: () => ({ matches: true }) } };
+  try {
+    keys.forEach(key => prefValues.delete(key));
+    assert.equal(controller.pdfReaderTheme(runtime).background, "#000000");
+    prefValues.set("reader.contentDarkMode", false);
+    assert.equal(controller.pdfReaderTheme(runtime).background, "#ffffff");
+    prefValues.set("reader.darkTheme", "sepia");
+    assert.equal(controller.pdfReaderTheme(runtime).background, "#F4ECD8");
+    const view = { _useDarkMode: false, _iframeWindow: {
+      document: { documentElement: { dataset: { colorScheme: "dark" } } }
+    } };
+    runtime.pdfPreview = { _internalReader: { _primaryView: view } };
+    assert.equal(controller.pdfReaderTheme(runtime).background, "#ffffff");
+    view._useDarkMode = true;
+    assert.equal(controller.pdfReaderTheme(runtime).background, "#000000");
+    view._iframeWindow.document.documentElement.dataset.colorScheme = "light";
+    assert.equal(controller.pdfReaderTheme(runtime).background, "#ffffff");
+  }
+  finally {
+    for (const [key, existed, value] of saved) {
+      if (existed) prefValues.set(key, value); else prefValues.delete(key);
+    }
+  }
+}
+
+function testCustomReaderThemeNotificationUpdatesPreviewBeforeEmission() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const saved = {
+    Components: context.Components, Notifier: context.Zotero.Notifier,
+    SyncedSettings: context.Zotero.SyncedSettings, Libraries: context.Zotero.Libraries
+  };
+  let notify;
+  let themes = [{ id: "custom1", background: "#123456", foreground: "#abcdef" }];
+  let refreshes = 0;
+  const pdfWindow = { document: {}, theme: { background: "#000000", foreground: "#ffffff" } };
+  const readerWindow = {};
+  const runtime = { attachmentID: 42, pdfPreview: {
+    _iframeWindow: readerWindow,
+    _internalReader: {
+      _primaryView: { _iframeWindow: pdfWindow },
+      setCustomThemes(value) { refreshes++; pdfWindow.theme = value[0] || null; }
+    }
+  } };
+  const events = [];
+  controller.emit = (_, event) => events.push(event);
+  controller.log = message => { throw new Error(message); };
+  context.Components = { utils: { cloneInto(value, target) {
+    assert.equal(target, readerWindow);
+    return JSON.parse(JSON.stringify(value));
+  } } };
+  context.Zotero.Libraries = { userLibraryID: 1 };
+  context.Zotero.SyncedSettings = { get: () => themes };
+  context.Zotero.Notifier = {
+    registerObserver(observer) { notify = observer.notify; return 1; },
+    unregisterObserver() {}
+  };
+  try {
+    const cleanup = controller.observeWorkbenchReaderTheme(runtime);
+    notify("modify", "setting", ["1/unrelated"]);
+    assert.equal(refreshes, 0);
+    notify("modify", "setting", ["1/readerCustomThemes"]);
+    assert.equal(events[0].theme.background, "#123456");
+    themes = [{ ...themes[0], background: "#654321" }];
+    notify("modify", "setting", ["1/readerCustomThemes"]);
+    assert.equal(events[1].theme.background, "#654321");
+    themes = [];
+    notify("delete", "setting", ["1/readerCustomThemes"]);
+    assert.equal(events[2].theme.background, "#ffffff");
+    assert.equal(refreshes, 3);
+    cleanup();
+  }
+  finally {
+    context.Components = saved.Components;
+    for (const key of ["Notifier", "SyncedSettings", "Libraries"]) context.Zotero[key] = saved[key];
+  }
+}
+
+async function testReaderThemeDiagnosticRestoresAutomaticScheme() {
+  const controller = Object.create(context.LitMTrans.Controller.prototype);
+  const saved = { Items: context.Zotero.Items, Libraries: context.Zotero.Libraries,
+    Promise: context.Zotero.Promise, Components: context.Components };
+  const attachment = { id: 42, isAttachment: () => true, attachmentContentType: "application/pdf" };
+  const pdfWindow = { document: { documentElement: { dataset: { colorScheme: "dark" } } },
+    PDFViewerApplication: { pdfViewer: {} }, theme: { background: "#2E3440", foreground: "#D8DEE9" } };
+  const view = { _forcedColorScheme: null, _darkTheme: pdfWindow.theme, _iframeWindow: pdfWindow,
+    setDarkTheme(theme) { this._darkTheme = pdfWindow.theme = theme; },
+    setColorScheme(scheme) { this._forcedColorScheme = scheme; pdfWindow.document.documentElement.dataset.colorScheme = scheme || "dark"; }
+  };
+  const runtime = { bridgeInstalled: true };
+  let mode = "stream";
+  const page = { document: {
+    documentElement: { dataset: { readerTheme: "true" }, style: { getPropertyValue: () => "#000000" } },
+    getElementById: () => ({ appendChild() {} }),
+    createElement: () => ({ appendChild() {}, remove() {} })
+  },
+    __LitMTrans_DIAGNOSTIC_READER_MODE__(next) {
+      if (next === "layout") {
+        mode = next;
+        runtime.pdfPreview = { _internalReader: { _primaryView: view } };
+        runtime.pdfPreviewCleanup = () => {};
+      }
+      return mode;
+    },
+    getComputedStyle() {
+      const rgb = color => { const value = parseInt(color.slice(1), 16); return `rgb(${value >> 16}, ${(value >> 8) & 255}, ${value & 255})`; };
+      return { backgroundColor: rgb(pdfWindow.theme.background), color: rgb(pdfWindow.theme.foreground) };
+    }
+  };
+  runtime.browser = { contentWindow: page };
+  controller.tabs = new Map([["test", runtime]]);
+  controller.tabIDForAttachment = () => "test";
+  controller.openWorkbench = async () => "test";
+  const getState = controller.stateForAttachment = async () => ({});
+  context.Zotero.Items = { getAll: async () => [attachment] };
+  context.Zotero.Libraries = { userLibraryID: 1 };
+  context.Zotero.Promise = { delay: async () => {} };
+  context.Components = { utils: { cloneInto: value => JSON.parse(JSON.stringify(value)) } };
+  try {
+    const result = await controller.runReaderThemeProbe();
+    assert.equal(result.streamFirstOpen, true);
+    assert.equal(view._forcedColorScheme, null, "诊断应保留自动主题，而非固定当前系统配色");
+    assert.equal(view._darkTheme.background, "#2E3440");
+    assert.equal(controller.stateForAttachment, getState);
+  }
+  finally {
+    context.Components = saved.Components;
+    for (const key of ["Items", "Libraries", "Promise"]) context.Zotero[key] = saved[key];
+  }
+}
+
 function testExclusions() {
   const contentRoot = path.join(root, "src");
   const files = [];
@@ -1006,6 +1193,10 @@ async function testSettingsAutoSaveIsolationAndFailure() {
 }
 
   return {
+    testPDFReaderThemeCrossWindowAndFailureIsolation,
+    testReaderThemeWithoutPreviewAndLegacyContentSwitch,
+    testCustomReaderThemeNotificationUpdatesPreviewBeforeEmission,
+    testReaderThemeDiagnosticRestoresAutomaticScheme,
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
     testSilentNotifications,

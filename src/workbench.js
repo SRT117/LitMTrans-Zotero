@@ -961,6 +961,10 @@
       addLog(`正在接收排版译文 ${group}/${previous.groupCount}…`);
       return;
     }
+    if (type === "reader-theme") {
+      if (Number(event.attachmentID) === Number(state.data?.item?.attachmentID)) applyReaderTheme(event.theme);
+      return;
+    }
     if (type === "reader-location") {
       const page = Math.max(1, Math.trunc(Number(event.page || 1)));
       const pageRatio = Math.max(0, Math.min(1, Number(event.pageRatio || 0)));
@@ -1081,6 +1085,7 @@
   function setData(data, { preserveLayout = false } = {}) {
     const previousDocumentID = String(state.data?.item?.documentID || "");
     state.data = data || null;
+    applyReaderTheme(data?.readerTheme);
     const documentID = String(data?.item?.documentID || "");
     if (state.readerViewDocumentID !== documentID) {
       state.readerViewDocumentID = documentID;
@@ -1155,6 +1160,14 @@
     updateOperationUI();
   }
 
+  function applyReaderTheme(theme) {
+    if (!theme || !CSS.supports("color", theme.background) || !CSS.supports("color", theme.foreground)) return;
+    const root = document.documentElement;
+    root.style.setProperty("--reader-paper", theme.background);
+    root.style.setProperty("--reader-ink", theme.foreground);
+    root.dataset.readerTheme = "true";
+  }
+
   function ensureSourcePDF() {
     if (state.mode !== "layout") return;
     const attachmentID = Number(state.data?.item?.attachmentID || 0);
@@ -1178,6 +1191,7 @@
         return;
       }
       sourcePDFAvailable = Boolean(result?.available);
+      if (sourcePDFAvailable) applyReaderTheme(result.theme);
       sourcePDFLoading = false;
       sourcePDFRetryBlocked = false;
       if (!sourcePDFAvailable) {
@@ -4823,8 +4837,13 @@
       clone.style.transform = "none";
       clearFlowingTextForPrint(clone);
       sheet.appendChild(clone);
-      appendFrozenTextFragments(page, clone);
-      appendFrozenInlineAtoms(page, clone);
+      // 冻结文字和公式前暂用纸张配色，避免把夜间颜色写入导出副本。
+      page.classList.add("layout-print-source");
+      try {
+        appendFrozenTextFragments(page, clone);
+        appendFrozenInlineAtoms(page, clone);
+      }
+      finally { page.classList.remove("layout-print-source"); }
       root.appendChild(sheet);
     });
     document.body.appendChild(root);
@@ -5052,6 +5071,26 @@
       style.remove();
     }
   }
+
+  // 隔离诊断使用正式导出快照和打印后端，不另造测试打印页面。
+  window.__LitMTrans_DIAGNOSTIC_EXPORT__ = async (kind, label) => {
+    if (!state.data?.developerDiagnosticsEnabled) throw new Error("隔离诊断未启用");
+    const print = (expectedPages, layoutPaper) => hostCall("diagnostic-print-pdf", {
+      kind, label, expectedPages, layoutPaper, layout: kind !== "stream" && kind !== "stream-source"
+    }, { timeout: 120000 });
+    if (kind === "layout") return withLayoutPaintPrintRoot(print);
+    if (kind === "frozen") return withFrozenLayoutPrintRoot(print);
+    if (kind === "stream" || kind === "stream-source") return withStreamPrintRoot(kind === "stream-source" ? "source" : "translation", () => print());
+    throw new Error("未知的导出诊断类型");
+  };
+  window.__LitMTrans_DIAGNOSTIC_READER_MODE__ = mode => {
+    if (!state.data?.developerDiagnosticsEnabled) throw new Error("隔离诊断未启用");
+    if (mode === "stream" || mode === "layout") {
+      state.mode = mode;
+      renderMode();
+    }
+    return state.mode;
+  };
 
   async function exportCurrentReaderPDF(pane = exportToolbarPane(), options = {}) {
     const target = pane === "source" ? "source" : "translation";

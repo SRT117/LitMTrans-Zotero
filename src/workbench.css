@@ -301,9 +301,38 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 /* Compose in the source PDF coordinate system, exactly like PB_layout.py.
    The wrapper scales this completed page for the reader viewport; its 920px
    maximum is a display size and must never become a second layout grid. */
-.layout-page { position: relative; width: var(--layout-canonical-width, 612px); overflow: hidden; background: #fff; color: #111; box-shadow: 0 0 0 1px rgba(0,0,0,.18), 0 7px 24px rgba(0,0,0,.12); transform-origin: top left; }
-.layout-block { position: absolute; z-index: 3; box-sizing: border-box; overflow: visible; color: #111; font-family: "LitMTrans Source Han Serif", "Times New Roman", "SimSun", serif; line-height: 1.12; white-space: normal; overflow-wrap: anywhere; word-break: break-word; text-align: justify; }
-.layout-flow-stream { position: absolute; z-index: 4; box-sizing: border-box; overflow: visible; padding: 0 4px 0 2px; color: #111; font-family: "LitMTrans Source Han Serif", "Times New Roman", "SimSun", serif; text-align: justify; text-justify: auto; overflow-wrap: break-word; word-break: normal; hyphens: auto; }
+.layout-page { --layout-paper: #fff; --layout-ink: #111; --layout-code-bg: #f1f1f1; --layout-code-ink: #4b5563; --layout-table-border: #777; position: relative; width: var(--layout-canonical-width, 612px); overflow: hidden; background: var(--layout-paper); color: var(--layout-ink); box-shadow: 0 0 0 1px rgba(0,0,0,.18), 0 7px 24px rgba(0,0,0,.12); transform-origin: top left; }
+/* 仅在屏幕上的译文页适配主题，导出副本和原文页保留纸张配色。 */
+@media screen and (prefers-color-scheme: dark) {
+  #translation-layout .layout-page:not(.layout-print-source) {
+    --layout-paper: var(--surface);
+    --layout-ink: var(--ink);
+    --layout-code-bg: var(--surface-3);
+    --layout-code-ink: var(--ink-2);
+    --layout-table-border: var(--line-strong);
+  }
+}
+@media screen {
+  :root[data-reader-theme] #translation-layout .layout-page:not(.layout-print-source) {
+    --layout-paper: var(--reader-paper);
+    --layout-ink: var(--reader-ink);
+    --layout-code-bg: color-mix(in srgb, var(--reader-paper) 92%, var(--reader-ink));
+    --layout-code-ink: var(--reader-ink);
+    --layout-table-border: color-mix(in srgb, var(--reader-ink) 50%, var(--reader-paper));
+  }
+  :root[data-reader-theme] .document-pane .markdown-body {
+    --ink: var(--reader-ink);
+    --ink-2: var(--reader-ink);
+    --muted: color-mix(in srgb, var(--reader-ink) 75%, var(--reader-paper));
+    --surface: var(--reader-paper);
+    --surface-3: color-mix(in srgb, var(--reader-paper) 92%, var(--reader-ink));
+    --line: color-mix(in srgb, var(--reader-ink) 25%, var(--reader-paper));
+    --line-strong: color-mix(in srgb, var(--reader-ink) 50%, var(--reader-paper));
+    background: var(--reader-paper);
+  }
+}
+.layout-block { position: absolute; z-index: 3; box-sizing: border-box; overflow: visible; color: var(--layout-ink); font-family: "LitMTrans Source Han Serif", "Times New Roman", "SimSun", serif; line-height: 1.12; white-space: normal; overflow-wrap: anywhere; word-break: break-word; text-align: justify; }
+.layout-flow-stream { position: absolute; z-index: 4; box-sizing: border-box; overflow: visible; padding: 0 4px 0 2px; color: var(--layout-ink); font-family: "LitMTrans Source Han Serif", "Times New Roman", "SimSun", serif; text-align: justify; text-justify: auto; overflow-wrap: break-word; word-break: normal; hyphens: auto; }
 .layout-flow-stream .flow-para { position: relative; margin: 0 0 var(--para-gap, .22em); padding: 0; }
 .layout-flow-stream .flow-ref { position: relative; margin: 0 0 var(--para-gap, .14em); padding: 0 0 0 1.1em; text-indent: -1.1em; }
 .layout-flow-stream .flow-para:last-of-type,
@@ -411,8 +440,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   padding: 5px 7px;
   overflow: hidden;
   border: 0;
-  background: #f1f1f1;
-  color: #4b5563;
+  background: var(--layout-code-bg);
+  color: var(--layout-code-ink);
   font: inherit;
   font-family: "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
   line-height: inherit;
@@ -425,7 +454,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .layout-block .layout-table-wrap table { width: 100%; border-collapse: collapse; font-size: inherit; }
 .layout-block .layout-table-wrap th,
-.layout-block .layout-table-wrap td { padding: 1px 2px; border: 1px solid #777; }
+.layout-block .layout-table-wrap td { padding: 1px 2px; border: 1px solid var(--layout-table-border); }
 .layout-formula-target { display: block; width: 100%; cursor: zoom-in; }
 .layout-equation-text { position: relative; width: 100%; height: 100%; overflow: visible; font-family: "Cambria Math", "Times New Roman", serif; }
 .layout-equation-formula { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: visible; }
@@ -451,8 +480,8 @@ body.layout-translated
 .layout-flow-stream.debug-text[data-style-kind="text"][data-flow-kind="text"][data-original-lines="multi"]:not(.toc-stream):not(.from-list)
 .katex:not(.katex-display) { font-size: 88%; }
 .layout-debug .layout-block.layout-overflow { outline: 1px solid #b42318; background: rgba(248,232,230,.55); }
-.layout-awaiting-overlay { position: absolute; inset: 0; z-index: 3; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; background: rgba(255,255,255,.88); color: #343430; text-align: center; font: 13px/1.55 var(--sans); }
-.layout-awaiting-overlay strong { color: #111; font-size: 15px; }
+.layout-awaiting-overlay { position: absolute; inset: 0; z-index: 3; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; background: color-mix(in srgb, var(--layout-paper) 88%, transparent); color: var(--layout-ink); text-align: center; font: 13px/1.55 var(--sans); }
+.layout-awaiting-overlay strong { color: inherit; font-size: 15px; }
 
 .ai-sidebar { position: relative; align-self: stretch; min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
 .sidebar-split-handle { display: none; }
@@ -800,7 +829,7 @@ body.layout-translated
 
 
 @media print {
-  :root { color-scheme: light; }
+  :root { color-scheme: light; --ink: #111; --ink-2: #41413d; --muted: #74746d; --line: #d8d8d1; --line-strong: #8b8b82; --surface: #fff; --surface-2: #fafaf8; --surface-3: #ecece7; }
   html, body { width: auto !important; height: auto !important; overflow: visible !important; background: #fff !important; color: #111 !important; }
   body[data-print-pane] .app-shell { display: block !important; width: auto !important; height: auto !important; min-width: 0 !important; }
   body[data-print-pane] .topbar,
