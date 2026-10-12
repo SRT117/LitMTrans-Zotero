@@ -4114,8 +4114,7 @@
         if (existingIDs.length) {
           const prompt = Services.prompt;
           const flags = prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING
-            + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING
-            + prompt.BUTTON_POS_1_DEFAULT;
+            + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING;
           const choice = prompt.confirmEx(
             runtime.window || runtime.browser?.ownerGlobal || Zotero.getMainWindow(),
             "更新译文PDF附件",

@@ -44,4 +44,6 @@ jobs:
         shell: pwsh
         run: |
           $xpi = Get-ChildItem dist -Filter '*.xpi' | Select-Object -ExpandProperty FullName
-          gh release create "${{ github.ref_name }}" $xpi dist/update.json --draft --generate-notes --title "LitMTrans ${{ github.ref_name }}" --verify-tag
+          $notesFile = "docs/releases/${{ github.ref_name }}.md"
+          $notesParams = if (Test-Path $notesFile) { @("--notes-file", $notesFile) } else { @("--generate-notes") }
+          gh release create "${{ github.ref_name }}" $xpi dist/update.json --draft @notesParams --title "LitMTrans ${{ github.ref_name }}" --verify-tag

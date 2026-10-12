@@ -2018,7 +2018,7 @@ async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
       confirmEx: (_win, _title, message, flags, replace, preserve) => {
         assert(message.includes('批注和笔记不会迁移'));
         assert.equal(preserve, '保留原PDF');
-        assert(flags & 16777216, 'default to preserving the old PDFs');
+        assert.equal(flags & 16777216, 0, 'highlight the left replacement button');
         calls.push('confirm'); return choice;
       }
     } }

@@ -18,6 +18,16 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.2": Object.freeze({
+      title: "LitMTrans 2.1.2",
+      entries: Object.freeze([
+        "优化左栏空白，正文偏右的文献类型的排版策略；",
+        "优化文献角标超链接显示；",
+        "增加夜间模式适配；",
+        "修复思维导图节点过多显示失败的问题和svg导出的Mac平台兼容性问题；",
+        "MCP端口变更加固；"
+      ])
+    }),
     "2.1.1": Object.freeze({
       title: "LitMTrans 2.1.1",
       entries: Object.freeze([
