@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -80,12 +81,20 @@ async function removeExistingAttachment(releaseId, filename) {
 async function uploadAttachment(releaseId, filePath) {
   const filename = path.basename(filePath);
   await removeExistingAttachment(releaseId, filename);
-  const form = new FormData();
-  form.append("file", new Blob([await readFile(filePath)]), filename);
-  await request(`${repoPath}/releases/${releaseId}/attach_files`, {
-    method: "POST",
-    body: form
-  });
+  const url = `${apiBase}${repoPath}/releases/${releaseId}/attach_files`;
+  execFileSync("curl", [
+    "--fail",
+    "--silent",
+    "--show-error",
+    "--location",
+    "--retry", "3",
+    "--retry-delay", "5",
+    "--max-time", "600",
+    "-X", "POST",
+    "-H", `Authorization: Bearer ${token}`,
+    "-F", `file=@${filePath}`,
+    url
+  ], { stdio: "inherit" });
 }
 
 async function readRemoteFile() {
