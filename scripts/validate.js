@@ -9,7 +9,7 @@ const runtimeFiles = [
   "manifest.json", "src/bootstrap.js", "src/prefs.js", "src/controller.js", "src/pipeline.js",
   "src/workbench.xhtml", "src/workbench.js", "src/workbench.css",
   "src/preferences.xhtml", "src/preferences.js", "src/preferences.css",
-  "src/settings-view-model.js",
+  "src/settings-view-model.js", "src/reader-images.js",
   "src/ported-core.js", "src/utils.js", "src/storage.js", "src/secrets.js", "src/http.js",
   "src/markdown.js", "src/mindmap.js", "src/flowchart.js", "src/mineru.js", "src/llm.js", "src/edge-local-translation.js", "src/web-machine-translation.js", "src/translation.js", "src/layout.js",
   "src/chat.js", "src/icon-reader.js",

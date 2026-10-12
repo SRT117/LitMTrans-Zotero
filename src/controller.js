@@ -1331,6 +1331,7 @@
       const operation = String(command.operation || "");
       if (operation === "snapshot") return this.developerDiagnosticSnapshot();
       if (operation === "reader-theme-probe") return this.runReaderThemeProbe(command);
+      if (operation === "reader-theme-fresh-probe") return this.runFreshReaderThemeProbe(command);
       if (operation === "multimodal-probe") return this.runMultimodalProbe(command);
       if (operation === "document-multimodal-probe") return this.runDocumentMultimodalProbe(command);
       if (operation === "document-streaming-probe") {
@@ -1345,6 +1346,92 @@
       if (operation === "caj-reader-probe") return this.runCAJReaderProbe(command);
       if (operation === "caj-storage-probe") return this.runCAJStorageProbe(command);
       throw new Error(`不支持的检查操作：${operation}`);
+    }
+
+    async runFreshReaderThemeProbe(command = {}) {
+      if (!String(Zotero.Profile.dir).includes(".zotero-dev")) throw new Error("仅允许隔离测试库");
+      const items = await Zotero.Items.getAll(Zotero.Libraries.userLibraryID, false, false);
+      const source = items.find(item => item.isAttachment() && item.key === (command.sourceAttachmentKey || "56M6NLCX"));
+      if (!source) throw new Error("隔离库中未找到目标文献");
+      await source.loadAllData();
+      const sourceContext = await this.attachmentContext(source.id);
+      const cached = await this.pipeline.snapshot(sourceContext);
+      if (!cached.parsed?.hasLayout || !cached.layout?.meta?.complete) throw new Error("缺少已有解析和译文文件");
+      const attachment = await Zotero.Attachments.importFromFile({ file: await source.getFilePathAsync(), libraryID: source.libraryID });
+      await attachment.loadAllData();
+      const parseMethod = this.pipeline.parse;
+      const translateMethod = this.pipeline.translateLayout;
+      const generatedMethod = this.createGeneratedPDFAttachment;
+      const replayItems = [attachment];
+      let completed = false;
+      this.createGeneratedPDFAttachment = async (context, ...args) => {
+        const item = await generatedMethod.call(this, context, ...args);
+        if (context.attachment.id === attachment.id) replayItems.push(item);
+        return item;
+      };
+      this.pipeline.parse = async (context, ...args) => {
+        if (context.attachment.id !== attachment.id) return parseMethod.call(this.pipeline, context, ...args);
+        for (const name of ["images", "assets", "mineru-result", "full.md", "full.cleaned.md", "layout.json", "model.json", "content-list.json", "asset-map.json", "image-map.json"]) {
+          const from = this.storage.path(sourceContext.documentID, name);
+          const to = this.storage.path(context.documentID, name);
+          if (!await this.storage.exists(from)) continue;
+          if (["images", "assets", "mineru-result"].includes(name)) await this.storage.copyTree(from, to);
+          else await this.storage.copyFile(from, to);
+        }
+        return this.pipeline.mineru.loadParsed(context.documentID);
+      };
+      this.pipeline.translateLayout = async (context, payload, emit) => {
+        if (context.attachment.id !== attachment.id) throw new Error("离线复现不调用翻译服务");
+        await this.storage.copyTree(this.storage.path(sourceContext.documentID, "layout-translation"), this.storage.path(context.documentID, "layout-translation"));
+        const result = (await this.pipeline.snapshot(context)).layout;
+        emit?.({ type: "layout-translation", translations: result.translations, model: result.model, complete: true });
+        return result;
+      };
+      const appearanceKey = "browser.theme.toolbar-theme";
+      const appearance = Zotero.Prefs.get(appearanceKey, true);
+      Zotero.Prefs.set(appearanceKey, 0, true);
+      try {
+        const tabID = await this.openWorkbench(attachment);
+        const runtime = this.tabs.get(tabID);
+        let page;
+        for (let attempt = 0; attempt < 300; attempt++) {
+          page = runtime.browser.contentWindow?.wrappedJSObject || runtime.browser.contentWindow;
+          if (page?.__LitMTrans_DIAGNOSTIC_THEME_STATE__?.().ready && runtime.pdfPreviewCleanup) break;
+          await Zotero.Promise.delay(100);
+        }
+        const progressPath = PathUtils.join(this.developerDiagnosticsPaths().directory, "fresh-reader-theme-progress.json");
+        const samples = [];
+        page.document.getElementById("translate-button").click();
+        for (let attempt = 0; attempt < 1800; attempt++) {
+          const sample = page.__LitMTrans_DIAGNOSTIC_THEME_STATE__();
+          sample.originalTheme = this.pdfReaderTheme(runtime);
+          if (attempt % 10 === 0) {
+            samples.push(sample);
+            await this.storage.writeJSON(progressPath, { attachmentID: attachment.id, sample });
+          }
+          if (sample.complete && !sample.running.length && !sample.fitPending && !sample.printSnapshot && attempt > 10) {
+            await Zotero.Promise.delay(500);
+            completed = true;
+            return { attachmentID: attachment.id, sourceAttachmentID: source.id, samples, final: page.__LitMTrans_DIAGNOSTIC_THEME_STATE__() };
+          }
+          if (sample.error && !sample.running.length && attempt > 10) throw new Error(sample.error);
+          await Zotero.Promise.delay(500);
+        }
+        throw new Error("首次翻译等待超时");
+      }
+      finally {
+        this.pipeline.parse = parseMethod;
+        this.pipeline.translateLayout = translateMethod;
+        this.createGeneratedPDFAttachment = generatedMethod;
+        Zotero.Prefs.set(appearanceKey, appearance, true);
+        if (completed) {
+          const replayDirectories = replayItems.map(item => this.storage.path(this.storage.documentID(item)));
+          const runtime = this.tabs.get(this.tabIDForAttachment(attachment.id));
+          if (runtime) runtime.window.Zotero_Tabs.close(runtime.tabID);
+          await Zotero.Items.erase(replayItems.map(item => item.id));
+          for (const directory of replayDirectories) await this.storage.remove(directory, true);
+        }
+      }
     }
 
     async runReaderThemeProbe(command = {}) {
@@ -1432,7 +1519,21 @@
           if (reader?.background !== theme.background || paper !== expected(theme.background) || ink !== expected(theme.foreground)) {
             throw new Error(`阅读主题未同步: ${JSON.stringify({ reader, paper, ink })}`);
           }
-          records.push({ theme: theme.id, paper, ink });
+          let republishedPaper = null;
+          const data = await this.stateForAttachment(attachment.id);
+          if (data.layout?.model?.pages?.length) {
+            // 模拟首次发布沿用白色初始化主题，验证新页面会主动同步原文颜色。
+            this.emit(runtime, { type: "document-state", state: {
+              ...data, developerDiagnosticsEnabled: true,
+              readerTheme: { background: "#ffffff", foreground: "#121212" }
+            } });
+            await Zotero.Promise.delay(250);
+            const livePage = doc.querySelector("#translation-layout .layout-page");
+            republishedPaper = livePage ? page.getComputedStyle(livePage).backgroundColor : null;
+            if (republishedPaper !== expected(theme.background)) throw new Error(`重新排版主题未同步: ${republishedPaper}`);
+            doc.getElementById("translation-layout").appendChild(probe);
+          }
+          records.push({ theme: theme.id, paper, ink, republishedPaper });
         }
         probe.remove();
         probe = null;
@@ -4797,7 +4898,8 @@
         if ("theme" in contentWindow) {
           return {
             background: color(contentWindow.theme?.background, white.background),
-            foreground: color(contentWindow.theme?.foreground, white.foreground)
+            foreground: color(contentWindow.theme?.foreground, white.foreground),
+            ...(contentWindow.theme?.invertImages ? { invertImages: true } : {})
           };
         }
         // Zotero 7 通过内容开关和页面滤镜实现深色，不提供 theme 对象。
@@ -4817,7 +4919,7 @@
       const id = Zotero.Prefs.get(dark ? "reader.darkTheme" : "reader.lightTheme") || (dark ? "dark" : "light");
       const themes = [
         { id: "dark", background: "#2E3440", foreground: "#D8DEE9" },
-        { id: "black", background: "#000000", foreground: "#FFFFFF" },
+        { id: "black", background: "#000000", foreground: "#FFFFFF", invertImages: true },
         { id: "snow", background: "#ECEFF4", foreground: "#3B4252" },
         { id: "sepia", background: "#F4ECD8", foreground: "#5B4636" },
         ...(Zotero.SyncedSettings?.get(Zotero.Libraries?.userLibraryID, "readerCustomThemes") || [])
@@ -4825,7 +4927,8 @@
       const theme = themes.find(theme => theme.id === id);
       return {
         background: color(theme?.background, white.background),
-        foreground: color(theme?.foreground, white.foreground)
+        foreground: color(theme?.foreground, white.foreground),
+        ...(theme?.invertImages ? { invertImages: true } : {})
       };
     }
 
@@ -5122,6 +5225,9 @@
 
         case "pdf-page-count":
           return this.pdfPageCount(attachmentID);
+
+        case "reader-theme":
+          return this.pdfReaderTheme(runtime);
 
         case "initialize":
         case "refresh": {

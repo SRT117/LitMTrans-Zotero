@@ -18,6 +18,12 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.3": Object.freeze({
+      title: "LitMTrans 2.1.3",
+      entries: Object.freeze([
+        "修复夜间模式的一些问题"
+      ])
+    }),
     "2.1.2": Object.freeze({
       title: "LitMTrans 2.1.2",
       entries: Object.freeze([

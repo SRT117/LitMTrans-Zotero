@@ -1177,11 +1177,24 @@
   }
 
   function applyReaderTheme(theme) {
+    // Zotero 打印时会临时切换配色；这些事件不能覆盖屏幕阅读主题。
+    if (document.body?.dataset?.printSnapshot) return;
     if (!theme || !CSS.supports("color", theme.background) || !CSS.supports("color", theme.foreground)) return;
     const root = document.documentElement;
     root.style.setProperty("--reader-paper", theme.background);
     root.style.setProperty("--reader-ink", theme.foreground);
     root.dataset.readerTheme = "true";
+    if (typeof window !== "undefined") window.LitMTrans?.ReaderImages?.setTheme(theme);
+  }
+
+  async function syncReaderTheme() {
+    const attachmentID = Number(state.data?.item?.attachmentID || 0);
+    if (!attachmentID) return;
+    try {
+      const theme = await hostCall("reader-theme");
+      if (Number(state.data?.item?.attachmentID || 0) === attachmentID) applyReaderTheme(theme);
+    }
+    catch (_) {}
   }
 
   function ensureSourcePDF() {
@@ -3241,6 +3254,8 @@
       renderMode();
       return;
     }
+    // 首次译文发布时重新读取原文主题，避免沿用初始化时的纸张颜色。
+    void syncReaderTheme();
     renderMode();
   }
 
@@ -5318,6 +5333,7 @@
     try { return await callback(pages.length, paper, pageSizes); }
     finally {
       delete document.body.dataset.printSnapshot;
+      void syncReaderTheme();
       root.remove();
       style.remove();
       resumeLayoutImageMemoryManagement();
@@ -5422,6 +5438,7 @@
     try { return await callback(pages.length, printPaper); }
     finally {
       delete document.body.dataset.printSnapshot;
+      void syncReaderTheme();
       root.remove();
       style.remove();
       resumeLayoutImageMemoryManagement();
@@ -5528,6 +5545,7 @@
     }
     finally {
       delete document.body.dataset.printSnapshot;
+      void syncReaderTheme();
       delete document.body.dataset.printPane;
       delete document.body.dataset.printLayout;
       root.remove();
@@ -5553,6 +5571,25 @@
       renderMode();
     }
     return state.mode;
+  };
+  window.__LitMTrans_DIAGNOSTIC_THEME_STATE__ = () => {
+    if (!state.data?.developerDiagnosticsEnabled) return { ready: false };
+    const page = els["translation-layout"].querySelector(".layout-page");
+    const style = page && getComputedStyle(page);
+    return {
+      ready: initializeCompleted, attachmentID: state.data?.item?.attachmentID,
+      parsed: Boolean(state.data?.parsed?.markdown), complete: Boolean(state.data?.layout?.meta?.complete),
+      running: [...state.running], error: lastActionError,
+      fitPending: els["translation-layout"].classList.contains("layout-fit-pending"),
+      rootPaper: document.documentElement.style.getPropertyValue("--reader-paper"),
+      rootInk: document.documentElement.style.getPropertyValue("--reader-ink"),
+      screen: matchMedia("screen").matches, print: matchMedia("print").matches,
+      printSnapshot: document.body.dataset.printSnapshot || "",
+      pageClass: page?.className, pageStyle: page?.getAttribute("style"),
+      paper: style?.backgroundColor, ink: style?.color,
+      layoutPaper: style?.getPropertyValue("--layout-paper"),
+      status: els["status-chip"]?.textContent
+    };
   };
 
   async function exportCurrentReaderPDF(pane = exportToolbarPane(), options = {}) {

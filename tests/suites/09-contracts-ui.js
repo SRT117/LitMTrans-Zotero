@@ -200,6 +200,54 @@ async function testReaderThemeDiagnosticRestoresAutomaticScheme() {
   }
 }
 
+async function testLayoutPublicationRefreshesReaderTheme() {
+  const source = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const functions = source.slice(source.indexOf("  function applyReaderTheme("), source.indexOf("  function ensureSourcePDF("));
+  const render = source.slice(source.indexOf("  function renderLayoutPanes("), source.indexOf("  function layoutPageAtViewportAnchor("));
+  const colors = new Map();
+  let reply;
+  let calls = 0;
+  const sandbox = {
+    state: { data: { item: { attachmentID: 42 }, layout: { model: { pages: [{}] } } } },
+    document: { body: { dataset: {} }, documentElement: { dataset: {}, style: { setProperty: (key, value) => colors.set(key, value) } } },
+    CSS: { supports: () => true },
+    els: { "translation-layout": {}, "translation-scroll": {} },
+    renderLayoutPane() {}, renderMode() {},
+    hostCall(method) {
+      assert.equal(method, "reader-theme");
+      calls++;
+      return new Promise(resolve => { reply = resolve; });
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(functions + render, sandbox);
+  let publicationTheme;
+  const syncTheme = sandbox.syncReaderTheme;
+  sandbox.syncReaderTheme = () => (publicationTheme = syncTheme());
+  sandbox.applyReaderTheme({ background: "#ffffff", foreground: "#121212" });
+  sandbox.renderLayoutPanes();
+  assert.equal(calls, 1);
+  reply({ background: "#2E3440", foreground: "#D8DEE9" });
+  await publicationTheme;
+  assert.equal(colors.get("--reader-paper"), "#2E3440", "新排版页应获取原文当前主题");
+  sandbox.document.body.dataset.printSnapshot = "layout-paint";
+  sandbox.applyReaderTheme({ background: "#ffffff", foreground: "#121212" });
+  assert.equal(colors.get("--reader-paper"), "#2E3440", "打印的临时浅色事件不能覆盖屏幕主题");
+  delete sandbox.document.body.dataset.printSnapshot;
+  const afterPrint = sandbox.syncReaderTheme();
+  reply({ background: "#F4ECD8", foreground: "#5B4636" });
+  await afterPrint;
+  assert.equal(colors.get("--reader-paper"), "#F4ECD8", "打印后应同步期间选定的新主题");
+  const pendingTheme = sandbox.syncReaderTheme();
+  sandbox.state.data.item.attachmentID = 43;
+  reply({ background: "#F4ECD8", foreground: "#5B4636" });
+  await pendingTheme;
+  assert.equal(colors.get("--reader-paper"), "#F4ECD8", "迟到的主题不能覆盖另一篇文献");
+  sandbox.hostCall = () => Promise.reject(new Error("bridge unavailable"));
+  await sandbox.syncReaderTheme();
+  assert.equal(colors.get("--reader-paper"), "#F4ECD8");
+}
+
 function testExclusions() {
   const contentRoot = path.join(root, "src");
   const files = [];
@@ -1199,6 +1247,7 @@ async function testSettingsAutoSaveIsolationAndFailure() {
     testReaderThemeWithoutPreviewAndLegacyContentSwitch,
     testCustomReaderThemeNotificationUpdatesPreviewBeforeEmission,
     testReaderThemeDiagnosticRestoresAutomaticScheme,
+    testLayoutPublicationRefreshesReaderTheme,
     testExclusions,
     testWorkbenchChatRecoveryAndFormulaPreview,
     testSilentNotifications,

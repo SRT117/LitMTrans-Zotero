@@ -298,6 +298,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   contain-intrinsic-size: auto 1200px;
 }
 .layout-block.layout-image img.layout-image-unloaded { visibility: hidden; }
+.reader-image-overlay { display: none; }
 /* Compose in the source PDF coordinate system, exactly like PB_layout.py.
    The wrapper scales this completed page for the reader viewport; its 920px
    maximum is a display size and must never become a second layout grid. */
@@ -313,6 +314,22 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   }
 }
 @media screen {
+  #translation-layout .reader-image-host:not(.layout-block):not(.layout-flow-stream),
+  #translation-content .reader-image-host { position: relative; }
+  #translation-content .reader-image-host { display: inline-block; max-width: 100%; line-height: 0; }
+  #translation-content .reader-image-host img { display: block; }
+  #translation-layout img.reader-color-image,
+  #translation-content img.reader-color-image { opacity: 0; }
+  #translation-layout .reader-image-overlay,
+  #translation-content .reader-image-overlay {
+    display: block;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+  }
   :root[data-reader-theme] #translation-layout .layout-page:not(.layout-print-source) {
     --layout-paper: var(--reader-paper);
     --layout-ink: var(--reader-ink);

@@ -1,11 +1,12 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("snapshot", "reader-theme-probe", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
+    [ValidateSet("snapshot", "reader-theme-probe", "reader-theme-fresh-probe", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
     [string]$Operation = "multimodal-probe",
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",
     [switch]$NoLaunch,
     [switch]$PrintPDF,
+    [string]$SourceAttachmentKey = "",
     [string]$CajDirectory = "",
     [int]$TimeoutSeconds = 210
 )
@@ -70,6 +71,7 @@ $command = @{
     imageFileName = $probeFileName
     createdAt = [DateTime]::UtcNow.ToString("o")
     printPDF = [bool]$PrintPDF
+    sourceAttachmentKey = $SourceAttachmentKey
 }
 if ($Operation -in @("caj-probe", "caj-reader-probe", "caj-storage-probe")) {
     if (-not (Test-Path -LiteralPath $CajDirectory -PathType Container)) {
