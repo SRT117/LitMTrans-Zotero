@@ -971,7 +971,52 @@ async function testEdgeLocalTranslationQualityHardening() {
   assert.equal(cleanedDirty, "这是一个测试结果", "必须彻底清理伪标签碎片与病态标点");
 }
 
+async function testNewLayoutTranslationResetsOnlyPublishedDocumentFont() {
+  const snapshot = new Map(prefValues);
+  try {
+    let cached = false, fail = false;
+    const events = [];
+    const publish = async (documentID, _options, emit) => {
+      emit({ type: 'layout-translation', complete: false, translations: {} });
+      assert.equal(JSON.parse(U.getPref('layoutReaderFonts', '{}'))[documentID], 4, 'keep the old font while translation is incomplete');
+      if (fail) throw new Error('translation failed');
+      emit({ type: 'layout-translation', complete: true, cached, translations: { block: 'new text' }, model: { pages: [] } });
+      return { cached };
+    };
+    const pipeline = new DocumentPipeline({
+      storage: { appendProcessLog: async () => {} },
+      mineru: { loadParsed: async () => ({ hasLayout: true }) },
+      translation: {}, layout: { translate: publish, importManualTranslation: publish }, chat: {},
+      getSettings: () => ({ provider: 'deepseek_web' })
+    });
+    const reset = () => { U.setPref('layoutReaderFonts', JSON.stringify({ target: 4, other: 9 })); events.length = 0; };
+    const emit = event => {
+      if (event.resetLayoutFont) assert.equal(JSON.parse(U.getPref('layoutReaderFonts', '{}')).target, undefined, 'persist the reset before the UI renders the new translation');
+      events.push(event);
+    };
+    reset(); fail = true;
+    await assert.rejects(() => pipeline.translateLayout({ documentID: 'target' }, { force: true }, emit), /translation failed/);
+    assert.deepEqual(JSON.parse(U.getPref('layoutReaderFonts', '{}')), { target: 4, other: 9 });
+    assert(!events.some(event => event.resetLayoutFont));
+    reset(); fail = false; cached = true;
+    await pipeline.translateLayout({ documentID: 'target' }, {}, emit);
+    assert.equal(JSON.parse(U.getPref('layoutReaderFonts', '{}')).target, 4);
+    assert(!events.some(event => event.resetLayoutFont), 'opening cached translation must preserve the manual font');
+    cached = false;
+    for (const mode of ['force', 'resume', 'manual-import']) {
+      reset();
+      if (mode === 'manual-import') await pipeline.importManualTranslation({ documentID: 'target' }, 'layout', {}, emit);
+      else await pipeline.translateLayout({ documentID: 'target' }, { force: mode === 'force' }, emit);
+      assert.deepEqual(JSON.parse(U.getPref('layoutReaderFonts', '{}')), { other: 9 });
+      assert(events.some(event => event.resetLayoutFont && event.documentID === 'target' && event.complete));
+    }
+  } finally {
+    prefValues.clear(); for (const [key, value] of snapshot) prefValues.set(key, value);
+  }
+}
+
   return {
+    testNewLayoutTranslationResetsOnlyPublishedDocumentFont,
     testWebMachineTranslationProtection,
     testEdgeLocalTranslationMigration,
     testWebMachineTranslationKeepsConfiguredProvider,

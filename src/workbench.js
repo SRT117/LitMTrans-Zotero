@@ -815,6 +815,21 @@
     }
   }
 
+  function resetLayoutFontForTranslation(event) {
+    const documentID = String(state.data?.item?.documentID || "");
+    if (!event.complete || event.cached || !event.resetLayoutFont || !documentID || event.documentID !== documentID) return;
+    const layoutReaderFonts = { ...(state.settings?.layoutReaderFonts || {}) };
+    delete layoutReaderFonts[documentID];
+    state.settings = { ...state.settings, layoutReaderFonts };
+    state.layoutFontPt = 0;
+    state.detectedLayoutFontPt = 0;
+    // 重新翻译可能沿用同一配置标识，但译文和自动字号已变化，仍需重新生成PDF。
+    state.data.item.layoutPDFIdentity = "";
+    state.layoutPDFGenerationKey = "";
+    delete document.body.dataset.userBodyFontPt;
+    if (state.mode === "layout") els["reader-font-input"].value = "";
+  }
+
   function handleEvent(event) {
     const type = String(event?.type || "");
     if (type === "document-state") {
@@ -1019,6 +1034,7 @@
     }
     if (type === "layout-translation") {
       if (!state.data) return;
+      resetLayoutFontForTranslation(event);
       state.data.layout = state.data.layout || {};
       state.data.layout.translations = event.translations || {};
       state.data.layout.model = event.model || state.data.layout.model;
@@ -2090,6 +2106,8 @@
       node.dataset.blockId || node.id || "",
       node.dataset.styleKind || "",
       node.dataset.bodyFontCandidate || "",
+      node.dataset.offsetBodyRole || "",
+      node.dataset.offsetBodyPromoted || "",
       node.dataset.flowKind || "",
       // Fitting may correct MinerU's single-line classification.
       node.dataset.originalLines || "",
@@ -2110,7 +2128,7 @@
 
   function layoutFitStorageKey(key) {
     // Change this namespace whenever cached fitting rules become incompatible.
-    return `litmtrans-layout-fit-runtime:v29:${U.hashString(key)}`;
+    return `litmtrans-layout-fit-runtime:v33:${U.hashString(key)}`;
   }
 
   function applyLayoutBodyFont(pages) {
@@ -2145,6 +2163,8 @@
         nodes[index].style.fontSize = record.styles[index].fontSize;
         nodes[index].style.lineHeight = record.styles[index].lineHeight;
         nodes[index].style.textAlign = record.styles[index].textAlign || '';
+        if (record.styles[index].bodyStyleInherited === '1') nodes[index].dataset.bodyStyleInherited = '1';
+        else delete nodes[index].dataset.bodyStyleInherited;
       }
       page.dataset.layoutFitKey = pageKey;
       restored.add(page);
@@ -2190,7 +2210,8 @@
         const nodes = [...page.querySelectorAll(".layout-block, .layout-flow-stream")];
         return {
           key: layoutFitPageKey(page),
-          styles: nodes.map(node => ({ fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign }))
+          styles: nodes.map(node => ({ fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign,
+            ...(node.dataset.bodyStyleInherited === '1' ? { bodyStyleInherited: '1' } : {}) }))
         };
       })
     };
@@ -2259,9 +2280,11 @@
       applyLayoutBodyFont(pending);
       fitLayoutFormulas(pending, { expand: true });
       inheritFinalDualColumnBodyFont(pending);
+      inheritFinalTextRegionBodyFont(pending);
       saveLayoutFitSnapshot(active);
     }
     finally {
+      publishCompactLayoutDebugLabels();
       for (let index = 0; index < active.length; index++) {
         active[index].style.transform = transforms[index];
         active[index].style.zoom = zooms[index];
@@ -2520,11 +2543,164 @@
     return candidates;
   }
 
+  function offsetSingleColumnBodyProfile(model, abstractIDs = new Set()) {
+    const records = [];
+    for (const page of model?.pages || []) {
+      if (!(page.index > 1 && page.width > 0 && page.height > 0)) continue;
+      for (const stream of page.restoration?.streams || []) {
+        if (!['text', 'body_text'].includes(stream.styleKind) || stream.refsOnly || stream.bodyInherited) continue;
+        const parts = (stream.items || []).flatMap(item => item.parts || [item]);
+        if (!parts.length || parts.some(p => p.kind !== 'text' || p.fromList || p.symbolGlossary || p.tocRows?.length || abstractIDs.has(p.id))) continue;
+        const text = parts.map(p => p.roleText || p.text || '').join(' ').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        if (/^(?:abstract\b|摘要|fig(?:ure)?\.?\s*\d|table\s*\d|图\s*\d|表\s*\d|citation:|editor:|copyright|funding:|data availability|competing interests|received\b|accepted\b|published\b|correspondence:|keywords?\s*:|doi\s*:)/i.test(text)
+          || /https?:\/\/|www\.|@|©/.test(text) || Layout?.affiliationLikeText?.(text)
+          || Layout?.authorBylineLikeText?.(text) || Layout?.bibliographyLikeText?.(text)) continue;
+        const box = stream.bbox;
+        if (!Array.isArray(box) || box.length < 4 || !box.every(Number.isFinite)) continue;
+        const [left, top, right, bottom] = box;
+        if (top < page.height * .055 || bottom > page.height * .94 || bottom <= top) continue;
+        const lines = parts.reduce((sum, p) => sum + Number(p.originalLineCount || 0), 0);
+        const words = (text.match(/[A-Za-z][A-Za-z'-]{2,}/g) || []).length;
+        const cjk = (text.match(/[\u3400-\u9fff]/g) || []).length;
+        const sentences = (text.match(/[.!?。！？]/g) || []).length;
+        const long = lines >= 3 && sentences >= 2 && (words >= 32 && text.length >= 180 || cjk >= 80);
+        records.push({ stream, page: page.index, left: left / page.width, right: right / page.width,
+          top: top / page.height, bottom: bottom / page.height, lines, long, text, parts });
+      }
+    }
+    const seeds = records.filter(r => r.long && r.left >= .20 && r.right >= .82
+      && r.right - r.left >= .50 && r.right - r.left <= .70 && r.left - (1 - r.right) >= .12);
+    let anchors = [];
+    for (const seed of seeds) {
+      const cluster = seeds.filter(r => Math.abs(r.left - seed.left) <= .025 && Math.abs(r.right - seed.right) <= .035);
+      if (cluster.length > anchors.length) anchors = cluster;
+    }
+    if (anchors.length < 3 || new Set(anchors.map(r => r.page)).size < 2) return null;
+    const median = values => { const sorted = values.sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]; };
+    const left = median(anchors.map(r => r.left)), right = median(anchors.map(r => r.right));
+    const parallelPages = new Set(records.filter(r => r.long && r.right <= left - .02 && r.right - r.left >= .18
+      && anchors.some(a => a.page === r.page && Math.min(a.bottom, r.bottom) - Math.max(a.top, r.top) >= .08)).map(r => r.page));
+    if (parallelPages.size >= 2) return null;
+    const members = records.filter(r => Math.abs(r.left - left) <= .025 && r.right <= right + .035
+      && r.right - r.left >= (right - left) * .45 && r.text.length >= 40 && r.lines >= 1);
+    const sourceFonts = anchors.flatMap(r => r.parts.map(p => Number(p.fontEstimate)).filter(f => Number.isFinite(f) && f >= 4 && f <= 20));
+    return { roles: new Map(members.map(r => [r.stream, r.stream.styleKind === 'body_text' ? 'donor' : r.long ? 'anchor' : 'candidate'])),
+      sourceFont: sourceFonts.length ? median(sourceFonts) : 0, leftRatio: left };
+  }
+
+  function promoteOffsetBodyNode(node, role, sourceFont) {
+    node.dataset.offsetBodyRole = role;
+    if (role === 'donor' || !(sourceFont > 0)) return;
+    // 只调整译文 DOM 的排版角色，原始模型和块坐标保持不变。
+    node.dataset.offsetBodyPromoted = '1';
+    node.dataset.styleKind = 'body_text';
+    node.dataset.bodyInherited = '0';
+    node.dataset.baseFont = String(sourceFont);
+    node.dataset.baseLineRatio = '1.22';
+    node.dataset.lineRatio = '1.22';
+    node.style.lineHeight = '1.22';
+    node.classList.remove('debug-text');
+    node.classList.add('debug-body_candidate');
+  }
+
+  function groupedAuxiliaryTextStreams(page) {
+    const streams = page.restoration?.streams || [];
+    const headings = (page.restoration?.absoluteBlocks || page.blocks || [])
+      .filter(block => block.type === 'title' && Array.isArray(block.bbox))
+      .sort((a, b) => a.bbox[1] - b.bbox[1]);
+    const replacements = new Map(), consumed = new Set();
+    for (const heading of headings) {
+      const text = String(heading.text || '').replace(/<[^>]*>/g, '').trim();
+      const region = /^(?:author contributions?|作者贡献|作者贡献声明)\s*[:：]?$/i.test(text) ? 'author-contributions'
+        : /^(?:supporting information|supplementary information|支持信息|补充信息|补充材料)\s*[:：]?$/i.test(text) ? 'supporting-information' : '';
+      if (!region) continue;
+      const [left, top, , bottom] = heading.bbox;
+      const next = headings.find(block => block.bbox[1] > top + 1 && Math.abs(block.bbox[0] - left) < page.width * .06);
+      const end = next?.bbox[1] ?? page.height * .94;
+      const members = streams.filter(stream => !consumed.has(stream) && !stream.refsOnly
+        && ['text', 'body_text'].includes(stream.styleKind) && Array.isArray(stream.bbox)
+        && stream.bbox[1] >= bottom - 1 && stream.bbox[3] <= end + 1
+        && Math.abs(stream.bbox[0] - left) < page.width * .04
+        && (stream.items || []).every(item => (item.parts || [item]).every(part => part.kind === 'text')))
+        .sort((a, b) => a.bbox[1] - b.bbox[1]);
+      if (members.length < 2) continue;
+      // 只合并明确小标题下的文本区域，保留条目分行和原始缓存。
+      const merged = { ...members[0], styleKind: 'text', debugRole: 'text', bodyInherited: false,
+        textRegion: region, lineHeight: 1.22, paragraphGap: .08,
+        items: members.flatMap(stream => stream.items || []),
+        bbox: [Math.min(...members.map(s => s.bbox[0])), Math.min(...members.map(s => s.bbox[1])),
+          Math.max(...members.map(s => s.bbox[2])), Math.max(...members.map(s => s.bbox[3]))] };
+      replacements.set(members[0], merged);
+      for (const member of members) consumed.add(member);
+    }
+    return streams.flatMap(stream => replacements.has(stream) ? [replacements.get(stream)] : consumed.has(stream) ? [] : [stream]);
+  }
+
+  function mergeOffsetBodyStreams(streams, page, profile) {
+    if (!profile || !Layout?.mergeVerticalBodyItems) return streams;
+    const main = streams.filter(stream => !stream.textRegion && profile.roles.has(stream));
+    if (main.length < 2) return streams;
+    const selected = new Set(main);
+    const parts = main.flatMap(stream => (stream.items || []).flatMap(item => item.parts || [item]))
+      .map(part => ({ ...part, kind: 'text', debugRole: 'body_candidate', columnKey: 'runtime-offset-main' }));
+    const blockers = streams.filter(stream => !selected.has(stream))
+      .map(stream => ({ kind: 'text', debugRole: 'runtime-barrier', bbox: stream.bbox }));
+    // 复用原正文合并条件和障碍物保护，仅在运行时处理已确认的新主栏。
+    const merged = Layout.mergeVerticalBodyItems([...parts, ...blockers], page.restoration?.absoluteBlocks || [])
+      .filter(item => item.debugRole === 'merged_body')
+      .map(item => {
+        const stream = { ...main[0], items: [item], bbox: [...item.bbox],
+          debugRole: 'merged_body', styleKind: 'body_text', bodyInherited: false };
+        profile.roles.set(stream, 'anchor');
+        return stream;
+      });
+    if (!merged.length) return streams;
+    let emitted = false;
+    return streams.flatMap(stream => {
+      if (!selected.has(stream)) return [stream];
+      if (emitted) return [];
+      emitted = true;
+      return merged;
+    });
+  }
+
+  function mergeSidebarInfoStreams(streams, page, profile) {
+    if (page.index !== 1 || !profile || !Layout?.mergeVerticalBodyItems) return streams;
+    const left = page.width * profile.leftRatio;
+    const candidates = streams.filter(stream => !stream.textRegion && !stream.refsOnly
+      && ['text', 'body_text'].includes(stream.styleKind) && Array.isArray(stream.bbox)
+      && stream.bbox[2] <= left + 1 && stream.bbox[0] < left * .65
+      && (stream.items || []).every(item => (item.parts || [item]).every(part => part.kind === 'text')));
+    const metadata = candidates.filter(stream => /^(?:citation:|editor:|received:|accepted:|published:|peer review history:|copyright:|funding:|data availability|competing interests:)/i
+      .test((stream.items || []).map(item => item.roleText || item.text || '').join(' ').trim()));
+    if (metadata.length < 2) return streams;
+    const start = Math.min(...metadata.map(stream => stream.bbox[1]));
+    const selected = new Set(candidates.filter(stream => stream.bbox[1] >= start));
+    if (selected.size < 2) return streams;
+    const parts = [...selected].flatMap(stream => (stream.items || []).flatMap(item => item.parts || [item]))
+      .map(part => ({ ...part, kind: 'text', debugRole: 'body_candidate', columnKey: 'runtime-sidebar' }));
+    const blockers = streams.filter(stream => !selected.has(stream)).map(stream => ({ kind: 'text', debugRole: 'runtime-barrier', bbox: stream.bbox }));
+    const merged = Layout.mergeVerticalBodyItems([...parts, ...blockers], page.restoration?.absoluteBlocks || [])
+      .filter(item => item.debugRole === 'merged_body')
+      .map(item => ({ ...[...selected][0], styleKind: 'text', debugRole: 'text', bodyInherited: false,
+        sidebarInfo: true, bbox: [...item.bbox], items: [{ ...item,
+          paragraphs: item.parts.flatMap(part => part.paragraphs?.length ? part.paragraphs : [{ parts: part.parts || [part], indent: part.indent || 0 }]) }] }));
+    if (!merged.length) return streams;
+    let emitted = false;
+    return streams.flatMap(stream => {
+      if (!selected.has(stream)) return [stream];
+      if (emitted) return [];
+      emitted = true;
+      return merged;
+    });
+  }
+
   function buildLayoutDocument(model, useTranslation) {
     const root = document.createDocumentFragment();
     const observers = [];
     const abstractIDs = abstractBlockIDs(model);
     const bodyFontCandidates = dualColumnBodyFontCandidates(model);
+    const offsetBodyProfile = useTranslation ? offsetSingleColumnBodyProfile(model, abstractIDs) : null;
     for (const page of model?.pages || []) {
 
       // scales the completed page for the reader viewport.  Keeping 920px as
@@ -2555,9 +2731,17 @@
       // retained for individual blocks that still need retry/fallback.
       if (!showAwaitingOverlay) {
         if (restoration?.streams?.length || restoration?.absoluteBlocks?.length) {
-          for (const stream of restoration.streams || []) {
+          const streams = useTranslation
+            ? mergeOffsetBodyStreams(mergeSidebarInfoStreams(groupedAuxiliaryTextStreams(page), page, offsetBodyProfile), page, offsetBodyProfile)
+            : restoration.streams || [];
+          for (const stream of streams) {
             const node = buildFlowStreamNode(stream, page, useTranslation);
+            if (stream.textRegion) node.dataset.textRegion = stream.textRegion;
+            if (stream.sidebarInfo) node.dataset.sidebarInfo = '1';
             if (bodyFontCandidates.has(stream)) node.dataset.bodyFontCandidate = '1';
+            if (offsetBodyProfile?.roles.has(stream)) {
+              promoteOffsetBodyNode(node, offsetBodyProfile.roles.get(stream), offsetBodyProfile.sourceFont);
+            }
             const parts = (stream.items || []).flatMap(item => item.parts || [item]);
             if (stream.styleKind !== 'body_text' && parts.length && parts.every(part => abstractIDs.has(part.id))) node.dataset.abstractBody = '1';
             pageNode.appendChild(node);
@@ -2831,7 +3015,8 @@
     // placeholder and a user's first "decrease" can accidentally enlarge a
     // 7 pt fitted layout to 11 pt.
     if (state.mode !== "layout" || state.layoutFontPt > 0 || container !== els["translation-layout"]) return;
-    const body = container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-abstract-body="1"])')
+    const body = container.querySelector('.layout-flow-stream[data-offset-body-role][data-style-kind="body_text"][data-flow-kind="text"]')
+      || container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-abstract-body="1"])')
       || container.querySelector('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]');
     const node = body || [...container.querySelectorAll(
       '.layout-flow-stream[data-flow-kind="text"]:not([data-style-kind="toc"]), .layout-block.type-text'
@@ -5628,7 +5813,8 @@
     void (async () => {
       try {
         const attachments = await createLayoutPDFAttachmentsAfterTranslation();
-        if (attachments) addLog(`已在文献条目下生成PDF附件：${attachments.translationTitle}、${attachments.comparisonTitle}`);
+        if (attachments?.cancelled) addLog("已保留原PDF附件和笔记；新译文可在阅读器中查看或手动导出。");
+        else if (attachments) addLog(`已在文献条目下生成PDF附件：${attachments.translationTitle}、${attachments.comparisonTitle}`);
         else state.layoutPDFGenerationKey = "";
       }
       catch (error) {
@@ -8730,6 +8916,11 @@
       if (state.mode === "layout") {
         const pages = [...document.querySelectorAll(".layout-page")];
         fitLayoutPages(pages);
+        const translatedPages = pages.filter(page => page.closest('#translation-layout'));
+        applyLayoutBodyFont(translatedPages);
+        inheritFinalDualColumnBodyFont(translatedPages);
+        inheritFinalTextRegionBodyFont(translatedPages);
+        publishCompactLayoutDebugLabels();
       }
     };
     els["clean-reader-ai-button"].addEventListener("click", () => exitCleanReader({ focusChat: true }));
@@ -10788,7 +10979,7 @@
   // Limit fitting to the pages scheduled by the reader.
   let activeFitPages = null;
   // This namespace invalidates incompatible browser-side fit caches.
-  const fitCacheVersion = 'layout-fit-v49-final-body-line-compression';
+  const fitCacheVersion = 'layout-fit-v53-bounded-paragraphs-text-regions';
   // A narrow transition may back off without changing the shared body font.
   const ALLOW_INHERITED_BODY_FONT_BACKOFF = true;
   let bodyIterationInspectionRound = 0;
@@ -10808,6 +10999,26 @@
   function setDiagnosticTitle(node, text) {
     if (!node) return;
     node.title = document.body.classList.contains('layout-debug') ? (text || '') : '';
+  }
+
+  function publishCompactLayoutDebugLabels() {
+    if (!document.body.classList.contains('layout-debug')) return;
+    const names = { body_text: '正文', text: '段落', title: '标题', abstract: '摘要',
+      ref_text: '参考文献', page_header: '页眉', page_footer: '页脚', header: '页眉', footer: '页脚',
+      image: '图片', image_body: '图片', chart: '图表', table: '表格', table_body: '表格',
+      image_caption: '图注', table_caption: '表注', caption: '图表注', code: '代码' };
+    for (const node of scopedNodes('.layout-flow-stream, .layout-block')) {
+      const kind = node.dataset.bodyStyleInherited === '1' ? 'body_text' : node.dataset.flowKind === 'ref_text' ? 'ref_text' : node.dataset.styleKind || node.dataset.blockKind || 'text';
+      const type = node.dataset.sidebarInfo === '1' ? '侧栏信息' : node.dataset.textRegion === 'author-contributions' ? '作者贡献' : node.dataset.textRegion === 'supporting-information' ? '支持信息' : node.classList.contains('layout-formula') ? '公式' : names[kind] || '段落';
+      const metrics = measureTextBand(node);
+      const scale = Number(node.dataset.layoutFontScale || 1) || 1;
+      const fontPt = parseFloat(getComputedStyle(node).fontSize) / scale * .75;
+      const fontText = metrics.hasText && Number.isFinite(fontPt) ? String(Number(fontPt.toFixed(1))) : '—';
+      const occupancy = metrics.hasText && node.clientHeight > 0
+        ? `${Math.round(Math.max(0, metrics.lastBottom) / node.clientHeight * 100)}%` : '—';
+      node.dataset.debugLabel = `${type}，${fontText}，${occupancy}`;
+      setDiagnosticTitle(node, `${node.dataset.debugLabel}（字号：pt；占用率：文字末行到框顶的高度／块高度）\n${node.dataset.bodyStyleInheritance || ''}\n${node.dataset.fitDebug || ''}`);
+    }
   }
 
   function resetBodyIterationInspection(nodes) {
@@ -11241,7 +11452,14 @@
       const sourceIsBodyText = node.dataset.styleKind === 'body_text';
       // 每个文本源都逐行检测自身实际文字。区别仅在障碍物：正文迭代以实际
       // 内容为障碍；其它文本迭代以布局边框为障碍。
-      const sourceRects = textRectsInPage(node).filter((rect) => {
+      const allSourceRects = textRectsInPage(node);
+      if (options.boundNodeBottom && node.dataset.styleKind !== 'body_text' && node.dataset.bodyStyleInherited !== '1'
+          && (isOrdinaryMultilineText(node) || node.dataset.textRegion)
+          && allSourceRects.some(rect => rect.bottom > own.bottom + .01)) {
+        return { source: node, blocker: null, rect: allSourceRects.find(rect => rect.bottom > own.bottom + .01),
+          sourceName: blockDebugName(node), blockerName: 'block-bottom' };
+      }
+      const sourceRects = allSourceRects.filter((rect) => {
         return checkAllTextForCollisions || rect.bottom > own.bottom + 1 ||
           (!ignoreNodeTopOverflow && rect.top < own.top - 1) ||
           rect.left < own.left - 1 ||
@@ -11578,7 +11796,8 @@
     return node.matches('.layout-flow-stream.debug-text[data-flow-kind="text"][data-original-lines="multi"], .layout-block.type-text[data-original-lines="multi"], .layout-block.type-abstract')
       && !node.matches('.layout-title, .layout-caption')
       && node.dataset.styleKind !== 'body_text'
-      && node.dataset.blockKind !== 'body_text';
+      && node.dataset.blockKind !== 'body_text'
+      && node.dataset.bodyStyleInherited !== '1';
   }
 
   function stoppedAtNextLowerBlock(node, result) {
@@ -11615,6 +11834,49 @@
     }
   }
 
+  function applyFinalBodyStyle(node, font, lineRatio, alignment, boundBottom = false) {
+    const originalStyle = { fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign };
+    const requestedLineRatio = lineRatio;
+    const scale = Number(node.dataset.layoutFontScale || 1);
+    node.style.fontSize = `${(font * scale).toFixed(2)}px`;
+    node.style.lineHeight = String(lineRatio);
+    node.style.textAlign = alignment;
+    const page = node.closest('.layout-page');
+    let failureReason = '';
+    const hasCollision = () => {
+      const detail = textCollisionDetails([node], {
+        checkAllTextForCollisions: true, avoidPageOverflow: true, includeGroupPeers: true
+      });
+      if (detail) { failureReason = `碰到 ${detail.blockerName}`; return true; }
+      const rects = textRectsInPage(node);
+      if (boundBottom && rects.some(rect => rect.bottom > elementBoxInPage(node).bottom + .01)) {
+        failureReason = '文字超出框底'; return true;
+      }
+      const peer = Array.from(page.querySelectorAll('.layout-flow-stream, .layout-block')).find(peer =>
+        peer !== node && renderedContentRectsInPage(peer).some(other => rects.some(rect => rectsOverlap(rect, other, 1.5))));
+      failureReason = peer ? `碰到 ${blockDebugName(peer)}` : '';
+      return Boolean(peer);
+    };
+    // 最后继承正文样式；碰撞时只压缩行距，仍无法避让才整体恢复。
+    let collision = hasCollision();
+    const minLineRatio = 1.02;
+    while (collision && lineRatio > minLineRatio + .001) {
+      lineRatio = Math.max(minLineRatio, Number((lineRatio - .025).toFixed(3)));
+      node.style.lineHeight = String(lineRatio);
+      collision = hasCollision();
+    }
+    if (collision) Object.assign(node.style, originalStyle);
+    if (node.dataset.textRegion) {
+      const compressed = lineRatio < requestedLineRatio - .001;
+      node.dataset.bodyStyleInheritance = collision
+        ? `正文样式继承失败：${failureReason}；保留框内拟合结果`
+        : `正文样式继承成功：${(font * .75).toFixed(1)} pt，行距 ${lineRatio.toFixed(3)}${compressed ? '（已压缩行距以避让）' : ''}`;
+      node.classList.toggle('fit-limiter', collision || compressed);
+      if (!collision) node.dataset.fitDebug = `font=${font.toFixed(2)} line=${lineRatio.toFixed(3)} inheritedBody=1 lineCompressed=${compressed}`;
+    }
+    return !collision;
+  }
+
   function inheritFinalDualColumnBodyFont(pages = null) {
     if (document.body.classList.contains('layout-source-strict-fit')) return;
     const selector = '.layout-flow-stream[data-body-font-candidate="1"]';
@@ -11640,28 +11902,26 @@
       if (!donor) continue;
       let lineRatio = parseFloat(donor.style.lineHeight || donor.dataset.lineRatio || '');
       if (!Number.isFinite(lineRatio) || lineRatio <= 0) continue;
-      const originalStyle = { fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign };
-      const scale = Number(node.dataset.layoutFontScale || 1);
-      node.style.fontSize = `${(fonts[0] * scale).toFixed(2)}px`;
-      node.style.lineHeight = String(lineRatio);
-      node.style.textAlign = window.getComputedStyle(donor).textAlign;
-      const hasCollision = () => {
-        if (textCollisionDetails([node], {
-          checkAllTextForCollisions: true, avoidPageOverflow: true, includeGroupPeers: true
-        })) return true;
-        const rects = textRectsInPage(node);
-        return Array.from(page.querySelectorAll('.layout-flow-stream, .layout-block')).some(peer =>
-          peer !== node && renderedContentRectsInPage(peer).some(other => rects.some(rect => rectsOverlap(rect, other, 1.5))));
-      };
-      // 最后继承正文样式；碰撞时只压缩行距，仍无法避让才整体恢复。
-      let collision = hasCollision();
-      const minLineRatio = 1.02;
-      while (collision && lineRatio > minLineRatio + .001) {
-        lineRatio = Math.max(minLineRatio, Number((lineRatio - .025).toFixed(3)));
-        node.style.lineHeight = String(lineRatio);
-        collision = hasCollision();
+      if (applyFinalBodyStyle(node, fonts[0], lineRatio, window.getComputedStyle(donor).textAlign)) node.dataset.bodyStyleInherited = '1';
+    }
+  }
+
+  function inheritFinalTextRegionBodyFont(pages) {
+    for (const node of pages.flatMap(page => Array.from(page.querySelectorAll('[data-text-region]')))) {
+      const pane = node.closest('#translation-layout');
+      const selector = '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])';
+      const allBodies = Array.from(pane?.querySelectorAll(selector) || []);
+      const mainBodies = allBodies.filter(body => body.dataset.offsetBodyRole);
+      const bodies = mainBodies.length ? mainBodies : allBodies;
+      const fonts = bodies.map(body => /pt$/i.test(body.style.fontSize) ? parseFloat(body.style.fontSize) * 4 / 3 / Number(body.dataset.layoutFontScale || 1) : layoutControlFontSize(body, 0));
+      if (!fonts.length || fonts.some(font => !(font > 0) || Math.abs(font - fonts[0]) > .01)) {
+        node.dataset.bodyStyleInheritance = '正文样式继承跳过：没有统一正文基准';
+        continue;
       }
-      if (collision) Object.assign(node.style, originalStyle);
+      const donor = bodies.find(body => body.closest('.layout-page') === node.closest('.layout-page')) || bodies[0];
+      const lineRatio = parseFloat(donor.style.lineHeight || donor.dataset.lineRatio || '1.22');
+      // 独立区域只借用正文样式，不加入统一正文组；继承失败保留已经完成的框内拟合。
+      applyFinalBodyStyle(node, fonts[0], lineRatio, window.getComputedStyle(donor).textAlign, true);
     }
   }
 
@@ -12181,6 +12441,7 @@
     const MAX_FINAL_COLLISION_REPAIRS_PER_NODE = 192;
     const options = {
       avoidBlockOverlap: true,
+      boundNodeBottom: true,
       avoidPageOverflow: true,
       includeGroupPeers: true,
       checkAllTextForCollisions: true,
@@ -12298,7 +12559,10 @@
       // then fill until actual glyphs collide. The explicit strict-source view
       // remains an opt-in no-overflow inspection mode.
       const collisionFirstTextFit = !strictSourceFit;
-      for (const node of scopedNodes('.layout-flow-stream[data-body-font-candidate="1"]')) node.style.textAlign = '';
+      for (const node of scopedNodes('.layout-flow-stream[data-body-font-candidate="1"]')) {
+        node.style.textAlign = '';
+        delete node.dataset.bodyStyleInherited;
+      }
       const fittedTexts = new Map();
       const rememberLowerBlockStop = (node, result) => {
         if (stoppedAtNextLowerBlock(node, result)) fittedTexts.set(node, result.fontSize);
@@ -12353,7 +12617,7 @@
         maxBorrowPx: 18,
         maxWidthRatio: 1.35,
       });
-      tuneGroup('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])', {
+      const bodyFitOptions = {
         step: 0.5,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 1.12 : undefined,
@@ -12389,7 +12653,10 @@
         // 首轮字体碰撞后不再对整组放大行距，正文二次迭代会单独处理碰撞源行距。
         skipLineExpansionAfterFontCollision: true,
         showLimiter: debugMode
-      });
+      };
+      tuneGroup('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"]):not([data-offset-body-promoted="1"])', bodyFitOptions);
+      // 主栏复用正文统一拟合；左侧已有块先按原规则完成拟合，不加入主栏组。
+      tuneGroup('.layout-flow-stream[data-offset-body-role][data-style-kind="body_text"][data-flow-kind="text"]', bodyFitOptions);
       syncInheritedBodyFontToBodyGroup();
       tuneGroup('.layout-flow-stream[data-from-list="1"][data-flow-kind="text"]', {
         step: 0.35,
@@ -12412,6 +12679,7 @@
       // change its fixed 8.2px/1.22 baseline and can clip a dense directory.
       tuneEach('.layout-flow-stream.debug-text[data-flow-kind="text"][data-original-lines="multi"], .layout-flow-stream[data-abstract-body="1"]:not([data-style-kind="body_text"]):not([data-original-lines="multi"])', {
         onFitted: rememberLowerBlockStop,
+        boundNodeBottom: true,
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
@@ -12428,6 +12696,7 @@
       });
       tuneEach('.layout-block.type-text[data-original-lines="multi"], .layout-block.type-text[data-abstract-body="1"], .layout-block.type-abstract', {
         onFitted: rememberLowerBlockStop,
+        boundNodeBottom: true,
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
         minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
@@ -12499,6 +12768,7 @@
         setDiagnosticTitle(node, node.dataset.fitDebug);
       }
     } finally {
+      publishCompactLayoutDebugLabels();
       activeFitPages = null;
     }
 

@@ -381,7 +381,7 @@ async function testLayoutCodeAndContentsRules() {
     workbenchSource.includes("tuneEach('.layout-flow-stream.debug-text[data-flow-kind=\"text\"][data-original-lines=\"multi\"],"),
     "multi-line text must retain its fitting selector alongside single-line abstracts"
   );
-  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v29:"), "layout fitting must invalidate snapshots that predate inherited body line compression");
+  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v32:"), "layout fitting must invalidate snapshots that predate restored body edge tolerance");
   assert(workbenchSource.includes('U.hashString(String(node.textContent || "").replace(/\\s+/g, " ").trim())'),
     "a retranslated page must not reuse a fit snapshot for different text");
   assert(workbenchSource.includes('pending = restored.size === active.length ? [] : active;'),
@@ -1389,8 +1389,8 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   assert(controller.includes('const comparisonTitle = `${targetLanguage}-译文对照版-${stem}`;'), "generated comparison PDFs must use the target-language prefix without a layout label");
   assert(controller.includes('await this.createGeneratedPDFAttachment(context, translationPath, translationTitle)'));
   assert(controller.includes('await this.createGeneratedPDFAttachment(context, comparisonPath, comparisonTitle)'));
-  assert(controller.includes('if (item?.getField?.("title") !== title) continue;'), "retranslation must replace generated attachments by their stable title");
-  assert(controller.includes('await Zotero.Items.trashTx(id);'), "old generated attachments must be moved to trash before importing replacements");
+  assert(controller.includes('titles.has(Zotero.Items.get(id)?.getField?.("title"))'), "retranslation must match generated attachments by their stable title");
+  assert(controller.includes('await Zotero.Items.trashTx(existingIDs);'), "confirmed old attachments must be moved to trash together after replacements are saved");
   assert(!controller.includes('item.trashTx()'), "attachment replacement must use Zotero.Items.trashTx(), not a nonexistent item method");
   assert(controller.includes('page.drawPage(embedded,'), "comparison PDF must draw source and translation pages together");
   assert(controller.includes('const normalizePDFBytes = value => value instanceof global.Uint8Array'), "pdf-lib inputs must be normalized into its privileged runtime realm");
@@ -1568,7 +1568,7 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the parity fitter must define the rendered-text union helper used by title recovery");
   assert(workbenchCode.includes("contentBounds: contentGeometry.bounds"),
     "the parity fitter must retain the union broad phase before exact glyph collision tests");
-  assert(workbenchCode.includes("layout-fit-v49-final-body-line-compression"),
+  assert(workbenchCode.includes("layout-fit-v52-offset-body-standard-tolerance"),
     "the parity engine must invalidate styles created before final body style inheritance");
   const shortTitleRepair = workbenchCode.slice(
     workbenchCode.indexOf("function keepShortTitlesOnOneLine(selector, options = {})"),
@@ -1646,7 +1646,7 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
   );
   assert(workbenchCode.includes("runLayoutParityEngine(wraps, false);"),
     "fitLayoutPages must route normal rendering through the sole parity engine");
-  assert(workbenchCSS.includes(".layout-debug .layout-flow-stream[data-fit-label]::after"),
+  assert(workbenchCSS.includes(".layout-debug .layout-flow-stream[data-debug-label]::after"),
     "fit diagnostics must be visible only in explicit layout-debug mode");
   assert(workbenchCSS.includes(".layout-fit-pending .layout-page-wrap {\n  /* The fitter measures real Range glyph rectangles"),
     "pending layout pages must stay measurable while their paint is masked");
@@ -1663,7 +1663,7 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "translated layouts must retain a versioned settle task until visible measurement succeeds");
   assert(workbenchCode.includes('classList.contains("layout-fit-pending")'),
     "showing a previously hidden translated pane must resume its document-wide fit");
-  assert(!workbenchCSS.includes("\n.layout-flow-stream[data-fit-label]::after,"),
+  assert(!workbenchCSS.includes("\n.layout-flow-stream[data-debug-label]::after,"),
     "fit diagnostics must never leak into ordinary reader pages");
 }
 
@@ -1799,9 +1799,104 @@ function testDualColumnBodyFontCandidateProtection() {
   }
 }
 
+function testOffsetSingleColumnBodyProfile() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function offsetSingleColumnBodyProfile('), source.indexOf('  function promoteOffsetBodyNode('));
+  const find = vm.runInNewContext(`${helper}\noffsetSingleColumnBodyProfile`, { Layout: LayoutHelpers });
+  const prose = 'The researchers measured atmospheric turbulence using repeated observations over several years. These measurements provide evidence for the relationship between energy dissipation and atmospheric motion and explain the observed variation across different regions.';
+  const stream = (id, bbox, text = prose, lines = 8) => ({ styleKind: 'text', debugRole: 'text', bbox,
+    items: [{ id, kind: 'text', text, originalLineCount: lines, fontEstimate: 9.2 }] });
+  const pages = [1, 2, 3].map(index => ({ index, width: 600, height: 800, restoration: { streams: [
+    stream(`long${index}`, [192, 80, 564, 260]), stream(`other${index}`, [192, 300, 564, 490]),
+    stream(`short${index}`, [192, 530, 550, 560], 'These measurements were collected from the same location.', 2),
+    stream(`caption${index}`, [192, 600, 564, 650], 'Figure 2. ' + prose),
+    stream(`side${index}`, [32, 80, 155, 260], 'Funding: ' + prose)
+  ] } }));
+  const model = { pages }; const original = JSON.stringify(model);
+  const profile = find(model);
+  assert.equal(profile.roles.size, 6, 'recover long and short paragraphs only in the repeated main lane after page one');
+  assert.equal(profile.sourceFont, 9.2);
+  assert.equal(profile.roles.get(pages[1].restoration.streams[2]), 'candidate');
+  assert.equal(JSON.stringify(model), original, 'runtime marking must preserve all cached roles and geometry');
+  for (const type of ['centered', 'dual-column', 'one-page', 'parallel-prose']) {
+    const m = JSON.parse(original);
+    if (type === 'one-page') m.pages = m.pages.slice(0, 2);
+    else for (const page of m.pages) for (const s of page.restoration.streams) {
+      if (type === 'parallel-prose' && s.bbox[0] < 100) s.items[0].text = prose;
+      if (s.bbox[0] > 100 && type === 'centered') s.bbox = [48, s.bbox[1], 552, s.bbox[3]];
+      if (s.bbox[0] > 100 && type === 'dual-column') s.bbox = [310, s.bbox[1], 565, s.bbox[3]];
+    }
+    assert.equal(find(m), null, type);
+  }
+  const m = JSON.parse(original); m.pages[1].restoration.streams[0].styleKind = 'body_text';
+  const result = find(m, new Set(['short2']));
+  assert.equal(result.roles.get(m.pages[1].restoration.streams[0]), 'donor');
+  assert.equal(result.roles.has(m.pages[1].restoration.streams[2]), false, 'abstract membership must remain excluded');
+}
+
+function testOffsetBodyUnifiedFitPromotion() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function promoteOffsetBodyNode('), source.indexOf('  function buildLayoutDocument('));
+  const promote = vm.runInNewContext(`${helper}\npromoteOffsetBodyNode`, {});
+  const classes = new Set(['layout-flow-stream', 'debug-text']);
+  const node = { dataset: { styleKind: 'text', baseFont: '7.6' }, style: { left: '195px', width: '381px', lineHeight: '1.28' },
+    classList: { remove: value => classes.delete(value), add: value => classes.add(value) } };
+  promote(node, 'candidate', 9.2);
+  assert.equal(node.dataset.styleKind, 'body_text');
+  assert.equal(node.dataset.baseFont, '9.2');
+  assert.equal(node.dataset.bodyInherited, '0', 'short prose joins the uniform body solve instead of inheriting at the end');
+  assert.equal(classes.has('debug-text'), false, 'promoted body must leave ordinary paragraph fitting and final minus-0.5');
+  assert.equal(node.style.left, '195px'); assert.equal(node.style.width, '381px');
+  const donor = { dataset: { styleKind: 'body_text', baseFont: '9.5' }, style: { lineHeight: '1.24' } };
+  promote(donor, 'donor', 9.2);
+  assert.equal(donor.dataset.baseFont, '9.5'); assert.equal(donor.style.lineHeight, '1.24');
+  const engine = source.slice(source.indexOf('  function runLayoutParityEngine('));
+  assert(engine.includes("not([data-offset-body-promoted=\"1\"])', bodyFitOptions)"));
+  assert(engine.includes("[data-offset-body-role][data-style-kind=\"body_text\"][data-flow-kind=\"text\"]', bodyFitOptions)"),
+    'the offset main lane must retain the same body fitting options and edge tolerance');
+  assert(!source.includes('inheritFinalOffsetBodyStyle'), 'remove the superseded final style patch');
+}
+
+function testPublishedTranslationClearsWorkbenchFontOverride() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function resetLayoutFontForTranslation('), source.indexOf('  function handleEvent('));
+  const state = { mode: 'layout', data: { item: { documentID: 'target', layoutPDFIdentity: 'old-pdf' } }, layoutPDFGenerationKey: 'old-key', settings: { layoutReaderFonts: { target: 5, other: 9 } }, layoutFontPt: 5, detectedLayoutFontPt: 5 };
+  const body = { dataset: { userBodyFontPt: '5' } }; const input = { value: '5' };
+  const reset = vm.runInNewContext(`${helper}\nresetLayoutFontForTranslation`, { state, document: { body }, els: { 'reader-font-input': input } });
+  for (const event of [
+    { complete: false, resetLayoutFont: true, documentID: 'target' },
+    { complete: true, cached: true, resetLayoutFont: true, documentID: 'target' },
+    { complete: true, resetLayoutFont: true, documentID: 'other' },
+    { complete: true, documentID: 'target' }
+  ]) { reset(event); assert.equal(state.layoutFontPt, 5); assert.equal(input.value, '5'); assert.equal(state.data.item.layoutPDFIdentity, 'old-pdf'); assert.equal(state.layoutPDFGenerationKey, 'old-key'); }
+  reset({ complete: true, resetLayoutFont: true, documentID: 'target' });
+  assert.equal(state.layoutFontPt, 0); assert.equal(state.detectedLayoutFontPt, 0);
+  assert.equal(state.data.item.layoutPDFIdentity, ''); assert.equal(state.layoutPDFGenerationKey, '', 'fresh publication must regenerate PDFs even with unchanged translation settings');
+  assert.equal(state.settings.layoutReaderFonts.target, undefined); assert.equal(state.settings.layoutReaderFonts.other, 9);
+  assert.equal(body.dataset.userBodyFontPt, undefined); assert.equal(input.value, '');
+  const handler = source.slice(source.indexOf('    if (type === "layout-translation")'), source.indexOf('    if (type === "chat-session")'));
+  assert(handler.indexOf('resetLayoutFontForTranslation(event);') < handler.indexOf('renderLayoutPanes();'), 'clear the override before publishing and fitting the new DOM');
+}
+
+function testOffsetBodyToolbarFont() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const start = source.indexOf('  function reflectAutomaticLayoutFont(');
+  const end = source.indexOf('\n  function ', start + 10);
+  let main = { style: { fontSize: '11.75px' } };
+  const legacy = { style: { fontSize: '8.75px' } };
+  const container = { querySelector: selector => selector.includes('offset-body-role') ? main : legacy };
+  const state = { mode: 'layout', layoutFontPt: 0 };
+  const input = {}; const els = { 'translation-layout': container, 'reader-font-input': input };
+  const reflect = vm.runInNewContext(`${source.slice(start, end)}\nreflectAutomaticLayoutFont`, {
+    state, els, document: { documentElement: { style: { setProperty() {} } } }
+  });
+  reflect(container); assert.equal(input.value, '8.8', 'report the main reading lane rather than cached sidebar body metadata');
+  main = null; reflect(container); assert.equal(input.value, '6.6', 'ordinary documents retain the original font-control selection');
+}
+
 function testFinalBodyFontInheritanceCollisionRollback() {
   const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
-  const helper = source.slice(source.indexOf('  function inheritFinalDualColumnBodyFont('), source.indexOf('  function titleFrameFill('));
+  const helper = source.slice(source.indexOf('  function applyFinalBodyStyle('), source.indexOf('  function titleFrameFill('));
   let fonts = [11.5, 11.5], collision = false, incoming = false, ordinary = true, strict = false;
   let safeLineRatio = null, incomingSafeLineRatio = null;
   const probedRatios = [];
@@ -1878,9 +1973,79 @@ function testInheritedBodyAlignmentSnapshot() {
   assert.deepEqual(node.style, snapshot.pages[0].styles[0]);
 }
 
+async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
+  const method = context.LitMTrans.Controller.prototype.createLayoutPDFAttachments.toString();
+  const calls = [];
+  let oldIDs = [1, 2, 3], choice = 1, failImport = false, failTrash = false;
+  const titles = { 1: '简体中文-译文-paper', 2: '简体中文-译文对照版-paper', 3: '原始PDF' };
+  const create = vm.runInNewContext(`({ ${method} }).createLayoutPDFAttachments`, {
+    U: { extension: () => '.pdf', safeStem: value => value, normalizeLanguageName: value => value },
+    PathUtils: { join: (...parts) => parts.join('/') },
+    Zotero: {
+      getMainWindow: () => ({}),
+      Items: {
+        get: id => ({ getField: () => titles[id] }),
+        trashTx: async ids => { if (failTrash) throw new Error('trash failed'); calls.push(`trash:${ids.join(',')}`); },
+        erase: async ids => calls.push(`erase:${ids.join(',')}`)
+      }
+    },
+    Services: { prompt: {
+      BUTTON_POS_0: 1, BUTTON_POS_1: 256, BUTTON_TITLE_IS_STRING: 127, BUTTON_POS_1_DEFAULT: 16777216,
+      confirmEx: (_win, _title, message, flags, replace, preserve) => {
+        assert(message.includes('批注和笔记不会迁移'));
+        assert.equal(preserve, '保留原PDF');
+        assert(flags & 16777216, 'default to preserving the old PDFs');
+        calls.push('confirm'); return choice;
+      }
+    } }
+  });
+  const controller = {
+    attachmentContext: async () => ({ filePath: 'paper.pdf', title: 'paper', documentID: 'doc', parent: { isRegularItem: () => true, getAttachments: () => oldIDs } }),
+    getSettings: () => ({ targetLanguage: '简体中文' }),
+    storage: { temporaryDir: () => 'temp', ensureDir: async () => {}, remove: async () => calls.push('cleanup'), setDocumentMeta: async () => calls.push('meta') },
+    printWorkbenchPDF: async () => calls.push('print'),
+    createLayoutComparisonPDF: async () => calls.push('comparison'),
+    createGeneratedPDFAttachment: async (_context, _file, title) => {
+      calls.push(`import:${title}`);
+      if (failImport && title.includes('对照版')) throw new Error('import failed');
+      return { id: title.includes('对照版') ? 12 : 11 };
+    }
+  };
+  const run = () => create.call(controller, {}, { layoutIdentity: 'new' });
+  const kept = await run();
+  assert(kept.cancelled && kept.preservedExisting);
+  assert.deepEqual(calls, ['print', 'comparison', 'confirm', 'cleanup'], 'declining must leave old PDFs, annotations and publication metadata untouched');
+  calls.length = 0; choice = 0;
+  const replaced = await run();
+  assert.equal(replaced.translationAttachmentID, 11);
+  assert.deepEqual(calls.slice(-3), ['trash:1,2', 'meta', 'cleanup']);
+  assert(calls.indexOf('confirm') < calls.indexOf('import:简体中文-译文-paper'));
+  assert(calls.indexOf('import:简体中文-译文对照版-paper') < calls.indexOf('trash:1,2'), 'save both replacements before moving any old attachment');
+  assert(!calls.includes('trash:3'), 'never touch the original PDF');
+  calls.length = 0; failImport = true;
+  await assert.rejects(run, /import failed/);
+  assert(!calls.some(call => call.startsWith('trash:') || call === 'meta'), 'a failed replacement must preserve both old attachments');
+  assert(calls.includes('erase:11'), 'erase the first newly imported attachment and its storage files when the second fails');
+  assert.equal(calls.at(-1), 'cleanup');
+  calls.length = 0; failImport = false; failTrash = true;
+  await assert.rejects(run, /trash failed/);
+  assert(calls.includes('erase:11,12'), 'erase only the new pair if moving the old pair fails');
+  assert(!calls.includes('meta'));
+  failTrash = false;
+  calls.length = 0; failImport = false; oldIDs = [3];
+  await run();
+  assert(!calls.includes('confirm'), 'first generation needs no replacement prompt');
+  assert(!calls.some(call => call.startsWith('trash:')));
+}
+
   return {
+    testLayoutPDFAttachmentReplacementRequiresConfirmation,
     testInheritedBodyAlignmentSnapshot,
     testDualColumnBodyFontCandidateProtection,
+    testOffsetSingleColumnBodyProfile,
+    testOffsetBodyUnifiedFitPromotion,
+    testOffsetBodyToolbarFont,
+    testPublishedTranslationClearsWorkbenchFontOverride,
     testFinalBodyFontInheritanceCollisionRollback,
     testFinalTextClearanceBoundaries,
     testAbstractRecognitionAndBodyProtection,

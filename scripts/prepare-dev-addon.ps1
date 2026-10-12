@@ -59,6 +59,12 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "Development staged addon missing manifest: $manifestPath"
 }
 
+# 仅在隔离开发副本显示排版调试复选框，发布源码继续隐藏。
+$devWorkbenchPath = Join-Path $stage "src\workbench.js"
+$devWorkbenchText = [System.IO.File]::ReadAllText($devWorkbenchPath)
+$devWorkbenchText = $devWorkbenchText.Replace('if (els["debug-boxes-control"]) els["debug-boxes-control"].hidden = true;', 'if (els["debug-boxes-control"]) els["debug-boxes-control"].hidden = state.mode !== "layout";')
+[System.IO.File]::WriteAllText($devWorkbenchPath, $devWorkbenchText, [System.Text.UTF8Encoding]::new($false))
+
 # Bound the staged development copy to the Zotero major version that will load
 # it. This lets a developer test a future Zotero beta without broadening the
 # compatibility claim in the public XPI.

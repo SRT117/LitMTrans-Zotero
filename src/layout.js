@@ -3904,6 +3904,7 @@
     columnRightEdgesFromStreams,
     equationNumberRightForBBox,
     promoteStableSingleColumnItems,
+    mergeVerticalBodyItems,
     inheritStableSingleColumnShortItems,
     singleColumnBodyPromotionEnabled,
     visibleTextLength,

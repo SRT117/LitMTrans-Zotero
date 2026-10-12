@@ -4023,33 +4023,12 @@
     async createGeneratedPDFAttachment(context, filePath, title) {
       const parent = context.parent?.isRegularItem?.() ? context.parent : null;
       const parentItemID = parent?.id || false;
-      // Retain exactly one current pair for this document. `getAttachments()`
-      // already scopes this to the parent item's attachments, so the stable
-      // generated title is the reliable replacement key across Zotero builds.
-      // Do not silently skip deletion when a version lacks
-      // `isPDFAttachment()`; that created duplicate generated exports after a
-      // retranslation.
-      if (parentItemID) {
-        const existing = Zotero.Items.get(parentItemID)?.getAttachments?.() || [];
-        for (const id of existing) {
-          const item = Zotero.Items.get(id);
-          if (item?.getField?.("title") !== title) continue;
-          // `trashTx()` belongs to Zotero.Items, not individual Zotero.Item
-          // instances. Calling it on the attachment made retranslation fail as
-          // soon as an earlier generated PDF with this stable title existed.
-          if (typeof Zotero.Items.trashTx !== "function") {
-            throw new Error(`无法替换已有的排版PDF附件：${title}`);
-          }
-          await Zotero.Items.trashTx(id);
-        }
-      }
       const attachment = await Zotero.Attachments.importFromFile({
         file: U.createLocalFile(filePath),
         parentItemID,
-        libraryID: context.attachment.libraryID
+        libraryID: context.attachment.libraryID,
+        title
       });
-      attachment.setField("title", title);
-      await attachment.saveTx();
       return attachment;
     }
 
@@ -4129,8 +4108,41 @@
           layoutPaper: payload.layoutPaper
         });
         await this.createLayoutComparisonPDF(context.filePath, translationPath, comparisonPath);
-        const translationAttachment = await this.createGeneratedPDFAttachment(context, translationPath, translationTitle);
-        const comparisonAttachment = await this.createGeneratedPDFAttachment(context, comparisonPath, comparisonTitle);
+        const titles = new Set([translationTitle, comparisonTitle]);
+        const existingIDs = (context.parent?.isRegularItem?.() ? context.parent.getAttachments?.() || [] : [])
+          .filter(id => titles.has(Zotero.Items.get(id)?.getField?.("title")));
+        if (existingIDs.length) {
+          const prompt = Services.prompt;
+          const flags = prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING
+            + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING
+            + prompt.BUTTON_POS_1_DEFAULT;
+          const choice = prompt.confirmEx(
+            runtime.window || runtime.browser?.ownerGlobal || Zotero.getMainWindow(),
+            "更新译文PDF附件",
+            "新译文PDF已生成，条目下已有同名PDF附件。\n\n替换会将旧附件移入回收站；旧PDF中的批注和笔记不会迁移到新PDF。若需要保留旧版笔记，请选择保留原PDF。",
+            flags, "替换旧PDF", "保留原PDF", null, null, {}
+          );
+          if (choice !== 0) return { cancelled: true, preservedExisting: true };
+          if (typeof Zotero.Items.trashTx !== "function") throw new Error("无法替换已有的排版PDF附件");
+        }
+        const createdIDs = [];
+        let translationAttachment, comparisonAttachment;
+        try {
+          translationAttachment = await this.createGeneratedPDFAttachment(context, translationPath, translationTitle);
+          createdIDs.push(translationAttachment.id);
+          comparisonAttachment = await this.createGeneratedPDFAttachment(context, comparisonPath, comparisonTitle);
+          createdIDs.push(comparisonAttachment.id);
+          // 两份新附件均保存成功后，以同一事务移走用户确认替换的旧附件。
+          if (existingIDs.length) await Zotero.Items.trashTx(existingIDs);
+        }
+        catch (error) {
+          // 仅清理本次未完成的新附件；由Zotero同时清理附件记录与存储文件。
+          if (createdIDs.length) {
+            try { await Zotero.Items.erase(createdIDs); }
+            catch (cleanupError) { throw new Error(`${error.message || error}；新附件清理失败：${cleanupError.message || cleanupError}`); }
+          }
+          throw error;
+        }
         await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity });
         return {
           translationAttachmentID: translationAttachment.id,

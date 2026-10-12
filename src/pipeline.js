@@ -277,7 +277,7 @@
       const parsed = await this.mineru.loadParsed(context.documentID);
       if (!parsed.hasLayout) throw new Error("当前MinerU结果没有可用的页面布局数据");
       const settings = this.getSettings();
-      const loggedEmit = this.logTranslationEvent(context.documentID, "layout", emit);
+      const loggedEmit = this.logTranslationEvent(context.documentID, "layout", this.layoutPublicationEmitter(context.documentID, emit));
       const probeMsg = `[探针2.5-流水线] translateLayout: engine=${payload.engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(payload.runtime)}`;
       loggedEmit?.({ type: "log", message: probeMsg });
       try { Zotero.debug?.(`[LitMTrans-Probe] ${probeMsg}`); } catch (_) {}
@@ -353,7 +353,7 @@
     }
 
     async importManualTranslation(context, mode, responses, emit = null) {
-      if (mode === "layout") return this.layout.importManualTranslation(context.documentID, responses, emit);
+      if (mode === "layout") return this.layout.importManualTranslation(context.documentID, responses, this.layoutPublicationEmitter(context.documentID, emit));
       const parsed = await this.mineru.loadParsed(context.documentID);
       if (!String(parsed.markdown || "").trim()) throw new Error("当前文档尚未完成解析");
       return this.translation.importManualTranslation(context.documentID, parsed.markdown, responses, emit);
@@ -384,6 +384,27 @@
         "不要添加外层对象、外层数组或 `translations` 字段，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
         "缺失文本块 JSON：\n" + JSON.stringify({ blocks: missing }, null, 2)
       );
+    }
+
+    layoutPublicationEmitter(documentID, emit) {
+      return event => {
+        if (event?.type === "layout-translation" && event.complete && !event.cached) {
+          let fonts;
+          try {
+            const raw = U.getPref("layoutReaderFonts", "{}");
+            fonts = typeof raw === "string" ? JSON.parse(raw || "{}") : raw;
+          } catch (_) { fonts = null; }
+          if (fonts && typeof fonts === "object" && !Array.isArray(fonts) && Object.prototype.hasOwnProperty.call(fonts, documentID)) {
+            const updated = { ...fonts };
+            delete updated[documentID];
+            U.setPref("layoutReaderFonts", JSON.stringify(updated));
+          }
+          // 新译文成功发布后才恢复自动字号，旧版阅读和失败重试保留原设置。
+          emit?.({ ...event, documentID, resetLayoutFont: true });
+          return;
+        }
+        emit?.(event);
+      };
     }
 
     logTranslationEvent(documentID, mode, emit) {
