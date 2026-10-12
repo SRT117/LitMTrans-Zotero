@@ -307,8 +307,10 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(css.includes(".pending-image-name"), "the pending-image filename must remain visible in the composer");
   assert(workbench.includes("function renderLayoutTranslatedText(text)"), "layout translations must have a dedicated inline-TeX rendering path");
   assert(workbench.includes("Markdown.normalizeEscapedTeXDelimiters(source)"), "persisted layout translations must normalize complete doubly escaped TeX before rendering");
-  assert(workbench.includes("return useTranslation\n      ? renderLayoutTranslatedText(translated)"), "translated layout blocks must repair bare TeX before rendering");
-  assert(workbench.includes("if (useTranslation && translated) return renderLayoutTranslatedText(translated);"), "translated layout fragments must repair bare TeX before rendering");
+  const blockRenderer = workbench.slice(workbench.indexOf('  function layoutBlockHTML('), workbench.indexOf('  function placeLayoutNode('));
+  const partRenderer = workbench.slice(workbench.indexOf('  function layoutPartHTML('), workbench.indexOf('  function markLayoutCitationSupers('));
+  assert(/useTranslation\s*\? renderLayoutTranslatedText\(translated\)/.test(blockRenderer), "translated layout blocks must repair bare TeX before rendering");
+  assert(/useTranslation && translated\s*\? renderLayoutTranslatedText\(restoreLayoutDOIWraps\(translated, part.text\)\)/.test(partRenderer), "translated layout fragments must repair bare TeX after recovering DOI wraps");
   assert(workbench.includes("function layoutTranslationPageState(page, useTranslation)"));
   assert(
     workbench.includes("const showAwaitingOverlay = Boolean(useTranslation && hasTranslatableBlocks && !hasPageTranslation);"),

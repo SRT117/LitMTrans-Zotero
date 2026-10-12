@@ -419,6 +419,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-block.type-page_number { text-align: left; }
 .layout-block.type-text { text-align: justify; }
 .layout-block.type-ref_text { line-height: 1.06; text-align: left; }
+.layout-block a, .layout-flow-stream a { color: #0645ad; font: inherit; text-decoration: none; cursor: pointer; }
+.layout-block a:hover, .layout-flow-stream a:hover { text-decoration: underline; }
+.layout-reference-focus { background: rgba(250, 204, 21, .25); }
 .layout-block.type-table_caption,
 .layout-block.type-table_footnote,
 .layout-block.type-chart_caption,

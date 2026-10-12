@@ -381,7 +381,9 @@ async function testLayoutCodeAndContentsRules() {
     workbenchSource.includes("tuneEach('.layout-flow-stream.debug-text[data-flow-kind=\"text\"][data-original-lines=\"multi\"],"),
     "multi-line text must retain its fitting selector alongside single-line abstracts"
   );
-  assert(workbenchSource.includes("litmtrans-layout-fit-runtime:v32:"), "layout fitting must invalidate snapshots that predate restored body edge tolerance");
+  assert(workbenchSource.includes('litmtrans-layout-fit-runtime:snapshot-v${LAYOUT_FIT_SNAPSHOT_VERSION}:')
+    && Number(workbenchSource.match(/const LAYOUT_FIT_SNAPSHOT_VERSION = (\d+);/)[1]) > 12,
+    "layout fitting must invalidate snapshots that predate the current rules");
   assert(workbenchSource.includes('U.hashString(String(node.textContent || "").replace(/\\s+/g, " ").trim())'),
     "a retranslated page must not reuse a fit snapshot for different text");
   assert(workbenchSource.includes('pending = restored.size === active.length ? [] : active;'),
@@ -1418,7 +1420,8 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   assert(!workbench.includes('page:litmtransFrozen${index}'), "frozen PDF pages must not use Gecko's named-page continuation path");
   assert(!controller.includes('page.setSize(width, height);'), "all layout pages must retain the same common print sheet instead of restoring mixed source MediaBoxes");
   assert(!controller.includes('layoutPageSizes'), "mixed per-page source sizes must not be sent into post-print PDF rewriting");
-  assert(workbench.includes('const LAYOUT_PDF_EXPORT_REVISION = 20;'), "an exporter change must replace stale generated PDF attachments without rerunning translation");
+  assert(Number(workbench.match(/const LAYOUT_PDF_EXPORT_REVISION = (\d+);/)[1]) >= 23,
+    "an exporter change must replace stale generated PDF attachments without rerunning translation");
   assert(controller.includes('settings.paperWidth = paperWidth / 96;'), "layout PDF printing must explicitly set the native paper width instead of falling back to Letter");
   assert(controller.includes('settings.paperHeight = paperHeight / 96;'), "layout PDF printing must explicitly set the native paper height instead of falling back to Letter");
   assert(!controller.includes('settings.paperName ='), "layout PDF printing must not add unsupported properties to Zotero's WrappedNative print settings");
@@ -1568,7 +1571,7 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the parity fitter must define the rendered-text union helper used by title recovery");
   assert(workbenchCode.includes("contentBounds: contentGeometry.bounds"),
     "the parity fitter must retain the union broad phase before exact glyph collision tests");
-  assert(workbenchCode.includes("layout-fit-v52-offset-body-standard-tolerance"),
+  assert(Number(workbenchCode.match(/const fitCacheVersion = 'layout-fit-v(\d+)/)[1]) >= 56,
     "the parity engine must invalidate styles created before final body style inheritance");
   const shortTitleRepair = workbenchCode.slice(
     workbenchCode.indexOf("function keepShortTitlesOnOneLine(selector, options = {})"),
@@ -1609,7 +1612,7 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "top-edge glyph collisions must move the first baseline down instead of farther up");
   assert(workbenchCode.includes("const overflowTolerance = 1.5 * coordinateScale"),
     "canonical-page height measurements must scale the Python source-pixel tolerance");
-  assert(workbenchCode.includes("snapshot?.version !== 12")
+  assert(workbenchCode.includes("snapshot?.version !== LAYOUT_FIT_SNAPSHOT_VERSION")
     && workbenchCode.includes("snapshot.pages.length !== requested.length")
     && workbenchCode.includes("return restored;"),
     "the runtime must reject old or partial snapshots instead of mixing per-page solves");
@@ -1912,6 +1915,7 @@ function testFinalBodyFontInheritanceCollisionRollback() {
     document: { body: { classList: { contains: () => strict } } },
     scopedNodes: () => [node], isOrdinaryMultilineText: () => ordinary,
     layoutControlFontSize: body => body.font, elementBoxInPage: n => n.box,
+    blockDebugName: () => 'peer',
     window: { getComputedStyle: () => ({ textAlign: 'justify' }) },
     textCollisionDetails: (_nodes, options) => {
       assert.equal(options.checkAllTextForCollisions, true);
@@ -1963,14 +1967,34 @@ function testFinalBodyFontInheritanceCollisionRollback() {
 function testInheritedBodyAlignmentSnapshot() {
   const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
   const helper = source.slice(source.indexOf('  function applyLayoutFitSnapshot('), source.indexOf('  function restoreInjectedLayoutFitSnapshot('));
-  const node = { style: { fontSize: '10px', lineHeight: '1.1', textAlign: '' } };
+  const version = Number(source.match(/const LAYOUT_FIT_SNAPSHOT_VERSION = (\d+);/)[1]);
+  const node = { dataset: {}, style: { fontSize: '10px', lineHeight: '1.1', textAlign: '' } };
   const page = { dataset: {}, querySelectorAll: () => [node] };
-  const restore = vm.runInNewContext(`${helper}\napplyLayoutFitSnapshot`, { layoutFitPageKey: () => 'key' });
-  const snapshot = { version: 12, pages: [{ key: 'key', styles: [{ fontSize: '12px', lineHeight: '1.2', textAlign: 'justify' }] }] };
-  assert.equal(restore([page], { ...snapshot, version: 11 }).size, 0);
+  const restore = vm.runInNewContext(`${helper}\napplyLayoutFitSnapshot`, { LAYOUT_FIT_SNAPSHOT_VERSION: version, layoutFitPageKey: () => 'key' });
+  const snapshot = { version, pages: [{ key: 'key', styles: [{ fontSize: '12px', lineHeight: '1.2', textAlign: 'justify' }] }] };
+  assert.equal(restore([page], { ...snapshot, version: 12 }).size, 0);
   assert.equal(node.style.textAlign, '');
   assert.equal(restore([page], snapshot).size, 1);
   assert.deepEqual(node.style, snapshot.pages[0].styles[0]);
+}
+
+function testLayoutDOIWrapBoundaries() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function restoreLayoutDOIWraps('), source.indexOf('  function layoutPartHTML('));
+  const restore = vm.runInNewContext(`${helper}\nrestoreLayoutDOIWraps`, { U });
+  for (const text of ['doi:10.1234/abc\nPublished online', 'https://doi.org/10.1234/abc\nPublished online\n2026']) {
+    assert.equal(restore(text, text), text, 'ordinary prose following a DOI must remain separate');
+    assert.equal(restore(text.replace(/\n/g, ' '), text), text.replace(/\n/g, ' '));
+  }
+  for (const [text, expected] of [
+    ['https://doi.org/10.\n1016/j.neuron.2010.12.006 PMID: 21220100', 'https://doi.org/10.1016/j.neuron.2010.12.006 PMID: 21220100'],
+    ['https://doi.org/10.1073/pnas.\n1101553108', 'https://doi.org/10.1073/pnas.1101553108'],
+    ['https://doi.org/10.1158/1078-0432.CCR-07-\n4717', 'https://doi.org/10.1158/1078-0432.CCR-07-4717'],
+    ['https://doi.org/10.1234/\nabc\nPublished online', 'https://doi.org/10.1234/abc\nPublished online']
+  ]) {
+    assert.equal(restore(text, text), expected);
+    assert.equal(restore(U.escapeHTML(text.replace(/\n/g, ' ')), text, true), U.escapeHTML(expected.replace(/\n/g, ' ')));
+  }
 }
 
 async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
@@ -2039,6 +2063,7 @@ async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
 }
 
   return {
+    testLayoutDOIWrapBoundaries,
     testLayoutPDFAttachmentReplacementRequiresConfirmation,
     testInheritedBodyAlignmentSnapshot,
     testDualColumnBodyFontCandidateProtection,

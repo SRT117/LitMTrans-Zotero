@@ -92,7 +92,7 @@
     exportSelectedKind: ""
   };
   // Bump when the print snapshot format changes.
-  const LAYOUT_PDF_EXPORT_REVISION = 20;
+  const LAYOUT_PDF_EXPORT_REVISION = 24;
   // 开发诊断仍保留在日志和状态中，但暂不展示给普通用户。
   const SHOW_DEVELOPMENT_PROBES_IN_USER_UI = false;
 
@@ -1549,10 +1549,12 @@
         `<span class="layout-equation-formula">${Markdown.renderTeX(equation.body || formula, true)}</span>${number}</div>`
       );
     }
-    if (!translated && block.sourceHTML) return block.sourceHTML;
-    return useTranslation
+    if (!translated && block.sourceHTML) return markLayoutCitationSupers(restoreLayoutDOIWraps(block.sourceHTML, block.text, true), block.sourceHTML);
+    translated = restoreLayoutDOIWraps(translated, block.text);
+    const html = useTranslation
       ? renderLayoutTranslatedText(translated)
       : Markdown.renderInline(translated, { resolveImage: imageResolver });
+    return markLayoutCitationSupers(html, block.sourceHTML || Markdown.renderInline(String(block.text || ""), { resolveImage: imageResolver }));
   }
 
   function placeLayoutNode(node, bbox, page) {
@@ -1563,11 +1565,61 @@
     node.style.height = `${Math.max(.1, (bottom - top) / page.height * 100)}%`;
   }
 
+  function restoreLayoutDOIWraps(content, sourceText, html = false) {
+    let result = String(content || "");
+    const source = String(sourceText || "");
+    // 只拼接原文记录的 DOI 换行，保留标识符中的连字符。
+    const pattern = /(?:https?:\/\/(?:dx\.)?doi\.org\/|doi:[ \t]*)?\b10\.(?:[ \t]*\r?\n[ \t]*)?\d{4,9}\/(?:[ \t]*\r?\n[ \t]*)?[^\s<>"\u3400-\u9fff]+(?:[ \t]*\r?\n[ \t]*(?!PMID\b|https?:|doi:|\d+[.)]\s)[A-Za-z0-9][^\s<>"\u3400-\u9fff]*)*/gi;
+    for (const match of source.matchAll(pattern)) {
+      let raw = match[0];
+      if (!/[\r\n]/.test(raw)) continue;
+      const pieces = raw.split(/([ \t]*\r?\n[ \t]*)/);
+      raw = pieces[0];
+      for (let index = 2; index < pieces.length; index += 2) {
+        const continuation = pieces[index];
+        // 换行本身不足以证明延续；普通英文单词保留为后续正文。
+        if (!/\d/.test(continuation) && !raw.endsWith('/') && !continuation.startsWith('/')) break;
+        raw += pieces[index - 1] + continuation;
+      }
+      if (!/[\r\n]/.test(raw)) continue;
+      const escaped = html ? U.escapeHTML(raw) : raw;
+      const wrapped = escaped.split(/[ \t]*\r?\n[ \t]*/)
+        .map(piece => piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+      const joined = raw.replace(/[ \t]*\r?\n[ \t]*/g, '');
+      result = result.replace(new RegExp(wrapped, 'g'), () => html ? U.escapeHTML(joined) : joined);
+    }
+    return result;
+  }
+
   function layoutPartHTML(part, useTranslation) {
     const translated = String(part?.translatedText || "");
-    if (useTranslation && translated) return renderLayoutTranslatedText(translated);
-    if (!useTranslation && part?.html) return String(part.html);
-    return Markdown.renderInline(String(part?.text || ""), { resolveImage: imageResolver });
+    const sourceHTML = part?.html || Markdown.renderInline(String(part?.text || ""), { resolveImage: imageResolver });
+    const html = useTranslation && translated
+      ? renderLayoutTranslatedText(restoreLayoutDOIWraps(translated, part.text))
+      : !useTranslation && part?.html ? restoreLayoutDOIWraps(part.html, part.text, true)
+      : Markdown.renderInline(restoreLayoutDOIWraps(part?.text, part?.text), { resolveImage: imageResolver });
+    return markLayoutCitationSupers(html, sourceHTML);
+  }
+
+  function markLayoutCitationSupers(html, sourceHTML) {
+    if (!/<sup\b/i.test(html) || !/<sup\b/i.test(sourceHTML)) return html;
+    const source = document.createElement('div'), rendered = document.createElement('div');
+    safeSetElementHTML(source, sourceHTML);
+    safeSetElementHTML(rendered, html);
+    const normalize = text => text.replace(/\s/g, '').replace(/[–−]/g, '-');
+    const eligible = sup => {
+      if (sup.closest('a, code, pre, .layout-formula, .katex, .litmtrans-math')) return false;
+      if (!/^\s*\d+(?:\s*[-–−]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−]\s*\d+)?)*\s*$/.test(sup.textContent)) return false;
+      const before = sup.previousSibling;
+      if (before?.nodeType === Node.ELEMENT_NODE && (before.matches('sub, sup, .katex, .litmtrans-math') || before.querySelector('.katex, .litmtrans-math'))) return false;
+      // 普通 HTML 中的变量和单位指数也不作为文献引用。
+      return !/(?:^|[^A-Za-z])(?:[A-Za-z]|cm|mm|km|kg|ms|mol|Pa|Hz)\s*$/.test(before?.textContent || '');
+    };
+    const tokens = new Set([...source.querySelectorAll('sup')].filter(eligible).map(sup => normalize(sup.textContent)));
+    for (const sup of rendered.querySelectorAll('sup')) {
+      if (eligible(sup) && tokens.has(normalize(sup.textContent))) sup.dataset.layoutCitation = '1';
+    }
+    return rendered.innerHTML;
   }
 
   function appendLayoutDebugLines(node, lines, bbox, page) {
@@ -2087,6 +2139,7 @@
   // The result is deterministic for one translated-layout identity, viewport
   // width and body-font choice, so retain the solved inline styles instead of
   // repeating the measurement whenever the user switches reading modes.
+  const LAYOUT_FIT_SNAPSHOT_VERSION = 13;
   const layoutFitSnapshots = new Map();
   function layoutFitSnapshotKey(pane = "translation") {
     const documentID = String(state.data?.item?.documentID || "");
@@ -2128,7 +2181,7 @@
 
   function layoutFitStorageKey(key) {
     // Change this namespace whenever cached fitting rules become incompatible.
-    return `litmtrans-layout-fit-runtime:v33:${U.hashString(key)}`;
+    return `litmtrans-layout-fit-runtime:snapshot-v${LAYOUT_FIT_SNAPSHOT_VERSION}:${U.hashString(key)}`;
   }
 
   function applyLayoutBodyFont(pages) {
@@ -2146,7 +2199,7 @@
   function applyLayoutFitSnapshot(pages, snapshot) {
     const restored = new Set();
     const requested = (pages || []).filter(Boolean);
-    if (snapshot?.version !== 12 || !Array.isArray(snapshot.pages)) return restored;
+    if (snapshot?.version !== LAYOUT_FIT_SNAPSHOT_VERSION || !Array.isArray(snapshot.pages)) return restored;
     // Document-wide groups must be restored as one atomic fit.
     if (!requested.length || snapshot.pages.length !== requested.length) return restored;
     const byKey = new Map(snapshot.pages.map(page => [page.key, page]));
@@ -2177,7 +2230,7 @@
     if (pane === "source") return new Set();
     const key = layoutFitSnapshotKey(pane);
     const snapshot = state.data?.layout?.fitSnapshot;
-    if (snapshot?.version !== 12 || !Array.isArray(snapshot.pages)) return new Set();
+    if (snapshot?.version !== LAYOUT_FIT_SNAPSHOT_VERSION || !Array.isArray(snapshot.pages)) return new Set();
     layoutFitSnapshots.set(key, snapshot);
     return applyLayoutFitSnapshot(pages, snapshot);
   }
@@ -2197,7 +2250,7 @@
         try { snapshot = JSON.parse(localStorage.getItem(layoutFitStorageKey(key)) || "null"); }
         catch (_) { snapshot = null; }
       }
-      if (snapshot?.version === 12 && Array.isArray(snapshot.pages)) layoutFitSnapshots.set(key, snapshot);
+      if (snapshot?.version === LAYOUT_FIT_SNAPSHOT_VERSION && Array.isArray(snapshot.pages)) layoutFitSnapshots.set(key, snapshot);
     }
     return applyLayoutFitSnapshot(pages, snapshot);
   }
@@ -2205,7 +2258,7 @@
   function saveLayoutFitSnapshot(pages) {
     const key = layoutFitSnapshotKey(layoutFitPaneForPages(pages));
     const snapshot = {
-      version: 12,
+      version: LAYOUT_FIT_SNAPSHOT_VERSION,
       pages: (pages || []).map(page => {
         const nodes = [...page.querySelectorAll(".layout-block, .layout-flow-stream")];
         return {
@@ -2695,6 +2748,112 @@
     });
   }
 
+  function linkifyLayoutDocument(root, pane) {
+    const references = new Map();
+    for (const entry of root.querySelectorAll('.flow-ref, .layout-block.type-ref_text')) {
+      const match = entry.textContent.match(/^\s*(?:\[(\d+)\]|(\d+)[.)])\s*/);
+      const first = [...entry.childNodes].find(node => node.textContent.trim());
+      const superscript = first?.nodeType === Node.ELEMENT_NODE && first.matches('sup') && /^\s*\d+\s*$/.test(first.textContent)
+        ? Number(first.textContent) : 0;
+      const number = superscript || (match && Number(match[1] || match[2]));
+      if (!number || references.has(number)) continue;
+      entry.id = `litmtrans-reference-${pane}-${number}`;
+      references.set(number, entry.id);
+    }
+    for (const sup of root.querySelectorAll('sup[data-layout-citation="1"]')) {
+      const block = sup.closest('.layout-flow-stream, .layout-block');
+      if (!block || block.classList.contains('refs') || !(
+        block.dataset.styleKind === 'body_text' || block.dataset.abstractBody === '1'
+        || block.dataset.bodyStyleInherited === '1' || block.classList.contains('type-body_text')
+      )) continue;
+      const raw = sup.textContent, fragment = document.createDocumentFragment();
+      let cursor = 0;
+      for (const token of raw.matchAll(/\d+(?:\s*[-–−]\s*\d+)?/g)) {
+        fragment.appendChild(document.createTextNode(raw.slice(cursor, token.index)));
+        const numbers = token[0].split(/[-–−]/).map(Number), start = numbers[0], end = numbers[1] || start;
+        const valid = end >= start && end - start < references.size
+          && Array.from({ length: end - start + 1 }, (_, i) => start + i).every(number => references.has(number));
+        if (valid) {
+          const anchor = document.createElement('a');
+          anchor.className = 'litmtrans-link';
+          anchor.textContent = token[0];
+          anchor.setAttribute('href', `#${references.get(start)}`);
+          anchor.dataset.layoutReferenceTarget = references.get(start);
+          anchor.title = `参考文献 ${token[0]}`;
+          fragment.appendChild(anchor);
+        } else fragment.appendChild(document.createTextNode(token[0]));
+        cursor = token.index + token[0].length;
+      }
+      fragment.appendChild(document.createTextNode(raw.slice(cursor)));
+      sup.replaceChildren(fragment);
+    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        return parent?.closest('.layout-flow-stream, .layout-block')
+          && !parent.closest('a, code, pre, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer')
+          ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      const text = node.textContent;
+      const pattern = /https?:\/\/[^\s<>"\u3400-\u9fff]+|www\.[^\s<>"\u3400-\u9fff]+|(?:doi:\s*)?\b10\.\d{4,9}\/[^\s<>"\u3400-\u9fff]+|\bPMID\s*:\s*\d{4,10}\b|\[\s*\d+(?:\s*[-–−]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−]\s*\d+)?)*\s*\]/gi;
+      const matches = [...text.matchAll(pattern)];
+      if (!matches.length) continue;
+      const fragment = document.createDocumentFragment();
+      let cursor = 0;
+      const appendLink = (label, href, target = '') => {
+        const anchor = document.createElement('a');
+        anchor.textContent = label;
+        anchor.setAttribute('href', href);
+        anchor.className = 'litmtrans-link';
+        if (target) { anchor.dataset.layoutReferenceTarget = target; anchor.title = `参考文献 ${label}`; }
+        fragment.appendChild(anchor);
+      };
+      for (const match of matches) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        const raw = match[0];
+        if (raw.startsWith('[')) {
+          const isReference = node.parentElement.closest('.refs, .flow-ref, .type-ref_text');
+          if (isReference) fragment.appendChild(document.createTextNode(raw));
+          else {
+            let position = 0;
+            for (const token of raw.matchAll(/\d+(?:\s*[-–−]\s*\d+)?/g)) {
+              fragment.appendChild(document.createTextNode(raw.slice(position, token.index)));
+              const numbers = token[0].split(/[-–−]/).map(Number), start = numbers[0], end = numbers[1] || start;
+              const valid = end >= start && end - start < references.size && Array.from({ length: end - start + 1 }, (_, i) => start + i).every(number => references.has(number));
+              if (valid) appendLink(token[0], `#${references.get(start)}`, references.get(start));
+              else fragment.appendChild(document.createTextNode(token[0]));
+              position = token.index + token[0].length;
+            }
+            fragment.appendChild(document.createTextNode(raw.slice(position)));
+          }
+        } else {
+          let label = raw.replace(/[.,;:!?，。；：！？]+$/g, '');
+          while (/[)\]}]$/.test(label)) {
+            const close = label.at(-1), open = { ')': '(', ']': '[', '}': '{' }[close];
+            if ([...label].filter(c => c === close).length <= [...label].filter(c => c === open).length) break;
+            label = label.slice(0, -1);
+          }
+          const pmid = label.match(/^PMID\s*:\s*(\d+)$/i);
+          const href = pmid ? `https://pubmed.ncbi.nlm.nih.gov/${pmid[1]}/`
+            : /^(?:doi:\s*)?10\./i.test(label) ? `https://doi.org/${label.replace(/^doi:\s*/i, '')}`
+            : /^www\./i.test(label) ? `https://${label}` : label;
+          const incompleteDOI = /^https?:\/\/(?:dx\.)?doi\.org\//i.test(href)
+            && !/^https?:\/\/(?:dx\.)?doi\.org\/10\.\d{4,9}\/\S+$/i.test(href);
+          if (incompleteDOI) fragment.appendChild(document.createTextNode(label));
+          else appendLink(label, href);
+          fragment.appendChild(document.createTextNode(raw.slice(label.length)));
+        }
+        cursor = match.index + raw.length;
+      }
+      fragment.appendChild(document.createTextNode(text.slice(cursor)));
+      node.replaceWith(fragment);
+    }
+  }
+
   function buildLayoutDocument(model, useTranslation) {
     const root = document.createDocumentFragment();
     const observers = [];
@@ -2770,6 +2929,7 @@
       root.appendChild(wrap);
       observers.push(pageNode);
     }
+    linkifyLayoutDocument(root, useTranslation ? 'translation' : 'source');
     requestAnimationFrame(() => {
       let fitQueued = false;
       let fitInProgress = false;
@@ -8702,6 +8862,17 @@
         if (!els["mineru-token-link-dialog"]?.open) els["mineru-token-link-dialog"]?.showModal();
         return;
       }
+      if (link.dataset.layoutReferenceTarget) {
+        event.preventDefault();
+        const target = document.getElementById(link.dataset.layoutReferenceTarget);
+        if (target) {
+          for (const entry of document.querySelectorAll('.layout-reference-focus')) entry.classList.remove('layout-reference-focus');
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.classList.add('layout-reference-focus');
+          setTimeout(() => target.classList.remove('layout-reference-focus'), 2000);
+        }
+        return;
+      }
       const rawUrl = link.dataset.externalUrl || link.getAttribute("href") || link.href;
       if (!rawUrl || rawUrl.startsWith("#") || rawUrl.startsWith("javascript:")) return;
       let targetUrl = rawUrl;
@@ -10979,7 +11150,7 @@
   // Limit fitting to the pages scheduled by the reader.
   let activeFitPages = null;
   // This namespace invalidates incompatible browser-side fit caches.
-  const fitCacheVersion = 'layout-fit-v53-bounded-paragraphs-text-regions';
+  const fitCacheVersion = 'layout-fit-v56-complete-doi-wraps';
   // A narrow transition may back off without changing the shared body font.
   const ALLOW_INHERITED_BODY_FONT_BACKOFF = true;
   let bodyIterationInspectionRound = 0;
@@ -11004,7 +11175,7 @@
   function publishCompactLayoutDebugLabels() {
     if (!document.body.classList.contains('layout-debug')) return;
     const names = { body_text: '正文', text: '段落', title: '标题', abstract: '摘要',
-      ref_text: '参考文献', page_header: '页眉', page_footer: '页脚', header: '页眉', footer: '页脚',
+      ref_text: '参考文献', page_header: '页眉', page_footer: '页脚', page_number: '页码', page_footnote: '页脚', header: '页眉', footer: '页脚',
       image: '图片', image_body: '图片', chart: '图表', table: '表格', table_body: '表格',
       image_caption: '图注', table_caption: '表注', caption: '图表注', code: '代码' };
     for (const node of scopedNodes('.layout-flow-stream, .layout-block')) {
@@ -11453,6 +11624,11 @@
       // 每个文本源都逐行检测自身实际文字。区别仅在障碍物：正文迭代以实际
       // 内容为障碍；其它文本迭代以布局边框为障碍。
       const allSourceRects = textRectsInPage(node);
+      if (options.boundNodeBox) {
+        const rect = allSourceRects.find(rect => rect.left < own.left - .01 || rect.top < own.top - .01
+          || rect.right > own.right + .01 || rect.bottom > own.bottom + .01);
+        if (rect) return { source: node, blocker: null, rect, sourceName: blockDebugName(node), blockerName: 'block-boundary' };
+      }
       if (options.boundNodeBottom && node.dataset.styleKind !== 'body_text' && node.dataset.bodyStyleInherited !== '1'
           && (isOrdinaryMultilineText(node) || node.dataset.textRegion)
           && allSourceRects.some(rect => rect.bottom > own.bottom + .01)) {
@@ -12568,6 +12744,11 @@
         if (stoppedAtNextLowerBlock(node, result)) fittedTexts.set(node, result.fontSize);
       };
       clearAllCollisionDebugLayers();
+      tuneEach('.layout-block.type-page_header, .layout-block.type-header, .layout-block.type-page_footer, .layout-block.type-footer, .layout-block.type-page_footnote, .layout-block.type-page_number', {
+        step: .25, minFont: 2.5, maxFont: 20, minLineRatio: 2, maxLineRatio: 2, lineStep: .025,
+        startFromMinimum: true, coupleFontAndLine: true, allowOverflow: true, stopWhenFilled: false,
+        boundNodeBox: true, avoidBlockOverlap: true, avoidPageOverflow: true, showLimiter: debugMode
+      });
 
       // Apply the page scale before measuring glyphs. Geometry helpers convert
       // the result back to source coordinates, so view scaling does not alter
