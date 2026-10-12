@@ -95,6 +95,6 @@ jobs:
 
       - name: Verify public Gitee update manifest
         run: |
-          curl --fail --silent --show-error \
+          curl --fail --silent --show-error --location \
             "https://gitee.com/$GITEE_REPOSITORY/raw/main/update.json" \
             | node -e 'let d=""; process.stdin.on("data", c => d += c); process.stdin.on("end", () => { const j = JSON.parse(d); if (!j?.addons) process.exit(1); })'
