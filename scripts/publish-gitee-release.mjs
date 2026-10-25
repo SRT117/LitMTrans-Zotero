@@ -80,10 +80,10 @@ function verifyDownload(url, expected) {
   if (digest(bytes) !== expected) throw new Error(`Download hash mismatch: ${url}`);
 }
 
-async function uploadAttachment(releaseId, filePath) {
+async function uploadAttachment(releaseId, filePath, attachmentName = path.basename(filePath)) {
   const bytes = await readFile(filePath);
   const hash = digest(bytes);
-  let filename = path.basename(filePath);
+  let filename = attachmentName;
   const attachments = await request(`${repoPath}/releases/${releaseId}/attach_files`);
   let existing = attachments.find(item => item?.name === filename);
   if (existing) {
@@ -103,7 +103,8 @@ async function uploadAttachment(releaseId, filePath) {
     return downloadUrl;
   }
   const url = `${apiBase}${repoPath}/releases/${releaseId}/attach_files`;
-  execFileSync("curl", [
+  try {
+    execFileSync("curl", [
     "--fail",
     "--silent",
     "--show-error",
@@ -111,10 +112,13 @@ async function uploadAttachment(releaseId, filePath) {
     "--connect-timeout", "15",
     "--max-time", "120",
     "-X", "POST",
-    "-H", `Authorization: Bearer ${token}`,
+    "--config", "-",
     "-F", `file=@${filePath};filename=${filename}`,
     url
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { input: `header = "Authorization: Bearer ${token}"\n`, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (error) {
+    throw new Error(`Gitee attachment upload failed (curl exit ${error.status ?? "unknown"})`);
+  }
   verifyDownload(downloadUrl, hash);
   return downloadUrl;
 }
@@ -158,7 +162,7 @@ if (!update || update.update_hash !== `sha256:${xpiHash}`) throw new Error("Mani
 const xpiUrl = await uploadAttachment(release.id, xpiPath);
 update.update_link = xpiUrl;
 await writeFile(updateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-await uploadAttachment(release.id, updateManifestPath);
+await uploadAttachment(release.id, updateManifestPath, "update.json");
 await publishUpdateManifest();
 
 console.log(JSON.stringify({
