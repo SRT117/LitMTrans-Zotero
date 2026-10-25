@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 function requiredArg(name) {
@@ -13,7 +14,7 @@ const tag = requiredArg("tag");
 const xpiPath = requiredArg("xpi");
 const updateManifestPath = requiredArg("update-manifest");
 const token = process.env.GITEE_ACCESS_TOKEN;
-const apiBase = (process.env.GITEE_API_BASE || "https://api.gitee.com/api/v5").replace(/\/+$/, "");
+const apiBase = (process.env.GITEE_API_BASE || "https://gitee.com/api/v5").replace(/\/+$/, "");
 
 if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) throw new Error("--repository must be owner/repository");
 if (!tag.trim()) throw new Error("--tag must not be empty");
@@ -28,6 +29,7 @@ const headers = {
 
 async function request(pathname, options = {}) {
   const response = await fetch(`${apiBase}${pathname}`, {
+    signal: AbortSignal.timeout(30000),
     ...options,
     headers: { ...headers, ...(options.headers || {}) }
   });
@@ -68,33 +70,53 @@ async function createRelease() {
   });
 }
 
-async function removeExistingAttachment(releaseId, filename) {
-  const attachments = await request(`${repoPath}/releases/${releaseId}/attach_files`);
-  const matches = Array.isArray(attachments)
-    ? attachments.filter(item => item?.name === filename && item?.id !== undefined)
-    : [];
-  for (const item of matches) {
-    await request(`${repoPath}/releases/${releaseId}/attach_files/${item.id}`, { method: "DELETE" });
-  }
+function digest(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function verifyDownload(url, expected) {
+  const bytes = execFileSync("curl", ["--fail", "--silent", "--show-error", "--location",
+    "--connect-timeout", "15", "--max-time", "120", url], { maxBuffer: 100 * 1024 * 1024 });
+  if (digest(bytes) !== expected) throw new Error(`Download hash mismatch: ${url}`);
 }
 
 async function uploadAttachment(releaseId, filePath) {
-  const filename = path.basename(filePath);
-  await removeExistingAttachment(releaseId, filename);
+  const bytes = await readFile(filePath);
+  const hash = digest(bytes);
+  let filename = path.basename(filePath);
+  const attachments = await request(`${repoPath}/releases/${releaseId}/attach_files`);
+  let existing = attachments.find(item => item?.name === filename);
+  if (existing) {
+    try {
+      verifyDownload(existing.browser_download_url, hash);
+      return existing.browser_download_url;
+    } catch (_) {
+      // 同版本覆盖使用内容指纹文件名，保留旧清单仍在引用的附件。
+      const extension = path.extname(filename);
+      filename = `${path.basename(filename, extension)}-${hash.slice(0, 16)}${extension}`;
+      existing = attachments.find(item => item?.name === filename);
+    }
+  }
+  const downloadUrl = `https://gitee.com/${repository}/releases/download/${tag}/${filename}`;
+  if (existing) {
+    verifyDownload(downloadUrl, hash);
+    return downloadUrl;
+  }
   const url = `${apiBase}${repoPath}/releases/${releaseId}/attach_files`;
   execFileSync("curl", [
     "--fail",
     "--silent",
     "--show-error",
     "--location",
-    "--retry", "3",
-    "--retry-delay", "5",
-    "--max-time", "600",
+    "--connect-timeout", "15",
+    "--max-time", "120",
     "-X", "POST",
     "-H", `Authorization: Bearer ${token}`,
-    "-F", `file=@${filePath}`,
+    "-F", `file=@${filePath};filename=${filename}`,
     url
-  ], { stdio: "inherit" });
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  verifyDownload(downloadUrl, hash);
+  return downloadUrl;
 }
 
 async function readRemoteFile() {
@@ -129,7 +151,13 @@ if (repositoryInfo.private) throw new Error("Gitee repository must be public");
 const release = await findRelease() || await createRelease();
 if (!release?.id) throw new Error("Gitee release was created without an id");
 
-await uploadAttachment(release.id, xpiPath);
+const xpiHash = digest(await readFile(xpiPath));
+const manifest = JSON.parse(await readFile(updateManifestPath, "utf8"));
+const update = manifest.addons?.["litmtrans@srt117.github.io"]?.updates?.find(item => `v${item.version}` === tag);
+if (!update || update.update_hash !== `sha256:${xpiHash}`) throw new Error("Manifest does not match XPI hash/version");
+const xpiUrl = await uploadAttachment(release.id, xpiPath);
+update.update_link = xpiUrl;
+await writeFile(updateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 await uploadAttachment(release.id, updateManifestPath);
 await publishUpdateManifest();
 
@@ -138,5 +166,5 @@ console.log(JSON.stringify({
   tag,
   releaseId: release.id,
   updateManifest: `https://gitee.com/${repository}/raw/main/update.json`,
-  xpi: `https://gitee.com/${repository}/releases/download/${tag}/${path.basename(xpiPath)}`
+  xpi: xpiUrl
 }));

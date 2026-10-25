@@ -5,7 +5,7 @@
         {
           "version": "2.1.4",
           "update_link": "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/v2.1.4/litmtrans-2.1.4.xpi",
-          "update_hash": "sha256:d825221d227650d53e9d56b3ccf5e5babd7b62a2943dfe099758daeb97ee7cf1",
+          "update_hash": "sha256:7f34ddaa6d68703d272a390c1b91c88daa7c8d3602b4743fed4756ba4d228fe1",
           "applications": {
             "zotero": {
               "strict_min_version": "7.0",
