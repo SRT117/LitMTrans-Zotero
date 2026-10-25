@@ -253,6 +253,9 @@
       this.diagnosticBusy = false;
       this._initialized = false;
       this.availableUpdate = null;
+      this.updateNoticePanel = null;
+      this.updateNoticeWindow = null;
+      this.notifiedUpdateVersions = new Set();
       this.announcements = [];
       const AgentBackend = LitMTrans.Agent?.AgentBackend || LitMTrans.AgentBackend;
       this.agent = AgentBackend ? new AgentBackend(this) : null;
@@ -539,6 +542,101 @@
       }
     }
 
+    closeUpdateNotice() {
+      const panel = this.updateNoticePanel;
+      this.updateNoticePanel = null;
+      this.updateNoticeWindow = null;
+      if (!panel) return;
+      try { panel.hidePopup(); } catch (_) {}
+      try { panel.remove(); } catch (_) {}
+    }
+
+    showAvailableUpdateNotice(win = null) {
+      const update = this.availableUpdate;
+      if (this._cajShuttingDown || !U.getPref("autoUpdate", true) || !update?.hasUpdate || !update.version) return false;
+      if (this.notifiedUpdateVersions?.has(update.version)) return false;
+      const target = win?.document ? win
+        : [...(this.windows || [])][0] || Zotero.getMainWindow?.()
+          || (typeof Services !== "undefined" ? Services.wm?.getMostRecentWindow("navigator:browser") : null);
+      const doc = target?.document;
+      if (!doc?.createXULElement || !doc.documentElement) return false;
+      let panel = null;
+      try {
+        this.closeUpdateNotice();
+        panel = doc.createXULElement("panel");
+        panel.id = "litmtrans-update-notice";
+        panel.setAttribute("type", "arrow");
+        panel.setAttribute("noautohide", "true");
+        panel.setAttribute("role", "region");
+        panel.style.cssText = "max-width: min(440px, calc(100vw - 32px));";
+
+        const box = doc.createXULElement("vbox");
+        box.style.cssText = "padding: 12px; gap: 9px;";
+        const title = doc.createXULElement("label");
+        title.setAttribute("value", "LitMTrans 有可用更新");
+        title.style.cssText = "font-weight: 600;";
+        const description = doc.createXULElement("description");
+        description.textContent = `发现新版本 v${update.version}，可以立即安装，或稍后再更新。`;
+        description.style.cssText = "max-width: 405px; white-space: pre-wrap;";
+        const status = doc.createXULElement("description");
+        status.style.cssText = "max-width: 405px; white-space: pre-wrap;";
+        const buttons = doc.createXULElement("hbox");
+        buttons.style.cssText = "gap: 8px; justify-content: flex-end;";
+        const later = doc.createXULElement("button");
+        later.setAttribute("label", "稍后");
+        later.addEventListener("command", () => this.closeUpdateNotice());
+        const install = doc.createXULElement("button");
+        install.setAttribute("label", "立即安装");
+        install.addEventListener("command", async () => {
+          if (install.disabled || this._cajShuttingDown) return;
+          const activeWork = [...(this.operations?.values() || [])].some(tasks => tasks?.size > 0);
+          if (activeWork) {
+            status.textContent = "有文献任务正在运行，请在任务结束后安装更新。";
+            return;
+          }
+          install.disabled = true;
+          later.disabled = true;
+          status.textContent = "正在下载并校验更新包...";
+          try {
+            await this.applyUpdate({ updateInfo: update }, progress => {
+              if (progress?.message) status.textContent = progress.message;
+            });
+            this.availableUpdate = null;
+            this.closeUpdateNotice();
+          }
+          catch (error) {
+            status.textContent = `更新失败：${error?.message || error}。可重试或稍后更新。`;
+            install.disabled = false;
+            later.disabled = false;
+          }
+        });
+        buttons.append(later, install);
+        box.append(title, description, status, buttons);
+        panel.appendChild(box);
+        panel.addEventListener("popuphidden", () => {
+          if (this.updateNoticePanel === panel) {
+            this.updateNoticePanel = null;
+            this.updateNoticeWindow = null;
+          }
+          panel.remove();
+        }, { once: true });
+        doc.documentElement.appendChild(panel);
+        const x = Number(target.screenX || 0) + Math.max(16, Number(target.outerWidth || 520) - 455);
+        const y = Number(target.screenY || 0) + Math.max(24, Number(target.outerHeight || 300) - 230);
+        panel.openPopupAtScreen(x, y, false);
+        this.updateNoticePanel = panel;
+        this.updateNoticeWindow = target;
+        this.notifiedUpdateVersions ||= new Set();
+        this.notifiedUpdateVersions.add(update.version);
+        return true;
+      }
+      catch (error) {
+        try { panel?.remove(); } catch (_) {}
+        this.log(`Unable to display update notice: ${error?.message || error}`);
+        return false;
+      }
+    }
+
     scheduleAutoUpdateCheck() {
       if (this.autoUpdateStartupTimer) {
         clearTimeout(this.autoUpdateStartupTimer);
@@ -554,7 +652,9 @@
         if (checking || this._cajShuttingDown) return;
         const lastCheck = Number(U.getPref("lastUpdateCheckTime", "0")) || 0;
         const oneDayMs = 24 * 60 * 60 * 1000;
-        const updateDue = U.getPref("autoUpdate", true) && Date.now() - lastCheck >= oneDayMs;
+        // Every Zotero startup must compare plugin versions; the daily interval
+        // applies only while Zotero stays open.
+        const updateDue = U.getPref("autoUpdate", true) && (startup || Date.now() - lastCheck >= oneDayMs);
         if (!startup && !updateDue) return;
 
         checking = true;
@@ -585,8 +685,12 @@
       if (this._cajShuttingDown) return result;
       this.syncPaddleModel(result?.parserModels);
       if (!announcementsOnly) U.setPref("lastUpdateCheckTime", String(Date.now()));
-      if (result && result.hasUpdate) {
-        this.availableUpdate = result;
+      if (!announcementsOnly) {
+        this.availableUpdate = result?.hasUpdate ? result : null;
+        if (!result?.hasUpdate) this.closeUpdateNotice();
+        if (result?.hasUpdate && !manual && U.getPref("autoUpdate", true)) {
+          this.showAvailableUpdateNotice();
+        }
       }
       if (Array.isArray(result?.announcements)) {
         this.announcements = result.announcements;
@@ -643,6 +747,7 @@
 
     async shutdown() {
       this._cajShuttingDown = true;
+      this.closeUpdateNotice();
       try { await this.agent?.shutdown?.(); }
       catch (error) { this.log(`Agent backend 关闭失败: ${error?.message || error}`); }
       for (const cancel of this._cajWorkerTasks || []) cancel();
@@ -2666,6 +2771,8 @@
       catch (error) { Zotero.logError(error); }
 
       this.bindWindowItemInteractions(win);
+      // Handle a successful check that finished before this window existed.
+      this.showAvailableUpdateNotice(win);
     }
 
     removeFromWindow(win) {
@@ -2673,6 +2780,7 @@
       try { if (win.LitMTransController === this) delete win.LitMTransController; }
       catch (_) {}
       this.windows.delete(win);
+      if (this.updateNoticeWindow === win) this.closeUpdateNotice();
       const doc = win.document;
       try { doc.getElementById("litmtrans-tools-menuitem")?.remove(); } catch (_) {}
       try { doc.querySelector('link[href="litmtrans.ftl"]')?.remove(); } catch (_) {}

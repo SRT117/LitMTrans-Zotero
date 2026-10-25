@@ -151,9 +151,9 @@ if (manifest.author !== "SRT117") fail("manifest author must be SRT117");
 if (manifest.applications.zotero.id !== "litmtrans@srt117.github.io") fail("public add-on ID changed");
 const releaseUpdateURL = process.env.LITMTRANS_RELEASE_UPDATE_URL || "";
 const manifestUpdateURL = manifest.applications.zotero.update_url || "";
-const githubUpdateURL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\/latest\/download\/update\.json$/;
-if (!githubUpdateURL.test(manifestUpdateURL)) {
-  fail("manifest update_url must point to GitHub Releases latest/download/update.json");
+const giteeUpdateURL = /^https:\/\/gitee\.com\/[^/]+\/[^/]+\/raw\/main\/update\.json$/;
+if (!giteeUpdateURL.test(manifestUpdateURL)) {
+  fail("manifest update_url must point to Gitee main/update.json");
 }
 if (releaseUpdateURL && manifestUpdateURL !== releaseUpdateURL) {
   fail("release workflow did not inject the expected manifest update_url");

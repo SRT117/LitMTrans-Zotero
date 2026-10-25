@@ -23,9 +23,9 @@ jobs:
           if ("v$($manifest.version)" -ne "${{ github.ref_name }}") {
             throw "Tag must equal v$($manifest.version)."
           }
-          $manifest.applications.zotero | Add-Member -NotePropertyName update_url -NotePropertyValue "https://github.com/${{ github.repository }}/releases/latest/download/update.json" -Force
+          $manifest.applications.zotero | Add-Member -NotePropertyName update_url -NotePropertyValue "https://gitee.com/${{ github.repository }}/raw/main/update.json" -Force
           $manifest | ConvertTo-Json -Depth 10 | Set-Content manifest.json -Encoding utf8NoBOM
-          "LITMTRANS_RELEASE_UPDATE_URL=https://github.com/${{ github.repository }}/releases/latest/download/update.json" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LITMTRANS_RELEASE_UPDATE_URL=https://gitee.com/${{ github.repository }}/raw/main/update.json" | Out-File -FilePath $env:GITHUB_ENV -Append
       - run: npm ci
       - run: npm run build:windows
       - name: Create update manifest
