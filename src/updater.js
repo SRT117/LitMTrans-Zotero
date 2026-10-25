@@ -8,10 +8,10 @@
   const GITEE_UPDATE_URL = `https://gitee.com/${REPO}/raw/main/update.json`;
   const OFFICIAL_UPDATE_URL = `https://github.com/${REPO}/releases/latest/download/update.json`;
 
+  // Gitee is authoritative for domestic users; GitHub is a fallback only.
   const UPDATE_MANIFEST_SOURCES = [
     GITEE_UPDATE_URL,
-    OFFICIAL_UPDATE_URL,
-    `https://ghproxy.net/${OFFICIAL_UPDATE_URL}`
+    OFFICIAL_UPDATE_URL
   ];
 
   function getDownloadMirrors(officialUpdateLink) {
@@ -21,17 +21,12 @@
     const githubReleasePrefix = `https://github.com/${REPO}/releases/download/`;
     const giteeReleasePrefix = `https://gitee.com/${REPO}/releases/download/`;
 
-    const githubMirrors = githubUrl => [
-      `https://ghproxy.net/${githubUrl}`,
-      githubUrl
-    ];
-
     if (rawUrl.startsWith(giteeReleasePrefix)) {
       const githubUrl = rawUrl.replace(
         giteeReleasePrefix,
         githubReleasePrefix
       );
-      return [rawUrl, ...githubMirrors(githubUrl)];
+      return [rawUrl, githubUrl];
     }
 
     if (rawUrl.startsWith(githubReleasePrefix)) {
@@ -39,11 +34,11 @@
         githubReleasePrefix,
         giteeReleasePrefix
       );
-      return [giteeUrl, ...githubMirrors(rawUrl)];
+      return [giteeUrl, rawUrl];
     }
 
     if (rawUrl.startsWith("https://github.com/")) {
-      return githubMirrors(rawUrl);
+      return [rawUrl];
     }
 
     return [rawUrl];
@@ -280,14 +275,10 @@
         onProgress({ stage: "probing", message: "正在探测可用更新通道..." });
       }
 
-      const controllers = UPDATE_MANIFEST_SOURCES.map(() => {
-        return LitMTrans.Utils?.newAbortController
+      const fetchOne = async url => {
+        const controller = LitMTrans.Utils?.newAbortController
           ? LitMTrans.Utils.newAbortController()
           : (typeof AbortController === "function" ? new AbortController() : null);
-      });
-
-      const fetchOne = async (url, index) => {
-        const controller = controllers[index];
         let timer = null;
         try {
           if (controller && timeoutMs > 0) {
@@ -333,35 +324,20 @@
         }
       };
 
-      const settled = await Promise.allSettled(
-        UPDATE_MANIFEST_SOURCES.map((url, idx) => fetchOne(url, idx))
-      );
-      const successful = [];
       const errors = [];
-
-      settled.forEach((item, idx) => {
-        if (item.status === "fulfilled") {
-          successful.push(item.value);
+      // Prefer the Gitee release manifest for domestic users. Only try GitHub
+      // if Gitee is offline or its manifest is invalid; never wait for a slow
+      // fallback when the primary channel already succeeded.
+      for (const url of UPDATE_MANIFEST_SOURCES) {
+        try {
+          return await fetchOne(url);
         }
-        else {
-          errors.push(`${UPDATE_MANIFEST_SOURCES[idx]}: ${item.reason?.message || String(item.reason)}`);
+        catch (error) {
+          errors.push(`${url}: ${error?.message || String(error)}`);
+          log(`Update manifest source failed: ${url}: ${error?.message || error}`);
         }
-      });
-
-      if (!successful.length) {
-        throw new Error(`无法连接更新元数据服务器: 所有节点均不可达（${errors.join("; ")}）`);
       }
-
-      // Multiple mirrors can briefly disagree while a release is propagating.
-      // Prefer the newest valid manifest instead of whichever endpoint responds first.
-      const manifest = successful.reduce((best, candidate) => (
-        compareVersions(candidate.version, best.version) > 0 ? candidate : best
-      ));
-      // 模型目录独立于插件版本更新，优先采用修订号最高的有效目录。
-      const parserModels = successful.reduce((best, candidate) => (
-        (candidate.parserModels?.revision || 0) > (best?.revision || 0) ? candidate.parserModels : best
-      ), null);
-      return { ...manifest, parserModels };
+      throw new Error(`无法连接更新元数据服务器: 所有节点均不可达（${errors.join("; ")}）`);
     },
 
     async checkUpdate(currentVersion, onProgress = null) {
@@ -400,7 +376,10 @@
             onProgress({ stage: "downloading", message: `正在加速下载更新包 (v${version})...` });
           }
           log(`Downloading XPI from: ${url}`);
-          const bytes = await fetchBytesWithFullTimeout(url, 120000, onProgress);
+          // Fail over from a slow Gitee release download instead of blocking
+          // the user's update for the full generic download timeout.
+          const downloadTimeout = url.startsWith("https://gitee.com/") ? 45000 : 120000;
+          const bytes = await fetchBytesWithFullTimeout(url, downloadTimeout, onProgress);
 
           if (!bytes || bytes.byteLength < 1024) {
             lastErr = new Error("下载的文件过小或损坏");

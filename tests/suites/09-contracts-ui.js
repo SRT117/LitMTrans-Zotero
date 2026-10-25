@@ -878,7 +878,7 @@ async function testUpdaterContractsAndSafety() {
   assert(updaterCode.includes("fetchBytesWithFullTimeout"), "updater must enforce body-covering download timeout");
   assert(updaterCode.includes("onDownloadFailed") && updaterCode.includes("onInstallCancelled") && updaterCode.includes("install.cancel()"), "updater must handle full install lifecycle");
   assert(updaterCode.includes("candidateId !== ADDON_ID"), "updater must verify addon id before installing");
-  assert(updaterCode.includes("fetchBytesWithFullTimeout(url, 120000, onProgress)"), "download must pass onProgress callback");
+  assert(updaterCode.includes("fetchBytesWithFullTimeout(url, downloadTimeout, onProgress)"), "download must pass onProgress callback");
   assert(controllerCode.includes("this.autoUpdateTimer = setInterval"), "controller must establish periodic auto-update check interval");
 
   const workbenchCode = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
@@ -1035,12 +1035,87 @@ async function testAnnouncementSystemContracts() {
   assert(manifestScript.includes("compareVersionBounds"), "manifest generation must validate announcement version bounds");
 }
 
+
+async function testDomesticUpdaterPriorityAndMainWindowNotice() {
+  const updaterCode = fs.readFileSync(path.join(root, "src", "updater.js"), "utf8");
+  const controllerCode = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  assert(!updaterCode.includes("ghproxy.net"), "proxy must be completely removed");
+  assert(controllerCode.includes("showAvailableUpdateNotice"), "startup update must have an actionable main-window notice");
+  assert(controllerCode.includes("startup || Date.now() - lastCheck"), "each startup must bypass the daily version cooldown");
+  const visited = [];
+  let failGitee = false;
+  const sandbox = { LitMTrans: {}, fetch: async url => {
+    visited.push(url);
+    if (failGitee && url.startsWith("https://gitee.com/")) throw new Error("offline");
+    return { ok: true, json: async () => ({
+      addons: { "litmtrans@srt117.github.io": { updates: [{
+        version: url.startsWith("https://gitee.com/") ? "2.1.5" : "2.1.6",
+        update_hash: `sha256:${"a".repeat(64)}`,
+        update_link: "https://github.com/SRT117/LitMTrans-Zotero/releases/download/v2.1.5/litmtrans.xpi"
+      }] } },
+      announcements: []
+    }) };
+  }};
+  vm.runInNewContext(updaterCode, sandbox);
+  const updater = sandbox.LitMTrans.Updater;
+  assert.equal((await updater.fetchUpdateManifest()).version, "2.1.5");
+  assert.equal(visited.length, 1, "healthy Gitee must avoid any GitHub request");
+  failGitee = true;
+  assert.equal((await updater.fetchUpdateManifest()).version, "2.1.6");
+  assert(visited[1].startsWith("https://gitee.com/") && visited[2].startsWith("https://github.com/"),
+    "fallback must run only after a failed Gitee request");
+
+  const prefs = new Map([["autoUpdate", true]]);
+  const ui = { nodes: [], shown: 0, removed: 0 };
+  function makeNode() {
+    const listeners = {};
+    const node = {
+      style: {}, children: [], disabled: false,
+      setAttribute(key, value) { this[key] = value; },
+      addEventListener(key, callback) { listeners[key] = callback; },
+      append(...items) { this.children.push(...items); },
+      appendChild(item) { this.children.push(item); },
+      remove() { ui.removed++; },
+      hidePopup() {},
+      openPopupAtScreen() { ui.shown++; },
+      fire(key) { listeners[key]?.(); }
+    };
+    ui.nodes.push(node);
+    return node;
+  }
+  const doc = { createXULElement: makeNode, documentElement: { appendChild() {} } };
+  const win = { document: doc, screenX: 0, screenY: 0, outerWidth: 1200, outerHeight: 800 };
+  const local = {
+    LitMTrans: { DiagramCache: { TASK_TYPES: [], MAX_CHARS: 10000 }, Utils: { getPref: (key, fallback) => prefs.has(key) ? prefs.get(key) : fallback } },
+    Zotero: { getMainWindow: () => win },
+    Services: { wm: { getMostRecentWindow: () => win } }
+  };
+  vm.runInNewContext(controllerCode, local);
+  const ctl = Object.create(local.LitMTrans.Controller.prototype);
+  ctl.availableUpdate = { hasUpdate: true, version: "2.1.5" };
+  ctl.notifiedUpdateVersions = new Set();
+  ctl.windows = new Set([win]);
+  ctl.operations = new Map();
+  assert.equal(ctl.showAvailableUpdateNotice(), true);
+  assert.equal(ui.shown, 1);
+  assert.equal(ctl.showAvailableUpdateNotice(), false, "same version must not interrupt twice");
+  const box = ctl.updateNoticePanel.children[0];
+  const buttons = box.children[3];
+  assert.equal(buttons.children[0].label, "稍后");
+  assert.equal(buttons.children[1].label, "立即安装");
+  buttons.children[0].fire("command");
+  assert.equal(ctl.updateNoticePanel, null, "later must dismiss without installing");
+  prefs.set("autoUpdate", false);
+  ctl.availableUpdate.version = "2.1.6";
+  assert.equal(ctl.showAvailableUpdateNotice(), false, "user opt-out must suppress notices");
+}
+
 async function testPaddleModelCatalogSync() {
   const values = new Map();
   const catalog = (revision, model, extra = {}) => ({ revision, paddle: {
     model, minPluginVersion: "2.1.3", apiProtocol: "aistudio-jobs-v2", resultSchema: "paddle-layout-blocks-v1", ...extra
   } });
-  let catalogs = [catalog(2, "PaddleOCR-VL-1.7"), catalog(1, "PaddleOCR-VL-1.6"), catalog(99, "PaddleOCR-VL-9", { apiProtocol: "unknown" })];
+  let catalogs = [catalog(2, "PaddleOCR-VL-1.7"), catalog(1, "PaddleOCR-VL-1.6")];
   let fail = false;
   const sandbox = {
     LitMTrans: {
@@ -1066,26 +1141,26 @@ async function testPaddleModelCatalogSync() {
   const parser = Object.create(sandbox.LitMTrans.DocumentParserService.prototype);
   const runningOptions = parser.options({ parseProvider: "paddle" });
   const result = await controller.checkForUpdates({ announcementsOnly: true });
-  assert.equal(result.version, "2.2.0", "plugin update selection must still use the newest plugin version");
-  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "model catalog must use its own revision across mirrors");
+  assert.equal(result.version, "2.1.1", "Gitee must be authoritative while available");
+  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "primary Gitee catalog must apply its revision");
   assert.equal(values.get("paddleModelCatalogRevision"), 2);
   assert.equal(parser.options({ parseProvider: "paddle" }).parseModel, "PaddleOCR-VL-1.7", "new parsing tasks must use the synced model");
   assert.equal(runningOptions.parseModel, "PaddleOCR-VL-1.6", "existing task options must remain fixed");
   assert.equal(values.has("parseProvider"), false, "model sync must not switch the user's parser provider");
 
-  catalogs = [catalog(1, "PaddleOCR-VL-1.6"), null, null];
+  catalogs = [catalog(1, "PaddleOCR-VL-1.6"), null];
   await controller.checkForUpdates();
   assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "stale mirrors must not roll back the model");
-  catalogs = [catalog(3, "PaddleOCR-VL-1.8", { minPluginVersion: "9.0.0" }), null, null];
+  catalogs = [catalog(3, "PaddleOCR-VL-1.8", { minPluginVersion: "9.0.0" }), null];
   await controller.checkForUpdates();
   assert.equal(values.get("paddleModelCatalogRevision"), 2, "incompatible plugin requirements must not consume a revision");
   for (const invalid of [catalog(3, ""), catalog(3, "PaddleOCR-VL-1.8\r\n"), catalog(3, "PaddleOCR-VL-1.8\n"), catalog(3, "PP-OCRv6"),
     catalog(3, "PaddleOCR-VL-1.8", { resultSchema: "unknown" }), catalog(3, "PaddleOCR-VL-1.8", { minPluginVersion: "oops" })]) {
-    catalogs = [invalid, null, null];
+    catalogs = [invalid, null];
     await controller.checkForUpdates();
     assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "invalid or incompatible models must not change settings");
   }
-  catalogs = [catalog(3, "PaddleOCR-VL-1.8"), null, null];
+  catalogs = [catalog(3, "PaddleOCR-VL-1.8"), null];
   await controller.checkForUpdates();
   assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.8", "regular update checks must also propagate the catalog");
   values.set("paddleModel", "accidentally-edited");
@@ -1167,9 +1242,9 @@ async function testAnnouncementStartupScheduling() {
 
   values.set("lastUpdateCheckTime", String(now));
   await start();
-  assert.equal(fetches, 3, "startup must fetch announcements even within the daily update interval");
-  assert.equal(values.get("lastUpdateCheckTime"), String(now), "announcement-only fetch must not postpone version checks");
-  assert.equal(controller.availableUpdate, null, "announcement-only fetch must not announce a new version");
+  assert.equal(fetches, 1, "startup must compare versions using Gitee even within the daily interval");
+  assert(Number(values.get("lastUpdateCheckTime")) >= now, "successful startup version checks must record their time");
+  assert.equal(controller.availableUpdate?.version, "2.2.0", "startup must recognize an available version");
   assert.equal(controller.getAnnouncementsForWorkbench().pendingAlert.id, notice.id);
   assert.equal(logs.length, 0, "normal startup fetch must not append diagnostic logs");
   controller.dismissAnnouncement(notice.id);
@@ -1195,12 +1270,12 @@ async function testAnnouncementStartupScheduling() {
   values.set("autoUpdate", false);
   values.set("lastUpdateCheckTime", "0");
   await start();
-  assert.equal(fetches, 12, "disabling version updates must not suppress startup announcements");
+  assert.equal(fetches, 4, "disabling version updates must not suppress startup announcements");
   assert.equal(values.get("lastUpdateCheckTime"), "0");
-  assert.equal(controller.availableUpdate, null);
+  assert.equal(controller.availableUpdate?.version, "2.2.0");
   timers.get(controller.autoUpdateTimer).callback();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fetches, 12, "periodic version checks must respect the auto-update setting");
+  assert.equal(fetches, 4, "periodic version checks must respect the auto-update setting");
 
   values.set("autoUpdate", true);
   fail = true;
@@ -1214,7 +1289,7 @@ async function testAnnouncementStartupScheduling() {
   fail = false;
   const beforeRetry = fetches;
   await start();
-  assert.equal(fetches, beforeRetry + 3, "due version and announcement checks must share one manifest fetch");
+  assert.equal(fetches, beforeRetry + 1, "due version and announcement checks must share one Gitee request");
   assert(Number(values.get("lastUpdateCheckTime")) >= now);
   assert.equal(controller.availableUpdate.version, "2.2.0");
 
@@ -1369,6 +1444,7 @@ async function testSettingsAutoSaveIsolationAndFailure() {
     testDeepSeekWebDriverSessionActionAndRetryContracts,
     testAnnouncementSystemContracts,
     testAnnouncementStartupScheduling,
+    testDomesticUpdaterPriorityAndMainWindowNotice,
     testPaddleModelCatalogSync,
     testPaddleModelCatalogPublication,
     testSettingsAutoSaveIsolationAndFailure,
