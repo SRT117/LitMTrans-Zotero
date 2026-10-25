@@ -72,6 +72,7 @@
     chatRenderMarkdown: true,
     expandedMessageIDs: new Set(),
     previewImage: null,
+    previewTable: null,
     previewScale: 1,
     previewFormulaTarget: null,
     previewFormulaTeX: "",
@@ -92,7 +93,8 @@
     exportSelectedKind: ""
   };
   // Bump when the print snapshot format changes.
-  const LAYOUT_PDF_EXPORT_REVISION = 24;
+  const LAYOUT_PDF_EXPORT_REVISION = 26;
+  let readerPrintSnapshotTask = Promise.resolve();
   // 开发诊断仍保留在日志和状态中，但暂不展示给普通用户。
   const SHOW_DEVELOPMENT_PROBES_IN_USER_UI = false;
 
@@ -125,6 +127,16 @@
   let promptLibrarySavePromise = null;
   let promptLibrarySaveRevision = 0;
   let promptLibrarySavedRevision = 0;
+  let tableInteraction = false;
+  let tableSupplementRunning = false;
+  let tablePreferenceSaving = false;
+  let tablePreferenceRevision = 0;
+  let tableOpenChecked = "";
+  let tableOpenResolved = "";
+  let tableDecisionQueue = Promise.resolve();
+  let manualTablesOnly = false;
+  let manualTableContext = null;
+  let openTableManualTranslation = null;
 
   const $ = id => document.getElementById(id);
   const els = {};
@@ -171,9 +183,9 @@
       "manual-translate-button", "translate-button", "stop-button", "export-pdf-button", "clean-reader-button", "clean-reader-ai-button", "settings-button",
       "log-toggle", "log-drawer", "log-content", "log-clear", "log-close", "stream-mode-button", "layout-mode-button",
       "both-panes-button", "source-only-button", "translation-only-button",
-      "sync-scroll-check",
+      "sync-scroll-check", "translate-tables-check", "translate-tables-control",
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button", "prompt-library-button",
-      "copy-source-markdown-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
+      "copy-source-markdown-button", "supplement-ocr-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
       "translation-layout", "empty-actions", "empty-parse-only-button", "empty-parse-button", "native-pdf-selection-toolbar", "native-pdf-ask-button",
       "system-messages-button", "system-messages-badge", "system-messages-dialog", "task-messages-list", "system-messages-list", "close-system-messages",
@@ -192,7 +204,7 @@
       "setting-chat-provider", "setting-chat-provider-label", "setting-chat-base-url", "setting-chat-model", "refresh-chat-models-button",
       "setting-chat-api-key", "setting-chat-thinking-mode", "setting-chat-reasoning-effort", "provider-cards-button",
       "setting-chat-image-group", "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
-      "setting-mineru-token", "setting-mineru-model",
+      "setting-mineru-token", "setting-mineru-model", "setting-parse-provider", "setting-paddle-token", "setting-mineru-fields", "setting-paddle-fields",
       "setting-target-language", "setting-target-language-picker", "setting-machine-source-language-group", "setting-machine-source-language", "setting-machine-source-language-picker", "setting-translation-mode",
       "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-link-dialog", "mineru-token-link-dialog-title", "close-mineru-token-link-dialog", "mineru-token-link-guide", "mineru-token-link-direct", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation", "open-ai-websites-button", "ai-websites-dialog", "close-ai-websites-button", "dismiss-ai-websites-button", "web-mode-info-dialog", "close-web-mode-info-button", "dismiss-web-mode-info-button",
       "export-dialog", "export-dialog-close", "export-dialog-cancel", "export-dialog-confirm", "export-option-list", "export-empty",
@@ -216,6 +228,7 @@
       "save-provider-card", "apply-provider-card",
       "image-preview-dialog", "image-preview-image", "image-preview-scale", "image-preview-zoom-out", "image-preview-zoom-in",
       "image-preview-fit", "image-preview-reuse", "image-preview-copy", "image-preview-save", "image-preview-close",
+      "table-preview-content", "table-preview-body", "table-preview-copy", "table-preview-save-html",
       "prompt-library-dialog", "prompt-library-close", "prompt-library-done", "prompt-library-list", "prompt-library-new",
       "prompt-library-delete", "prompt-library-title", "prompt-library-content", "prompt-library-copy", "prompt-library-save-state",
       "formula-preview-dialog", "formula-preview-viewport", "formula-preview-stage", "formula-preview-body",
@@ -373,6 +386,7 @@
       ? Markdown.injectSyncAnchors(source)
       : source;
     return Markdown.renderMarkdown(source, {
+      parseProvider: options.parseProvider,
       resolveImage: imageResolver,
       imageLoading: options.imageLoading,
       resolveImageWidth: target => {
@@ -698,7 +712,7 @@
     // Translation starts with parsing when needed, then proceeds as either
     // stream or layout translation. Chat and document attachment work stay
     // within the sidebar and must never cover the reader with this popup.
-    return ["parse", "translate", "layout"].includes(String(operation || ""));
+    return ["parse", "translate", "layout", "layout-lines"].includes(String(operation || ""));
   }
 
   function setStatus(message, progress = null, kind = "neutral") {
@@ -726,6 +740,7 @@
 
   function updateOperationUI() {
     const running = state.running.size > 0;
+    if (els["translate-tables-check"]) els["translate-tables-check"].disabled = (tableInteraction && !tableSupplementRunning) || tablePreferenceSaving || exportBusy;
     els["stop-button"].hidden = !running;
     els["translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
     els["manual-translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
@@ -750,6 +765,12 @@
     els["chat-document-button"].disabled = isChatRunning || isDocRunning;
     if (els["copy-source-markdown-button"]) {
       els["copy-source-markdown-button"].disabled = copySourceMarkdownBusy || state.running.has("parse");
+    }
+    if (els["supplement-ocr-button"]) {
+      const detection = state.data?.layout?.model?.lineDetection;
+      els["supplement-ocr-button"].hidden = !(state.data?.parsed?.meta?.parseProvider === "paddle"
+        && detection?.kind === "mixed" && detection.missingPages?.length);
+      els["supplement-ocr-button"].disabled = running;
     }
     renderPendingDocuments();
     if (!running && state.progress >= 100) setTimeout(() => {
@@ -864,6 +885,10 @@
       if (label && label.classList.contains("busy") && event.message) {
         label.textContent = event.message;
       }
+      return;
+    }
+    if (type === "table-preference") {
+      void changeTablePreference(event.enabled, { external: true });
       return;
     }
     if (type === "announcements-updated") {
@@ -1038,7 +1063,13 @@
       state.data.layout = state.data.layout || {};
       state.data.layout.translations = event.translations || {};
       state.data.layout.model = event.model || state.data.layout.model;
-      state.data.layout.meta = { ...(state.data.layout.meta || {}), complete: Boolean(event.complete), translatedBlocks: event.translatedBlocks, totalBlocks: event.totalBlocks };
+      state.data.layout.meta = {
+        ...(state.data.layout.meta || {}),
+        ...(event.meta || {}),
+        complete: Boolean(event.complete),
+        translatedBlocks: event.translatedBlocks,
+        totalBlocks: event.totalBlocks
+      };
       // Layout geometry is a document-wide solve.  Publishing each group
       // tears down the page while formula and text measurements are changing,
       // so retain the last stable DOM and publish this model only as one unit.
@@ -1117,6 +1148,7 @@
     renderedTranslationMarkdown = null;
     renderedSourceMarkdown = null;
     state.settings = mergePromptLibraryDraft(data?.settings || state.settings);
+    els["translate-tables-check"].checked = state.settings?.translateTables !== false;
     if (!state.aiModeInitialized) {
       state.aiModeInitialized = true;
       const preferredMode = (state.settings?.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
@@ -1174,6 +1206,7 @@
       if (pages.length) void ensureLayoutFit(pages);
     }
     updateOperationUI();
+    queueTableOpenCheck();
   }
 
   function applyReaderTheme(theme) {
@@ -1220,7 +1253,10 @@
         return;
       }
       sourcePDFAvailable = Boolean(result?.available);
-      if (sourcePDFAvailable) applyReaderTheme(result.theme);
+      if (sourcePDFAvailable) {
+        applyReaderTheme(result.theme);
+        els["translation-layout"]?._litmtransBgManager?.refreshVisible?.();
+      }
       sourcePDFLoading = false;
       sourcePDFRetryBlocked = false;
       if (!sourcePDFAvailable) {
@@ -1303,6 +1339,7 @@
   }
 
   function renderStreamPanes() {
+    const parseProvider = state.data?.parsed?.meta?.parseProvider;
     // MinerU can misread PDF equation-reference parentheses as `\~2!`.
     // Normalize only the display copy; parsed Markdown remains byte-for-byte
     // available for cache identity, retranslation, and export.
@@ -1311,7 +1348,7 @@
       String(state.data?.parsed?.markdown || "")
     );
     if (source !== renderedSourceMarkdown) {
-      if (source) renderMarkdownInto(els["source-content"], source, { syncAnchors: true, imageLoading: "eager" });
+      if (source) renderMarkdownInto(els["source-content"], source, { syncAnchors: true, imageLoading: "eager", parseProvider });
       else els["source-content"].replaceChildren();
       renderedSourceMarkdown = source;
     }
@@ -1332,7 +1369,7 @@
     els["translation-content"].hidden = !translation || state.mode !== "stream";
     if (translation !== renderedTranslationMarkdown) {
       if (liveTranslation) replaceLiveTranslationPreview(translation);
-      else if (translation) renderMarkdownInto(els["translation-content"], translation, { syncAnchors: true, imageLoading: "eager" });
+      else if (translation) renderMarkdownInto(els["translation-content"], translation, { syncAnchors: true, imageLoading: "eager", parseProvider });
       else els["translation-content"].replaceChildren();
       renderedTranslationMarkdown = translation;
     }
@@ -1494,7 +1531,7 @@
     return equation.body;
   }
 
-  function renderLayoutTranslatedText(text) {
+  function renderLayoutTranslatedText(text, preserveLineBreaks = false) {
     // Layout translations are stored as plain text blocks.  Models can retain
     // TeX but omit its delimiters (for example `\\sigma _ { t }`), which
     // makes the inline renderer show the source literally.  Use the same
@@ -1511,7 +1548,7 @@
     const repaired = Markdown.normalizeBareTeXFragments
       ? Markdown.normalizeBareTeXFragments(normalized)
       : normalized;
-    return Markdown.renderInline(repaired, { resolveImage: imageResolver });
+    return Markdown.renderInline(preserveLineBreaks ? repaired.replace(/\r\n?|\n/g, "<br />") : repaired, { resolveImage: imageResolver });
   }
 
   function renderLayoutTocRows(rows) {
@@ -1532,6 +1569,10 @@
   }
 
   function layoutBlockHTML(block, translated, useTranslation = false) {
+    if (useTranslation && block.translatedTableHTML) {
+      return `<div class="layout-table-original">${layoutBlockHTML({ ...block, translatedTableHTML: "" }, "", false)}</div>`
+        + `<div class="layout-translated-table" hidden="hidden">${block.translatedTableHTML}</div>`;
+    }
     if (block.kind === "image" && block.imageURL) {
       return `<img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`;
     }
@@ -1565,7 +1606,7 @@
     if (!translated && block.sourceHTML) return markLayoutCitationSupers(restoreLayoutDOIWraps(block.sourceHTML, block.text, true), block.sourceHTML);
     translated = restoreLayoutDOIWraps(translated, block.text);
     const html = useTranslation
-      ? renderLayoutTranslatedText(translated)
+      ? renderLayoutTranslatedText(translated, Layout?.isKeywordListText?.(block.text))
       : Markdown.renderInline(translated, { resolveImage: imageResolver });
     return markLayoutCitationSupers(html, block.sourceHTML || Markdown.renderInline(String(block.text || ""), { resolveImage: imageResolver }));
   }
@@ -1608,27 +1649,41 @@
     const translated = String(part?.translatedText || "");
     const sourceHTML = part?.html || Markdown.renderInline(String(part?.text || ""), { resolveImage: imageResolver });
     const html = useTranslation && translated
-      ? renderLayoutTranslatedText(restoreLayoutDOIWraps(translated, part.text))
+      ? renderLayoutTranslatedText(restoreLayoutDOIWraps(translated, part.text), Layout?.isKeywordListText?.(part.text))
       : !useTranslation && part?.html ? restoreLayoutDOIWraps(part.html, part.text, true)
       : Markdown.renderInline(restoreLayoutDOIWraps(part?.text, part?.text), { resolveImage: imageResolver });
     return markLayoutCitationSupers(html, sourceHTML);
   }
 
   function markLayoutCitationSupers(html, sourceHTML) {
-    if (!/<sup\b/i.test(html) || !/<sup\b/i.test(sourceHTML)) return html;
+    if (!/<sup\b|litmtrans-math-inline|katex/i.test(html) || !/<sup\b|litmtrans-math-inline|katex/i.test(sourceHTML)) return html;
     const source = document.createElement('div'), rendered = document.createElement('div');
     safeSetElementHTML(source, sourceHTML);
     safeSetElementHTML(rendered, html);
     const normalize = text => text.replace(/\s/g, '').replace(/[–−]/g, '-');
-    const eligible = sup => {
-      if (sup.closest('a, code, pre, .layout-formula, .katex, .litmtrans-math')) return false;
-      if (!/^\s*\d+(?:\s*[-–−]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−]\s*\d+)?)*\s*$/.test(sup.textContent)) return false;
+    const eligible = (sup, text = sup.textContent, math = false) => {
+      if ((math ? sup.parentElement : sup)?.closest('a, code, pre, .layout-formula, .katex, .litmtrans-math')) return false;
+      if (!/^\s*\d+(?:\s*[-–−]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−]\s*\d+)?)*\s*$/.test(text)) return false;
       const before = sup.previousSibling;
       if (before?.nodeType === Node.ELEMENT_NODE && (before.matches('sub, sup, .katex, .litmtrans-math') || before.querySelector('.katex, .litmtrans-math'))) return false;
       // 普通 HTML 中的变量和单位指数也不作为文献引用。
       return !/(?:^|[^A-Za-z])(?:[A-Za-z]|cm|mm|km|kg|ms|mol|Pa|Hz)\s*$/.test(before?.textContent || '');
     };
-    const tokens = new Set([...source.querySelectorAll('sup')].filter(eligible).map(sup => normalize(sup.textContent)));
+    // Paddle 会把独立的引用上标输出为数学表达式，运行时转成普通上标后复用链接逻辑。
+    const normalizeMath = root => {
+      for (const node of root.querySelectorAll('.litmtrans-math-inline[title], .katex')) {
+        if (!root.contains(node)) continue;
+        const tex = node.getAttribute('title') || node.querySelector('annotation[encoding="application/x-tex"]')?.textContent || '';
+        const match = tex.match(/^\s*\^\s*\{\s*([\d\s,，;；–−-]+)\s*\}\s*$/);
+        if (!match || !eligible(node, match[1], true)) continue;
+        const sup = document.createElement('sup');
+        sup.textContent = match[1].trim();
+        node.replaceWith(sup);
+      }
+    };
+    normalizeMath(source);
+    normalizeMath(rendered);
+    const tokens = new Set([...source.querySelectorAll('sup')].filter(sup => eligible(sup)).map(sup => normalize(sup.textContent)));
     for (const sup of rendered.querySelectorAll('sup')) {
       if (eligible(sup) && tokens.has(normalize(sup.textContent))) sup.dataset.layoutCitation = '1';
     }
@@ -1738,7 +1793,13 @@
     const safeType = String(block.type || "unknown").replace(/[^a-z0-9_-]+/gi, "-");
     node.className = `layout-block type-${safeType} layout-${block.kind || "text"}`;
     if (block.type === "title") node.classList.add("layout-title");
-    if (block.mainTitle) node.classList.add("main-title");
+    if (block.mainTitle) {
+      node.classList.add("main-title");
+      const [left, , right] = block.bbox || [0, 0, 0, 0];
+      const symmetric = Math.abs(left - (page.width - right)) / Math.max(1, right - left) <= .07;
+      node.dataset.titleAlign = symmetric ? "center" : "left";
+      if (symmetric) node.classList.add("title-center");
+    }
     if (/caption|footnote/.test(block.type || "")) node.classList.add("layout-caption");
     const translatedText = useTranslation ? String(block.translatedText || "") : "";
     placeLayoutNode(node, block.bbox, page);
@@ -1750,6 +1811,7 @@
     node.dataset.baseLineRatio = String(Math.max(1, Number(block.lineHeight || 1.12)));
     node.dataset.lineRatio = node.dataset.baseLineRatio;
     node.dataset.blockKind = String(block.type || "text");
+    node.dataset.parseProvider = String(state.data?.parsed?.meta?.parseProvider || "");
     node.dataset.fitLabel = "";
     if (/^(?:table_caption|table_footnote|chart_caption|image_caption|image_footnote)$/i.test(String(block.type || ""))) {
       // Caption blocks use a tight, frame-relative fill band. Without it the
@@ -1787,7 +1849,241 @@
       )
     );
     appendLayoutDebugLines(node, block.debugLines, block.bbox, page);
+    if (useTranslation && block.translatedTableHTML) {
+      node.classList.add("layout-table-translation-host");
+      node.dataset.tableSourceWidth = String(block.bbox[2] - block.bbox[0]);
+      node.litmtransOriginalTableHTML = block.originalTableHTML || "";
+
+    }
     return node;
+  }
+
+  function tablePreviewData(table) {
+    const rows = [];
+    for (const [y, row] of [...table.rows].entries()) {
+      rows[y] ||= [];
+      let x = 0;
+      for (const cell of row.cells) {
+        while (rows[y][x] !== undefined) x++;
+        const clone = cell.cloneNode(true);
+        for (const math of clone.querySelectorAll(".katex")) {
+          math.replaceWith(math.querySelector('annotation[encoding="application/x-tex"]')?.textContent || math.textContent);
+        }
+        for (const br of clone.querySelectorAll("br")) br.replaceWith("\n");
+        rows[y][x] = clone.textContent.trim();
+        for (let dy = 0; dy < cell.rowSpan; dy++) {
+          rows[y + dy] ||= [];
+          for (let dx = 0; dx < cell.colSpan; dx++) if (dy || dx) rows[y + dy][x + dx] = "";
+        }
+        x += cell.colSpan;
+      }
+    }
+    const columns = Math.max(0, ...rows.map(row => row.length));
+    const grid = rows.map(row => Array.from({ length: columns }, (_, x) => row[x] || ""));
+    const quote = value => '"' + value.replace(/"/g, '""') + '"';
+    const html = table.cloneNode(true);
+    html.style.cssText = "border-collapse:collapse";
+    html.querySelector("colgroup[data-layout-fit-columns]")?.remove();
+    for (const cell of html.querySelectorAll("td,th")) cell.style.cssText = "border:1px solid #999;padding:4px;vertical-align:middle";
+    return {
+      html: html.outerHTML,
+      tsv: grid.map(row => row.map(value => /[\t\r\n"]/u.test(value) ? quote(value) : value).join("\t")).join("\n"),
+    };
+  }
+
+  function setPreviewTableMode(enabled) {
+    els["image-preview-image"].hidden = enabled;
+    els["table-preview-content"].hidden = !enabled;
+    els["image-preview-copy"].hidden = enabled;
+    els["image-preview-save"].hidden = enabled;
+    els["table-preview-copy"].hidden = !enabled;
+    els["table-preview-save-html"].hidden = !enabled;
+    els["table-preview-save-html"].disabled = enabled && !state.previewTable?.originalHTML;
+    els["image-preview-reuse"].disabled = enabled && !state.previewTable?.imageURL;
+    els["image-preview-reuse"].title = enabled && !state.previewTable?.imageURL ? "当前表格没有可用原图" : "";
+    els["image-preview-dialog"].setAttribute("aria-label", enabled ? "表格预览" : "图片预览");
+    els["image-preview-dialog"].querySelector(".image-preview-toolbar").setAttribute("aria-label", enabled ? "表格操作" : "图片操作");
+    els["table-preview-content"].closest(".image-preview-stage").classList.toggle("table-preview-stage", enabled);
+  }
+
+  function openLayoutTableViewer(target) {
+    const table = target.querySelector(".layout-translated-table table") || (target.matches("table") ? target : target.querySelector("table"));
+    if (!table) return;
+    const data = tablePreviewData(table);
+    const originalHTML = target.closest(".layout-table-translation-host")?.litmtransOriginalTableHTML;
+    const originalImage = target.closest(".layout-table-translation-host")?.querySelector(".layout-table-original img");
+    state.previewTable = { ...data, originalHTML: originalHTML || "", imageURL: originalImage?.currentSrc || originalImage?.src || "",
+      name: target.closest("[data-block-id]")?.dataset.blockId || "table" };
+    setPreviewTableMode(true);
+    const body = els["table-preview-body"];
+    safeSetElementHTML(body, data.html);
+    body.style.width = Math.max(640, Number(target.dataset.tableSourceWidth || table.clientWidth) * 1.5) + "px";
+    body.style.transform = "";
+    els["image-preview-dialog"].showModal();
+    state.previewTable.width = body.offsetWidth;
+    state.previewTable.height = body.offsetHeight;
+    fitPreviewImage();
+    syncDeepSeekWebBounds();
+  }
+
+  async function copyPreviewTable() {
+    if (!state.previewTable) return;
+    try {
+      await hostCall("clipboard-write-table", { html: state.previewTable.html, text: state.previewTable.tsv });
+      toast("表格已复制，可粘贴到 Excel 查看");
+    } catch (error) {
+      try {
+        await copyText(state.previewTable.tsv, "表格已复制，可粘贴到 Excel 查看");
+      }
+      catch (_) { toast(error.message || "复制表格失败", "error"); }
+    }
+  }
+
+  function renderedTableDocument(html) {
+    const content = document.createElement("div");
+    safeSetElementHTML(content, html);
+    for (const formula of content.querySelectorAll(".katex")) {
+      const math = formula.querySelector("math");
+      if (math) formula.replaceWith(math.cloneNode(true));
+    }
+    return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>表格</title><style>'
+      + 'body{margin:24px;color:#222;background:#fff;font:16px/1.4 serif}table{width:100%;border-collapse:collapse}'
+      + 'td,th{border:1px solid #999;padding:5px 8px;vertical-align:middle}.layout-table-fixed-cell{white-space:nowrap}math{font-size:1.05em}'
+      + '</style><body>' + content.innerHTML + '</body></html>';
+  }
+
+  async function savePreviewTableHTML() {
+    if (!state.previewTable?.originalHTML) return;
+    try {
+      const result = await hostCall("save-table-html", {
+        name: state.previewTable.name,
+        originalHTML: renderedTableDocument(state.previewTable.originalHTML),
+        translatedHTML: renderedTableDocument(state.previewTable.html)
+      });
+      if (!result?.cancelled) toast("表格已导出");
+    } catch (error) { toast(error.message || "导出表格失败", "error"); }
+  }
+
+  function measureLayoutTableColumns(wrap) {
+    const probe = wrap.cloneNode(true);
+    probe.hidden = false;
+    probe.style.cssText = "position:fixed;left:-100000px;top:0;width:max-content;height:auto;visibility:hidden;overflow:visible;--table-padding-y:0em;--table-padding-x:0em";
+    const font = getComputedStyle(wrap);
+    for (const property of ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing"]) probe.style[property] = font[property];
+    const table = probe.querySelector("table");
+    table.querySelector("colgroup[data-layout-fit-columns]")?.remove();
+    table.style.tableLayout = "auto";
+    table.style.maxWidth = "none";
+    const occupied = [];
+    let columns = 0;
+    for (const row of table.rows) {
+      let column = 0;
+      for (const cell of row.cells) {
+        while (occupied[column] > 0) column++;
+        for (let offset = 0; offset < cell.colSpan; offset++) occupied[column + offset] = cell.rowSpan;
+        column += cell.colSpan;
+      }
+      columns = Math.max(columns, occupied.length);
+      for (let index = 0; index < occupied.length; index++) occupied[index] = Math.max(0, occupied[index] - 1);
+    }
+    const row = table.insertRow();
+    const cells = Array.from({ length: columns }, () => {
+      const cell = row.insertCell();
+      cell.style.cssText = "padding:0;border:0;height:0;font-size:0;line-height:0";
+      return cell;
+    });
+    wrap.parentNode.appendChild(probe);
+    try {
+      const read = width => {
+        table.style.width = width;
+        return cells.map(cell => cell.getBoundingClientRect().width);
+      };
+      return { minimum: read("min-content"), preferred: read("max-content") };
+    } finally { probe.remove(); }
+  }
+
+  function fitLayoutTables(pages) {
+    for (const page of pages) {
+      for (const host of page.querySelectorAll(".layout-table-translation-host")) {
+        const original = host.querySelector(".layout-table-original");
+        const wrap = host.querySelector(".layout-translated-table");
+        const table = wrap?.querySelector("table");
+        if (!table || host.clientWidth <= 0 || host.clientHeight <= 0) continue;
+        if (state.settings?.translateTables === false) {
+          wrap.hidden = true;
+          original.hidden = false;
+          host.dataset.tableDisplay = "original";
+          continue;
+        }
+        const fitKey = `${host.clientWidth}|${host.clientHeight}|${document.fonts?.status || ""}`;
+        if (host._litmtransTableFit?.key === fitKey) {
+          const fits = host._litmtransTableFit.fits;
+          wrap.hidden = !fits;
+          original.hidden = fits;
+          host.dataset.tableDisplay = fits ? "translation" : "original";
+          continue;
+        }
+        const scale = host.clientWidth / Math.max(1, Number(host.dataset.tableSourceWidth));
+        original.hidden = true;
+        wrap.hidden = false;
+        table.querySelector("colgroup[data-layout-fit-columns]")?.remove();
+        const group = document.createElement("colgroup");
+        group.dataset.layoutFitColumns = "1";
+        const profiles = [{ line: 1.15, y: .8, x: .2 }];
+        const fitsFrame = () => {
+          const frame = host.getBoundingClientRect();
+          const bounds = table.getBoundingClientRect();
+          if (wrap.scrollWidth > host.clientWidth + 1 || wrap.scrollHeight > host.clientHeight + 1
+            || bounds.right > frame.right + 1 || bounds.bottom > frame.bottom + 1) return false;
+          for (const cell of table.querySelectorAll("td, th")) {
+            if (cell.scrollWidth > cell.clientWidth + 1) return false;
+          }
+          for (const token of table.querySelectorAll(".layout-table-fixed-cell, .katex")) {
+            const cell = token.closest("td, th");
+            const rect = token.getBoundingClientRect(), box = cell.getBoundingClientRect();
+            if (rect.left < box.left - 1 || rect.right > box.right + 1 || rect.top < box.top - 1 || rect.bottom > box.bottom + 1) return false;
+          }
+          return true;
+        };
+        let metrics = null;
+        let fits = false;
+        for (let size = 9; size >= 3; size -= .5) {
+          wrap.style.fontSize = `${size * scale}px`;
+          // 固定上下留白，先调整列宽，再迭代字号；所有测量只作用于表格自身。
+          for (const profile of profiles) {
+            wrap.style.lineHeight = String(profile.line);
+            wrap.style.setProperty("--table-padding-y", `${profile.y * scale}px`);
+            wrap.style.setProperty("--table-padding-x", `${profile.x}em`);
+            group.remove();
+            table.style.tableLayout = "auto";
+            if (fitsFrame()) { fits = true; break; }
+            if (!metrics) metrics = measureLayoutTableColumns(wrap);
+            const zoom = host.getBoundingClientRect().width / host.clientWidth;
+            const padding = 2 * profile.x * size * scale;
+            const minimum = metrics.minimum.map(value => value / zoom * size / 9 + padding);
+            const preferred = metrics.preferred.map(value => value / zoom * size / 9 + padding);
+            for (const balanced of [false, true]) {
+              const widths = LitMTrans.LayoutTables.fitColumnWidths(minimum, preferred, host.clientWidth - 1, balanced);
+              if (!widths) continue;
+              group.replaceChildren(...widths.map(width => {
+                const col = document.createElement("col");
+                col.style.width = `${width / (host.clientWidth - 1) * 100}%`;
+                return col;
+              }));
+              table.prepend(group);
+              table.style.tableLayout = "fixed";
+              if (fitsFrame()) { fits = true; break; }
+            }
+            if (fits) break;
+          }
+          if (fits) break;
+        }
+        wrap.hidden = !fits;
+        original.hidden = fits;
+        host.dataset.tableDisplay = fits ? "translation" : "original";
+        host._litmtransTableFit = { key: fitKey, fits };
+      }
+    }
   }
 
   function layoutTextRects(node) {
@@ -2136,23 +2432,87 @@
     }
   }
 
+  function resetBodyLeadingRelease(pages) {
+    for (const page of pages) {
+      for (const node of page.querySelectorAll('[data-body-leading-before-release]')) {
+        node.style.setProperty('line-height', node.dataset.bodyLeadingBeforeRelease);
+        delete node.dataset.bodyLeadingBeforeRelease;
+      }
+    }
+  }
+
+  function releaseBodyLeading(pages) {
+    const target = 1.35;
+    for (const page of pages) {
+      if (page.closest('#source-layout')) continue;
+      const nodes = page.querySelectorAll('.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"], .layout-flow-stream[data-body-style-inherited="1"], .layout-flow-stream[data-abstract-body="1"], .layout-block[data-abstract-body="1"], .layout-block.type-abstract');
+      for (const node of nodes) {
+        const computed = getComputedStyle(node);
+        const ratio = parseFloat(computed.lineHeight) / parseFloat(computed.fontSize);
+        if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= target - .001 || !textRectsInPage(node).length) continue;
+        const own = elementBoxInPage(node);
+        // 与现有文字测量一致，框顶允许 1.5 个源像素的字形度量悬出；其余三边严格守界。
+        const fits = () => renderedContentRectsInPage(node).every(rect =>
+          rect.left >= own.left - .01 && rect.top >= own.top - 1.5
+          && rect.right <= own.right + .01 && rect.bottom <= own.bottom + .01)
+          && !textCollisionDetails([node], {
+            checkAllTextForCollisions: true, includeGroupPeers: true,
+            avoidPageOverflow: true, bodyTextCollisionGeometry: true
+          });
+        // 正文与摘要共用释放规则；已越框或已有碰撞时保持原样，不按行数筛选。
+        if (!fits()) continue;
+        const original = node.style.lineHeight;
+        const priority = node.style.getPropertyPriority('line-height');
+        const releasePriority = node.dataset.equationDense === '1' ? 'important' : priority;
+        let safe = ratio;
+        let upper = target;
+        // 公式间正文默认有紧凑的 CSS !important；仅在实测安全时覆盖它。
+        node.style.setProperty('line-height', String(target), releasePriority);
+        if (fits()) safe = target;
+        else {
+          while (upper - safe > .005) {
+            const probe = (safe + upper) / 2;
+            node.style.setProperty('line-height', String(probe), releasePriority);
+            if (fits()) safe = probe;
+            else upper = probe;
+          }
+        }
+        if (safe > ratio + .001) {
+          node.dataset.bodyLeadingBeforeRelease = original;
+          node.style.setProperty('line-height', String(safe), releasePriority);
+        } else node.style.setProperty('line-height', original, priority);
+      }
+    }
+  }
+
   function fitLayoutPages(pageNodes) {
     const pages = (pageNodes || []).filter(Boolean);
     const wraps = pages.map(page => page.closest(".layout-page-wrap")).filter(Boolean);
 
+    // 重新求解从释放前的行距开始，避免上次的局部美化影响统一字号。
+    resetBodyLeadingRelease(pages);
     // Initial pass: shrink-only so oversized un-fitted formulas do not become
     // false body-text barriers during shared font iteration.
     fitLayoutFormulas(pages);
     runLayoutParityEngine(wraps, false);
     // Post-pass: adapt formulas to bbox and right-align equation numbers.
     fitLayoutFormulas(pages, { expand: true });
+    enforceFinalTextCollisionSafety(pages);
+  }
+
+  function finalizeLayoutTypography(pages) {
+    // 公式与自动避碰已收敛；先继承样式，再只增大安全行距，之后不再运行自动修正。
+    inheritFinalDualColumnBodyFont(pages);
+    inheritFinalTextRegionBodyFont(pages);
+    releaseBodyLeading(pages);
+    applyLayoutBodyFont(pages);
   }
 
   // A layout solve is expensive because it measures real glyph rectangles.
   // The result is deterministic for one translated-layout identity, viewport
   // width and body-font choice, so retain the solved inline styles instead of
   // repeating the measurement whenever the user switches reading modes.
-  const LAYOUT_FIT_SNAPSHOT_VERSION = 13;
+  const LAYOUT_FIT_SNAPSHOT_VERSION = 23;
   const layoutFitSnapshots = new Map();
   function layoutFitSnapshotKey(pane = "translation") {
     const documentID = String(state.data?.item?.documentID || "");
@@ -2163,7 +2523,9 @@
         : (state.data?.layout?.meta?.identity || model.sourceFingerprint || "")
     );
     const bodyFont = Number(state.layoutFontPt || 0).toFixed(1);
-    return `${documentID}|${identity}|${bodyFont}${pane === "source" ? "|source" : ""}`;
+    const rulesVersion = LitMTrans.Constants.LAYOUT_READER_FONT_RULES_VERSION;
+    const lineSuffix = model.geometryHash ? `|lines:${model.geometryHash}` : "";
+    return `${documentID}|${identity}|${bodyFont}|rules:${rulesVersion}${lineSuffix}${pane === "source" ? "|source" : (model.tableTranslationHash ? `|tables:${model.tableTranslationHash}` : "")}`;
   }
 
   function layoutFitPageKey(page) {
@@ -2178,6 +2540,7 @@
       // Fitting may correct MinerU's single-line classification.
       node.dataset.originalLines || "",
       node.dataset.singleLineAlign || "",
+      node.dataset.titleAlign || "",
       node.className || "",
       // Different wording can produce different line breaks, so text is part
       // of the fit-cache identity.
@@ -2201,9 +2564,10 @@
     const requested = Number(state.layoutFontPt || 0);
     if (!Number.isFinite(requested) || requested <= 0) return;
     for (const page of pages || []) {
+      if (page.closest?.('#source-layout')) continue;
       for (const node of page.querySelectorAll(".layout-flow-stream[data-style-kind='body_text'][data-flow-kind='text']")) {
-        // Captions, references, formulas and media retain their solved style.
-        node.style.fontSize = `${requested}pt`;
+        // 手动字号在自动拟合结束后应用，保留用户主动放大和局部重叠的选择。
+        node.style.fontSize = `${(requested * 4 / 3).toFixed(2)}px`;
         node.dataset.userBodyFontPt = requested.toFixed(2);
       }
     }
@@ -2228,6 +2592,12 @@
       for (let index = 0; index < nodes.length; index++) {
         nodes[index].style.fontSize = record.styles[index].fontSize;
         nodes[index].style.lineHeight = record.styles[index].lineHeight;
+        if (record.styles[index].bodyLeadingBeforeRelease !== undefined) {
+          nodes[index].dataset.bodyLeadingBeforeRelease = record.styles[index].bodyLeadingBeforeRelease;
+          if (nodes[index].dataset.equationDense === '1') {
+            nodes[index].style.setProperty('line-height', record.styles[index].lineHeight, 'important');
+          }
+        } else delete nodes[index].dataset.bodyLeadingBeforeRelease;
         nodes[index].style.textAlign = record.styles[index].textAlign || '';
         if (record.styles[index].bodyStyleInherited === '1') nodes[index].dataset.bodyStyleInherited = '1';
         else delete nodes[index].dataset.bodyStyleInherited;
@@ -2277,6 +2647,7 @@
         return {
           key: layoutFitPageKey(page),
           styles: nodes.map(node => ({ fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign,
+            ...(node.dataset.bodyLeadingBeforeRelease !== undefined ? { bodyLeadingBeforeRelease: node.dataset.bodyLeadingBeforeRelease } : {}),
             ...(node.dataset.bodyStyleInherited === '1' ? { bodyStyleInherited: '1' } : {}) }))
         };
       })
@@ -2320,6 +2691,7 @@
       if (typeof document !== "undefined" && document.fonts?.ready) {
         try { await document.fonts.ready; } catch (_) {}
       }
+      fitLayoutTables(active);
       // A whole paragraph may arrive as one `lines` item. Render it once in
       // canonical coordinates before using cached measurements; if its
       // single-line presentation escapes the page, convert it to a wrapped
@@ -2338,15 +2710,14 @@
         // those cheaply in canonical coordinates without re-running text fit.
         fitLayoutFormulas(active, { expand: true });
         const codeFitChanged = clampTranslatedCodeOverflow();
+        fitSingleLineTextInk(active);
         if (codeFitChanged) saveLayoutFitSnapshot(active);
         return;
       }
       // Any invalid page invalidates the shared document solution.
       fitLayoutPages(pending);
-      applyLayoutBodyFont(pending);
-      fitLayoutFormulas(pending, { expand: true });
-      inheritFinalDualColumnBodyFont(pending);
-      inheritFinalTextRegionBodyFont(pending);
+      finalizeLayoutTypography(pending);
+      fitSingleLineTextInk(active);
       saveLayoutFitSnapshot(active);
     }
     finally {
@@ -2492,7 +2863,8 @@
   function layoutTranslationPageState(page, useTranslation) {
     const blocks = Array.isArray(page?.blocks) ? page.blocks : [];
     const hasTranslatableBlocks = blocks.some(block => Boolean(block?.translatable));
-    const hasPageTranslation = blocks.some(block => Boolean(block?.translatable && block?.translatedText));
+    const hasPageTranslation = blocks.some(block => Boolean((block?.translatable && block?.translatedText) || block?.translatedTableHTML))
+      || (page?.restoration?.absoluteBlocks || []).some(block => Boolean(block?.translatedTableHTML));
     // Reference-only and media-only pages have no requested translation IDs.
     // Keep rendering their source representation in the translation pane;
     // otherwise a complete bibliography becomes an unexplained blank page.
@@ -2761,14 +3133,37 @@
     });
   }
 
-  function linkifyLayoutDocument(root, pane) {
+  function linkifyLayoutDocument(root, pane, referenceNumbers = {}) {
     const references = new Map();
+    const authorYears = new Map();
+    const authorNames = new Set();
+    let authorSerial = 0;
     for (const entry of root.querySelectorAll('.flow-ref, .layout-block.type-ref_text')) {
+      const author = entry.textContent.match(/^\s*([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+),/);
+      const year = entry.textContent.match(/[,;(]\s*((?:19|20)\d{2}[a-z]?)\s*[.)]?\s*$/);
       const match = entry.textContent.match(/^\s*(?:\[(\d+)\]|(\d+)[.)])\s*/);
       const first = [...entry.childNodes].find(node => node.textContent.trim());
       const superscript = first?.nodeType === Node.ELEMENT_NODE && first.matches('sup') && /^\s*\d+\s*$/.test(first.textContent)
         ? Number(first.textContent) : 0;
-      const number = superscript || (match && Number(match[1] || match[2]));
+      const localNumber = referenceNumbers[entry.dataset.blockID];
+      const number = localNumber || superscript || (match && Number(match[1] || match[2]));
+      if (!number && author && year) {
+        const key = `${author[1]}:${year[1]}`;
+        entry.id = `litmtrans-reference-${pane}-author-${authorSerial++}`;
+        authorYears.set(key, authorYears.has(key) ? null : entry.id);
+        authorNames.add(author[1]);
+      }
+      if (localNumber && localNumber !== (superscript || (match && Number(match[1] || match[2])))) {
+        if (superscript) first.textContent = String(localNumber);
+        else if (match && first?.nodeType === Node.TEXT_NODE) {
+          first.textContent = first.textContent.replace(/^\s*(?:\[\d+\]|\d+[.)])/, label => label.replace(/\d+/, String(localNumber)));
+        }
+        else if (!match) {
+          const marker = document.createElement('sup');
+          marker.textContent = String(localNumber);
+          entry.prepend(marker);
+        }
+      }
       if (!number || references.has(number)) continue;
       entry.id = `litmtrans-reference-${pane}-${number}`;
       references.set(number, entry.id);
@@ -2865,6 +3260,55 @@
       fragment.appendChild(document.createTextNode(text.slice(cursor)));
       node.replaceWith(fragment);
     }
+    if (authorNames.size) {
+      const names = [...authorNames].sort((a, b) => b.length - a.length).map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      const pattern = new RegExp(`\\b(${names})(?:\\s+et\\s+al\\.?|\\s*等|\\s*(?:and|&|和|与)\\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+)?\\s*(?:[,，]\\s*|[(（]\\s*)((?:19|20)\\d{2}[a-z]?(?:\\s*[,，]\\s*(?:19|20)\\d{2}[a-z]?)*)(?=[)）;；.\\s]|$)[)）]?`, 'g');
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const candidates = [];
+      while (walker.nextNode()) {
+        const node = walker.currentNode, parent = node.parentElement;
+        if (parent?.closest('.layout-flow-stream, .layout-block')
+          && !parent.closest('a, code, pre, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math')) candidates.push(node);
+      }
+      for (const node of candidates) {
+        const text = node.textContent, fragment = document.createDocumentFragment();
+        let cursor = 0;
+        for (const match of text.matchAll(pattern)) {
+          const years = [...match[2].matchAll(/(?:19|20)\d{2}[a-z]?/g)];
+          if (years.length > 1) {
+            if (!years.some(year => authorYears.get(`${match[1]}:${year[0]}`))) continue;
+            fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+            let position = 0;
+            const offset = match[0].indexOf(match[2]);
+            for (const year of years) {
+              const start = offset + year.index, target = authorYears.get(`${match[1]}:${year[0]}`);
+              fragment.appendChild(document.createTextNode(match[0].slice(position, start)));
+              if (target) {
+                const anchor = document.createElement('a');
+                anchor.className = 'litmtrans-link'; anchor.textContent = year[0];
+                anchor.setAttribute('href', `#${target}`); anchor.dataset.layoutReferenceTarget = target;
+                fragment.appendChild(anchor);
+              } else fragment.appendChild(document.createTextNode(year[0]));
+              position = start + year[0].length;
+            }
+            fragment.appendChild(document.createTextNode(match[0].slice(position)));
+            cursor = match.index + match[0].length;
+            continue;
+          }
+          const target = authorYears.get(`${match[1]}:${match[2]}`);
+          if (!target) continue;
+          fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+          const anchor = document.createElement('a');
+          anchor.className = 'litmtrans-link';
+          anchor.textContent = match[0];
+          anchor.setAttribute('href', `#${target}`);
+          anchor.dataset.layoutReferenceTarget = target;
+          fragment.appendChild(anchor);
+          cursor = match.index + match[0].length;
+        }
+        if (cursor) { fragment.appendChild(document.createTextNode(text.slice(cursor))); node.replaceWith(fragment); }
+      }
+    }
   }
 
   function buildLayoutDocument(model, useTranslation) {
@@ -2896,6 +3340,13 @@
       pageNode.dataset.sourceHeight = String(page.height);
       const { showAwaitingOverlay } = layoutTranslationPageState(page, useTranslation);
       const restoration = page.restoration;
+      const erasureItems = [];
+      if (useTranslation && !showAwaitingOverlay) {
+        const bgCanvas = document.createElement("canvas");
+        bgCanvas.className = "layout-page-bg";
+        bgCanvas.setAttribute("aria-hidden", "true");
+        pageNode.appendChild(bgCanvas);
+      }
       // An untranslated page must remain a clean placeholder. Rendering the
       // source blocks with translation coordinates produces an unreadable
       // pile-up while a layout job has not started yet. Once a page has at
@@ -2916,11 +3367,13 @@
             }
             const parts = (stream.items || []).flatMap(item => item.parts || [item]);
             if (stream.styleKind !== 'body_text' && parts.length && parts.every(part => abstractIDs.has(part.id))) node.dataset.abstractBody = '1';
+            if (useTranslation) registerStreamErasureItem(erasureItems, stream, node, page);
             pageNode.appendChild(node);
           }
           for (const block of restoration.absoluteBlocks || []) {
             const node = buildAbsoluteLayoutNode(block, page, useTranslation);
             if (abstractIDs.has(block.id)) node.dataset.abstractBody = '1';
+            if (useTranslation) registerBlockErasureItem(erasureItems, block, node, page);
             pageNode.appendChild(node);
           }
         }
@@ -2928,9 +3381,14 @@
           for (const block of page.blocks || []) {
             const node = buildAbsoluteLayoutNode(block, page, useTranslation);
             if (abstractIDs.has(block.id)) node.dataset.abstractBody = '1';
+            if (useTranslation) registerBlockErasureItem(erasureItems, block, node, page);
             pageNode.appendChild(node);
           }
         }
+      }
+      if (useTranslation && !showAwaitingOverlay) {
+        pageNode._litmtransPageModel = page;
+        pageNode._litmtransErasureItems = erasureItems;
       }
       if (showAwaitingOverlay) {
         const overlay = document.createElement("div");
@@ -2942,7 +3400,7 @@
       root.appendChild(wrap);
       observers.push(pageNode);
     }
-    linkifyLayoutDocument(root, useTranslation ? 'translation' : 'source');
+    linkifyLayoutDocument(root, useTranslation ? 'translation' : 'source', model.referenceNumbers);
     requestAnimationFrame(() => {
       let fitQueued = false;
       let fitInProgress = false;
@@ -3040,6 +3498,8 @@
   function cleanupLayoutObservers(container) {
     try { container._litmtransImageMemoryManager?.disconnect(); } catch (_) {}
     container._litmtransImageMemoryManager = null;
+    try { container._litmtransBgManager?.disconnect(); } catch (_) {}
+    container._litmtransBgManager = null;
     for (const page of container.querySelectorAll(".layout-page")) {
       try { page._litmtransResizeObserver?.disconnect(); } catch (_) {}
       page._litmtransRefreshLayoutScale = null;
@@ -3170,7 +3630,10 @@
   }
 
   async function prepareLayoutImagesForPrint() {
-    await Promise.all(layoutImageMemoryManagers().map(manager => manager.prepareForPrint()));
+    await Promise.all([
+      ...layoutImageMemoryManagers().map(manager => manager.prepareForPrint()),
+      els["translation-layout"]?._litmtransBgManager?.prepareForPrint?.()
+    ]);
   }
 
   function restoreLayoutImagesForPrintEvent() {
@@ -3179,6 +3642,437 @@
 
   function resumeLayoutImageMemoryManagement() {
     for (const manager of layoutImageMemoryManagers()) manager.resume();
+    els["translation-layout"]?._litmtransBgManager?.resume();
+  }
+
+  const BG_RETAINED_FURNITURE_TYPES = new Set([
+    "header", "page_header", "footer", "page_footer", "page_number", "aside_text"
+  ]);
+  const LAYOUT_BG_RENDER_SCALE = 2;
+  const LAYOUT_BG_CACHE_LIMIT = 4;
+  const layoutPageBgCache = new Map();
+  const layoutPageBgInFlight = new Map();
+  const layoutPageBgRenderLanes = [Promise.resolve(), Promise.resolve()];
+  let layoutPageBgNextLane = 0;
+
+  function isBackgroundRetainedBlock(block, useTranslation = true) {
+    if (!useTranslation || !block) return false;
+    const type = String(block.type || "").toLowerCase();
+    if (BG_RETAINED_FURNITURE_TYPES.has(type)) return true;
+    if (block.sourceOnly === true) return true;
+    const hasTranslation = Boolean(String(block.translatedText || "").trim() || block.translatedTableHTML);
+    if (String(block.id || "").startsWith("model-") && !hasTranslation) return true;
+    if ((type === "footnote" || type === "page_footnote") && !hasTranslation) return true;
+    return false;
+  }
+
+  function extractStreamLeafParts(stream) {
+    const out = [];
+    const seen = new Set();
+    const pushPart = part => {
+      if (!part || typeof part !== "object" || seen.has(part)) return;
+      seen.add(part);
+      out.push(part);
+    };
+    for (const item of stream?.items || []) {
+      if (Array.isArray(item?.parts) && item.parts.length) {
+        for (const part of item.parts) pushPart(part);
+      }
+      else if (Array.isArray(item?.paragraphs) && item.paragraphs.length) {
+        for (const paragraph of item.paragraphs) {
+          for (const part of paragraph?.parts || []) pushPart(part);
+        }
+      }
+      else {
+        pushPart(item);
+      }
+    }
+    return out;
+  }
+
+  function normalizeSourceErasureBox(rawBBox, debugLines = null) {
+    if (!Array.isArray(rawBBox) || rawBBox.length < 4) return null;
+    let [x0, y0, x1, y1] = rawBBox.slice(0, 4).map(Number);
+    if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) return null;
+    if (Array.isArray(debugLines)) {
+      for (const line of debugLines) {
+        if (!Array.isArray(line) || line.length < 4) continue;
+        const [lx0, ly0, lx1, ly1] = line.slice(0, 4).map(Number);
+        if (![lx0, ly0, lx1, ly1].every(Number.isFinite) || lx1 <= lx0 || ly1 <= ly0) continue;
+        if (lx1 < x0 - 8 || lx0 > x1 + 8 || ly1 < y0 - 8 || ly0 > y1 + 8) continue;
+        x0 = Math.min(x0, lx0);
+        y0 = Math.min(y0, ly0);
+        x1 = Math.max(x1, lx1);
+        y1 = Math.max(y1, ly1);
+      }
+    }
+    return [x0, y0, x1, y1];
+  }
+
+  function registerStreamErasureItem(erasureItems, stream, node, page) {
+    if (!stream || !node) return;
+    const parts = extractStreamLeafParts(stream);
+    if (parts.length && parts.every(part => isBackgroundRetainedBlock(part, true))) {
+      node.dataset.bgRedundant = "1";
+      return;
+    }
+    const boxes = [];
+    for (const part of parts) {
+      if (isBackgroundRetainedBlock(part, true)) continue;
+      const box = normalizeSourceErasureBox(part.bbox, part.debugLines);
+      if (box) boxes.push(box);
+    }
+    if (!boxes.length) {
+      const fallback = normalizeSourceErasureBox(stream.bbox);
+      if (fallback) boxes.push(fallback);
+    }
+    if (boxes.length) {
+      erasureItems.push({ boxes, node, kind: "stream", allowDarkBg: true });
+    }
+  }
+
+  function registerBlockErasureItem(erasureItems, block, node, page) {
+    if (!block || !node) return;
+    if (isBackgroundRetainedBlock(block, true)) {
+      node.dataset.bgRedundant = "1";
+      return;
+    }
+    const box = normalizeSourceErasureBox(block.bbox, block.debugLines);
+    if (!box) return;
+    const boxes = [box];
+    const kind = String(block.kind || block.type || "text").toLowerCase();
+    const isFormula = kind === "formula" || String(block.type || "").toLowerCase() === "interline_equation";
+    const isFormulaNumber = String(block.type || "").toLowerCase() === "formula_number" || kind === "formula_number";
+    if (isFormula) {
+      const numberRight = Number(block.numberRight);
+      if (Number.isFinite(numberRight) && numberRight > box[2]) {
+        box[2] = Math.max(box[2], numberRight + 2.5);
+      }
+      for (const candidate of page?.blocks || []) {
+        if (String(candidate?.type || "").toLowerCase() !== "formula_number") continue;
+        const numBox = normalizeSourceErasureBox(candidate.bbox);
+        if (!numBox) continue;
+        const overlapY = Math.min(box[3], numBox[3]) - Math.max(box[1], numBox[1]);
+        if (overlapY > -4) boxes.push(numBox);
+      }
+    }
+    erasureItems.push({
+      boxes,
+      node,
+      kind: isFormula ? "formula" : (isFormulaNumber ? "formula_number" : kind),
+      allowDarkBg: kind !== "image" && kind !== "table" && !isFormula && !isFormulaNumber
+    });
+  }
+
+  function medianByte(values, fallback = 255) {
+    if (!values.length) return fallback;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  function samplePerimeterColor(data, W, H, x0, y0, x1, y1, paperRGB = [255, 255, 255]) {
+    const bgRs = [], bgGs = [], bgBs = [];
+    const [pr, pg, pb] = paperRGB;
+    let paperCount = 0;
+    const addSample = (px, py) => {
+      if (px < 0 || px >= W || py < 0 || py >= H) return;
+      const idx = (py * W + px) * 4;
+      if (data[idx + 3] < 250) return;
+      const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+      const distToPaper = Math.max(Math.abs(r - pr), Math.abs(g - pg), Math.abs(b - pb));
+      bgRs.push(r);
+      bgGs.push(g);
+      bgBs.push(b);
+      if (distToPaper <= 12) paperCount++;
+    };
+    const stepX = Math.max(2, Math.floor((x1 - x0) / 32));
+    const stepY = Math.max(1, Math.floor((y1 - y0) / 12));
+    for (let y = y0; y <= y1; y += stepY) {
+      for (let x = x0; x <= x1; x += stepX) {
+        addSample(x, y);
+      }
+    }
+    const innerTop = Math.min(y1, y0 + 1);
+    const innerBot = Math.max(y0, y1 - 1);
+    const innerLeft = Math.min(x1, x0 + 1);
+    const innerRight = Math.max(x0, x1 - 1);
+    for (let x = x0; x <= x1; x += stepX) {
+      addSample(x, innerTop);
+      addSample(x, innerBot);
+    }
+    for (let y = y0; y <= y1; y += stepY) {
+      addSample(innerLeft, y);
+      addSample(innerRight, y);
+    }
+    const medR = medianByte(bgRs, pr);
+    const medG = medianByte(bgGs, pg);
+    const medB = medianByte(bgBs, pb);
+    const medianDist = Math.max(Math.abs(medR - pr), Math.abs(medG - pg), Math.abs(medB - pb));
+    const paperRatio = bgRs.length ? paperCount / bgRs.length : 0;
+    const isWhitePaper = medianDist <= 8 && paperRatio >= .50;
+    return { r: medR, g: medG, b: medB, isWhitePaper, available: bgRs.length > 0 };
+  }
+
+  function eraseAndPatchPageBackground(canvas, page, erasureItems, options = {}) {
+    const W = canvas.width;
+    const H = canvas.height;
+    if (!(W > 0 && H > 0 && page?.width > 0 && page?.height > 0)) return false;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return false;
+    let data = null;
+    try {
+      data = ctx.getImageData(0, 0, W, H).data;
+    } catch (_) {
+      return false;
+    }
+    const sx = W / page.width;
+    const sy = H / page.height;
+    const paperRGB = options.paperRGB || [255, 255, 255];
+    const paperFill = options.paperRGB ? `rgb(${paperRGB.join(",")})` : "#ffffff";
+    for (const item of erasureItems || []) {
+      if (options.displayRetainedImages && item.kind === "image"
+        && !item.node?.matches(".layout-table-translation-host, .type-table, .type-table_body")) {
+        options.displayRetainedImages.push(item.node);
+        continue;
+      }
+      const isMedia = item.kind === "image" || item.kind === "table";
+      const isFormula = item.kind === "formula";
+      const isFormulaNumber = item.kind === "formula_number";
+      let padX = 1.2;
+      let padY = 1.0;
+      if (isFormula) {
+        padX = 3.0;
+        padY = 3.5;
+      } else if (isFormulaNumber) {
+        padX = 3.0;
+        padY = 2.0;
+      } else if (isMedia) {
+        padX = 1.5;
+        padY = 1.5;
+      }
+      const isMediaOrFormula = isMedia || isFormula || isFormulaNumber;
+      let darkDetected = false;
+      let darkest = null;
+      for (const [bx0, by0, bx1, by1] of item.boxes || []) {
+        const x0 = Math.max(0, Math.floor((bx0 - padX) * sx));
+        const y0 = Math.max(0, Math.floor((by0 - padY) * sy));
+        const x1 = Math.min(W, Math.ceil((bx1 + padX) * sx));
+        const y1 = Math.min(H, Math.ceil((by1 + padY) * sy));
+        const rw = x1 - x0;
+        const rh = y1 - y0;
+        if (rw <= 0 || rh <= 0) continue;
+        const sample = samplePerimeterColor(data, W, H, x0, y0, x1, y1, paperRGB);
+        // 读不到原始底色时不猜测修补，沿用已有的独立排版渲染。
+        if (!sample.available && !isMediaOrFormula) return false;
+        // 原始底图保持不透明，屏幕主题的透明化只发生在显示副本上。
+        ctx.fillStyle = sample.isWhitePaper || isMediaOrFormula ? paperFill : `rgb(${sample.r}, ${sample.g}, ${sample.b})`;
+        ctx.fillRect(x0, y0, rw, rh);
+        const lum = 0.299 * sample.r + 0.587 * sample.g + 0.114 * sample.b;
+        if (lum < 140) darkDetected = true;
+        if (!darkest || lum < darkest.lum) darkest = { ...sample, lum };
+      }
+      if (item.node && item.allowDarkBg) {
+        if (options.displayBackgrounds) {
+          if (darkest) options.displayBackgrounds.push({ node: item.node, rgb: [darkest.r, darkest.g, darkest.b] });
+        } else if (darkDetected) {
+          item.node.dataset.onDarkBg = "1";
+        } else {
+          delete item.node.dataset.onDarkBg;
+        }
+        if (!options.displayBackgrounds && darkest) item.node.dataset.pdfBackgroundRgb = `${darkest.r},${darkest.g},${darkest.b}`;
+      }
+    }
+    return true;
+  }
+
+  function queueLayoutBackgroundRender(callback) {
+    const lane = layoutPageBgNextLane++ % layoutPageBgRenderLanes.length;
+    const task = layoutPageBgRenderLanes[lane].then(callback);
+    layoutPageBgRenderLanes[lane] = task.catch(() => {});
+    return task;
+  }
+
+  async function renderLayoutDisplayBackground(attachmentID, pageNumber, page, erasureItems) {
+    return queueLayoutBackgroundRender(async () => {
+      const result = await hostCall("render-pdf-page-background", {
+        attachmentID, pageNumber, scale: LAYOUT_BG_RENDER_SCALE
+      });
+      if (!result?.available || !result.dataURL) return null;
+      const image = new Image();
+      image.src = result.dataURL;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      canvas.getContext("2d").drawImage(image, 0, 0);
+      const displayBackgrounds = [];
+      const displayRetainedImages = [];
+      if (!eraseAndPatchPageBackground(canvas, page, erasureItems, { displayBackgrounds, displayRetainedImages })) {
+        canvas.width = canvas.height = 1;
+        return null;
+      }
+      return { canvas, displayBackgrounds, displayRetainedImages };
+    });
+  }
+
+  function fetchLayoutPageBackgroundImage(attachmentID, pageNumber) {
+    const sourceIdentity = state.data?.parsed?.meta?.parseRevisionID || state.data?.layout?.model?.sourceFingerprint || "";
+    const key = `${attachmentID}:${sourceIdentity}:${pageNumber}:${LAYOUT_BG_RENDER_SCALE}`;
+    if (layoutPageBgCache.has(key)) {
+      const cached = layoutPageBgCache.get(key);
+      layoutPageBgCache.delete(key);
+      layoutPageBgCache.set(key, cached);
+      return Promise.resolve(cached);
+    }
+    if (layoutPageBgInFlight.has(key)) return layoutPageBgInFlight.get(key);
+    const task = queueLayoutBackgroundRender(async () => {
+      try {
+        const result = await hostCall("render-pdf-page-background", {
+          attachmentID,
+          pageNumber,
+          scale: LAYOUT_BG_RENDER_SCALE
+        });
+        if (!result?.available || !result.dataURL) return null;
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = result.dataURL;
+        });
+        if (typeof img.decode === "function") await img.decode().catch(() => {});
+        if (!(img.naturalWidth > 0 && img.naturalHeight > 0)) return null;
+        if (layoutPageBgCache.size >= LAYOUT_BG_CACHE_LIMIT) {
+          const oldestKey = layoutPageBgCache.keys().next().value;
+          if (oldestKey !== undefined) layoutPageBgCache.delete(oldestKey);
+        }
+        layoutPageBgCache.set(key, img);
+        return img;
+      } catch (_) {
+        return null;
+      } finally {
+        layoutPageBgInFlight.delete(key);
+      }
+    });
+    layoutPageBgInFlight.set(key, task);
+    return task;
+  }
+
+  async function renderLayoutPageBackground(pageNode, isCurrent = () => true, screen = true) {
+    if (!pageNode || !pageNode.isConnected) return false;
+    const canvas = pageNode.querySelector(":scope > canvas.layout-page-bg");
+    const page = pageNode._litmtransPageModel;
+    const attachmentID = Number(state.data?.item?.attachmentID || 0);
+    const pageNumber = Math.max(1, Math.trunc(Number(page?.index || pageNode.closest(".layout-page-wrap")?.dataset.page || 1)));
+    if (!canvas || !page || !attachmentID) return false;
+    if (pageNode.classList.contains("has-pdf-bg")) {
+      if (screen) window.LitMTrans?.ReaderImages?.paintBackground(canvas);
+      return true;
+    }
+    if (pageNode._litmtransBgPromise) return pageNode._litmtransBgPromise;
+    const version = pageNode._litmtransBgVersion || 0;
+    const promise = (async () => {
+      const img = await fetchLayoutPageBackgroundImage(attachmentID, pageNumber);
+      if (!img || !pageNode.isConnected || version !== (pageNode._litmtransBgVersion || 0) || !isCurrent()) return false;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      if (!eraseAndPatchPageBackground(canvas, page, pageNode._litmtransErasureItems || [])) {
+        canvas.width = canvas.height = 1;
+        return false;
+      }
+      canvas._litmtransBgVersion = version;
+      canvas._litmtransRenderTheme = () => renderLayoutDisplayBackground(attachmentID, pageNumber, page, pageNode._litmtransErasureItems || []);
+      pageNode.classList.add("has-pdf-bg");
+      if (screen) window.LitMTrans?.ReaderImages?.paintBackground(canvas);
+      return true;
+    })().finally(() => {
+      if (pageNode._litmtransBgPromise === promise) pageNode._litmtransBgPromise = null;
+    });
+    pageNode._litmtransBgPromise = promise;
+    return promise;
+  }
+
+  function installLayoutBackgroundManager(container, scroll) {
+    try { container._litmtransBgManager?.disconnect(); } catch (_) {}
+    if (container !== els["translation-layout"]) return;
+    const wraps = [...container.querySelectorAll(".layout-page-wrap")];
+    if (!wraps.length) return;
+    let disconnected = false;
+    let printing = false;
+    const visible = new Set();
+    const releasePage = pageNode => {
+      if (!pageNode) return;
+      pageNode._litmtransBgVersion = (pageNode._litmtransBgVersion || 0) + 1;
+      pageNode._litmtransBgPromise = null;
+      pageNode.classList.remove("has-pdf-bg");
+      const canvas = pageNode.querySelector(":scope > canvas.layout-page-bg");
+      if (canvas) {
+        window.LitMTrans?.ReaderImages?.clearBackground(canvas);
+        canvas.width = canvas.height = 1;
+      }
+    };
+    const renderWrap = wrap => {
+      if (disconnected) return Promise.resolve(false);
+      const pageNode = wrap?.querySelector(".layout-page");
+      return pageNode ? renderLayoutPageBackground(pageNode, () => !disconnected && (printing || visible.has(wrap))) : Promise.resolve(false);
+    };
+    const observer = typeof IntersectionObserver === "function"
+      ? new IntersectionObserver(entries => {
+        if (disconnected) return;
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            visible.add(entry.target);
+            if (!printing) void renderWrap(entry.target);
+          } else {
+            visible.delete(entry.target);
+            if (!printing) releasePage(entry.target.querySelector(".layout-page"));
+          }
+        }
+      }, {
+        root: scroll || null,
+        rootMargin: "1800px 0px",
+        threshold: 0
+      })
+      : null;
+    if (observer) {
+      for (const wrap of wraps) observer.observe(wrap);
+    } else {
+      for (const wrap of wraps) {
+        visible.add(wrap);
+        void renderWrap(wrap);
+      }
+    }
+    container._litmtransBgManager = {
+      prepareForPrint() {
+        printing = true;
+      },
+      async preparePageForPrint(pageNode) {
+        await pageNode._litmtransBgPromise;
+        if (!disconnected) await renderLayoutPageBackground(pageNode, () => true, false);
+      },
+      releasePageAfterPrint(pageNode) {
+        if (!visible.has(pageNode.closest(".layout-page-wrap"))) releasePage(pageNode);
+      },
+      refreshVisible() {
+        if (disconnected) return;
+        for (const wrap of visible) void renderWrap(wrap);
+      },
+      resume() {
+        printing = false;
+        for (const wrap of wraps) {
+          if (!visible.has(wrap)) releasePage(wrap.querySelector(".layout-page"));
+        }
+        this.refreshVisible();
+      },
+      disconnect() {
+        disconnected = true;
+        observer?.disconnect();
+        for (const wrap of wraps) releasePage(wrap.querySelector(".layout-page"));
+      }
+    };
   }
 
   function reflectAutomaticLayoutFont(container) {
@@ -3230,7 +4124,9 @@
     container.replaceChildren();
     container.hidden = false;
     container.appendChild(nextDocument);
+    if (useTranslation) container.dataset.layoutExportIdentity = `${layoutFitSnapshotKey("translation")}|${model.pages.length}`;
     installLayoutImageMemoryManager(container, scroll);
+    if (useTranslation) installLayoutBackgroundManager(container, scroll);
     // KaTeX renders synchronously, but CSS layout, fonts, and ResizeObserver
     // work settle across several frames. Keep every page hidden until the
     // complete document has reached a quiet final fit.
@@ -3242,6 +4138,11 @@
       // version before it can reveal anything.
       void scheduleLayoutPaneSettle(container, scroll, renderVersion, position);
     });
+  }
+
+  function updateTableDisplay() {
+    const pages = [...els["translation-layout"].querySelectorAll(".layout-page")];
+    fitLayoutTables(pages);
   }
 
   function renderLayoutPanes() {
@@ -3439,6 +4340,7 @@
     els["translation-only-button"].classList.toggle("active", view === "translation");
     const singlePane = view !== "both";
     const layoutLocked = state.mode === "layout";
+    els["translate-tables-control"].hidden = !layoutLocked;
     els["sync-scroll-check"].checked = layoutLocked ? true : state.syncScroll;
     els["sync-scroll-check"].disabled = singlePane || layoutLocked;
     els["sync-scroll-check"].title = singlePane
@@ -3643,7 +4545,7 @@
   }
 
   function applyPreviewScale(scale, anchor = null) {
-    const image = els["image-preview-image"];
+    const image = state.previewTable ? els["table-preview-content"] : els["image-preview-image"];
     const stage = image.closest(".image-preview-stage");
     const oldRect = image.getBoundingClientRect();
     const stageRect = stage?.getBoundingClientRect();
@@ -3653,11 +4555,12 @@
     const anchorY = anchor && oldRect.height
       ? Math.max(0, Math.min(1, (anchor.clientY - oldRect.top) / oldRect.height))
       : .5;
-    const naturalWidth = Number(image.naturalWidth || 1);
-    const naturalHeight = Number(image.naturalHeight || 1);
+    const naturalWidth = Number(state.previewTable?.width || image.naturalWidth || 1);
+    const naturalHeight = Number(state.previewTable?.height || image.naturalHeight || 1);
     state.previewScale = Math.max(.1, Math.min(8, Number(scale) || 1));
     image.style.width = `${Math.max(1, Math.round(naturalWidth * state.previewScale))}px`;
     image.style.height = `${Math.max(1, Math.round(naturalHeight * state.previewScale))}px`;
+    if (state.previewTable) els["table-preview-body"].style.transform = `scale(${state.previewScale})`;
     els["image-preview-scale"].textContent = `${Math.round(state.previewScale * 100)}%`;
     if (anchor && stage && stageRect) {
       const nextRect = image.getBoundingClientRect();
@@ -3669,11 +4572,13 @@
   function fitPreviewImage() {
     const image = els["image-preview-image"];
     const stage = image.closest(".image-preview-stage");
-    if (!image.naturalWidth || !image.naturalHeight || !stage) return;
+    const width = state.previewTable?.width || image.naturalWidth;
+    const height = state.previewTable?.height || image.naturalHeight;
+    if (!width || !height || !stage) return;
     const scale = Math.min(
       1,
-      Math.max(.1, (stage.clientWidth - 34) / image.naturalWidth),
-      Math.max(.1, (stage.clientHeight - 34) / image.naturalHeight)
+      Math.max(.1, (stage.clientWidth - 34) / width),
+      state.previewTable ? 1 : Math.max(.1, (stage.clientHeight - 34) / height)
     );
     applyPreviewScale(scale);
     stage.scrollLeft = 0;
@@ -3682,6 +4587,8 @@
 
   function openImagePreview(image) {
     if (!image) return;
+    state.previewTable = null;
+    setPreviewTableMode(false);
     state.previewImage = {
       name: String(image.name || "image.png"),
       mimeType: String(image.mimeType || "image/png"),
@@ -3728,6 +4635,19 @@
   }
 
   async function reusePreviewImage() {
+    if (state.previewTable) {
+      const table = state.previewTable;
+      if (!table.imageURL) return;
+      try {
+        const image = { url: table.imageURL, name: table.name + "-original" };
+        if (state.aiMode === "web") {
+          const dataURL = await imageDescriptorDataURL(image);
+          await prepareWebReference({ image: { name: image.name, dataURL } });
+        } else await addImageDescriptorToComposer(image);
+        els["image-preview-dialog"].close();
+      } catch (error) { toast(error.message || "添加表格原图失败", "error"); }
+      return;
+    }
     if (!state.previewImage) return;
     try {
       await addImageDescriptorToComposer(state.previewImage);
@@ -4524,7 +5444,7 @@
       els["system-messages-badge"].hidden = unread <= 0;
     }
 
-    if (!startupNoticeGateClosed) return;
+    if (!startupNoticeGateClosed || tableInteraction || document.querySelector("dialog[open]")) return;
 
     const modal = els["announcement-modal"];
     if (currentAlertAnnouncement || modal?.open) return;
@@ -4588,9 +5508,6 @@
     if (subtitle) subtitle.textContent = notice.date ? `版本 v${notice.version} · ${notice.date}` : `版本 v${notice.version}`;
     body.replaceChildren();
     const sections = Array.isArray(notice.sections) ? notice.sections : [{ version: notice.version, entries: notice.entries }];
-    const intro = document.createElement("p");
-    intro.textContent = sections.length > 1 ? "以下是尚未展示的版本更新：" : "本次更新内容：";
-    body.appendChild(intro);
     for (const section of sections) {
       if (sections.length > 1) {
         const heading = document.createElement("h3");
@@ -4936,7 +5853,7 @@
       if (target === "source") {
         return Boolean(state.data?.layout?.model?.pages?.length);
       }
-      return Boolean(state.data?.layout?.model?.pages?.some(page =>
+      return Boolean(state.data?.layout?.model?.tableTranslationHash || state.data?.layout?.model?.pages?.some(page =>
         (page.blocks || []).some(block => block.translatable && block.translatedText)
       ));
     }
@@ -4950,8 +5867,12 @@
   }
 
   function layoutPDFExportIdentity() {
-    const layoutIdentity = String(state.data?.layout?.meta?.identity || state.data?.layout?.meta?.sourceFingerprint || "");
-    return layoutIdentity ? `${layoutIdentity}:pdf-${LAYOUT_PDF_EXPORT_REVISION}` : "";
+    const layoutIdentity = String(state.data?.layout?.meta?.identity || state.data?.layout?.meta?.sourceFingerprint || state.data?.layout?.model?.sourceFingerprint || "");
+    const parseRevisionID = String(state.data?.parsed?.meta?.parseRevisionID || "");
+    const tables = state.settings?.translateTables === false ? "" : state.data?.layout?.model?.tableTranslationHash;
+    const retranslationCount = Number(state.data?.layout?.meta?.retranslationCount || 0);
+    const rev = retranslationCount > 0 ? `:rev-${retranslationCount}` : "";
+    return layoutIdentity ? `${parseRevisionID ? `${parseRevisionID}:` : ""}${layoutIdentity}${tables ? `:tables-${tables}` : ""}${rev}:pdf-${LAYOUT_PDF_EXPORT_REVISION}` : "";
   }
 
   async function waitForLayoutPanePDFReady(pane = "translation") {
@@ -5001,6 +5922,7 @@
       renderLayoutPane(container, els["translation-scroll"], model, true);
       container.dataset.layoutExportIdentity = identity;
     }
+    updateTableDisplay();
     if (!await waitForLayoutPanePDFReady("translation")) throw new Error("排版译文尚未完成排版，请稍后再试");
     return container;
   }
@@ -5090,6 +6012,7 @@
     for (const textNode of textNodes) {
       const parent = textNode.parentElement;
       if (!parent || !textNode.textContent?.trim() || parent.closest(".layout-formula, .katex, svg, canvas, .layout-line-debug-box")) continue;
+      if (sourcePage.classList.contains("has-pdf-bg") && parent.closest('[data-bg-redundant="1"]')) continue;
       for (const part of printTextSegments(textNode.textContent)) {
         range.setStart(textNode, part.start);
         range.setEnd(textNode, part.end);
@@ -5244,6 +6167,7 @@
       .filter(atom => !(atom.classList.contains("katex") && atom.closest(".katex-display, .litmtrans-math")));
     for (const atom of candidates) {
       if (candidates.some(other => other !== atom && other.contains(atom))) continue;
+      if (sourcePage.classList.contains("has-pdf-bg") && atom.closest('[data-bg-redundant="1"]')) continue;
       const rect = atom.getBoundingClientRect();
       if (rect.width <= .05 || rect.height <= .05) continue;
       const katexRoot = atom.classList.contains("katex") ? atom : atom.querySelector(".katex");
@@ -5279,6 +6203,19 @@
   }
 
   async function withFrozenLayoutPrintRoot(callback) {
+    return withReaderPrintSnapshot(() => buildFrozenLayoutPrintRoot(callback));
+  }
+
+  async function withReaderPrintSnapshot(callback) {
+    const previous = readerPrintSnapshotTask;
+    let release;
+    readerPrintSnapshotTask = new Promise(resolve => { release = resolve; });
+    await previous;
+    try { return await callback(); }
+    finally { release(); }
+  }
+
+  async function buildFrozenLayoutPrintRoot(callback) {
     if (!await waitForLayoutPDFReady()) throw new Error("排版尚未完成，无法生成固定文本PDF");
     const source = els["translation-layout"];
     const pages = [...source.querySelectorAll(".layout-page")];
@@ -5297,40 +6234,49 @@
     }), { width: 1, height: 1 });
     style.textContent = frozenPrintStyle(pages, paper);
     document.head.appendChild(style);
-    pages.forEach((page, index) => {
-      const width = Math.max(1, Number(page.dataset.sourceWidth || page.offsetWidth || 1));
-      const height = Math.max(1, Number(page.dataset.sourceHeight || page.offsetHeight || 1));
-      const sheet = document.createElement("section");
-      sheet.className = "layout-print-page";
-      // Gecko can round a custom sheet a fraction of a CSS pixel short. The
-      // page and its cloned paint root must use the *same* quantized height:
-      // making only the outer sheet shorter turns every source page into a
-      // one-pixel overflow continuation (16 pages became 32).
-      const printedHeight = Math.max(1, height - 1);
-      sheet.style.cssText = `width:${width}px;height:${printedHeight}px;`;
-      const clone = page.cloneNode(true);
-      clone.style.width = `${width}px`;
-      clone.style.height = `${printedHeight}px`;
-      clone.style.zoom = "1";
-      clone.style.transform = "none";
-      clearFlowingTextForPrint(clone);
-      sheet.appendChild(clone);
-      // 冻结文字和公式前暂用纸张配色，避免把夜间颜色写入导出副本。
-      page.classList.add("layout-print-source");
-      try {
-        appendFrozenTextFragments(page, clone);
-        appendFrozenInlineAtoms(page, clone);
+    const backgrounds = source._litmtransBgManager;
+    try {
+      for (const page of pages) {
+        await backgrounds?.preparePageForPrint(page);
+        const width = Math.max(1, Number(page.dataset.sourceWidth || page.offsetWidth || 1));
+        const height = Math.max(1, Number(page.dataset.sourceHeight || page.offsetHeight || 1));
+        const sheet = document.createElement("section");
+        sheet.className = "layout-print-page";
+        // Gecko can round a custom sheet a fraction of a CSS pixel short. The
+        // page and its cloned paint root must use the *same* quantized height:
+        // making only the outer sheet shorter turns every source page into a
+        // one-pixel overflow continuation (16 pages became 32).
+        const printedHeight = Math.max(1, height - 1);
+        sheet.style.cssText = `width:${width}px;height:${printedHeight}px;`;
+        const clone = page.cloneNode(true);
+        clone.style.width = `${width}px`;
+        clone.style.height = `${printedHeight}px`;
+        clone.style.zoom = "1";
+        clone.style.transform = "none";
+        clearFlowingTextForPrint(clone);
+        if (page.classList.contains("has-pdf-bg")) {
+          clone.querySelectorAll('[data-bg-redundant="1"]').forEach(node => node.remove());
+        }
+        await copyLayoutCanvasPaint(page, clone);
+        sheet.appendChild(clone);
+        // 冻结文字和公式前暂用纸张配色，避免把夜间颜色写入导出副本。
+        page.classList.add("layout-print-source");
+        try {
+          appendFrozenTextFragments(page, clone);
+          appendFrozenInlineAtoms(page, clone);
+        }
+        finally { page.classList.remove("layout-print-source"); }
+        root.appendChild(sheet);
+        backgrounds?.releasePageAfterPrint(page);
       }
-      finally { page.classList.remove("layout-print-source"); }
-      root.appendChild(sheet);
-    });
-    document.body.appendChild(root);
-    document.body.dataset.printSnapshot = "layout";
-    const pageSizes = pages.map(page => ({
-      width: Math.max(1, Number(page.dataset.sourceWidth || page.offsetWidth || 1)),
-      height: Math.max(1, Number(page.dataset.sourceHeight || page.offsetHeight || 1))
-    }));
-    try { return await callback(pages.length, paper, pageSizes); }
+      document.body.appendChild(root);
+      document.body.dataset.printSnapshot = "layout";
+      const pageSizes = pages.map(page => ({
+        width: Math.max(1, Number(page.dataset.sourceWidth || page.offsetWidth || 1)),
+        height: Math.max(1, Number(page.dataset.sourceHeight || page.offsetHeight || 1))
+      }));
+      return await callback(pages.length, paper, pageSizes);
+    }
     finally {
       delete document.body.dataset.printSnapshot;
       void syncReaderTheme();
@@ -5359,12 +6305,29 @@
     }`;
   }
 
-  function copyLayoutCanvasPaint(sourcePage, printPage) {
-    const sourceCanvases = [...sourcePage.querySelectorAll("canvas")];
+  async function copyLayoutCanvasPaint(sourcePage, printPage) {
+    printPage.classList.remove("has-themed-pdf-bg");
+    printPage.querySelectorAll(".reader-background-overlay, .reader-image-overlay").forEach(node => node.remove());
+    const sourceCanvases = [...sourcePage.querySelectorAll("canvas:not(.reader-background-overlay):not(.reader-image-overlay)")];
     const printCanvases = [...printPage.querySelectorAll("canvas")];
     for (let index = 0; index < Math.min(sourceCanvases.length, printCanvases.length); index++) {
       const source = sourceCanvases[index];
       const target = printCanvases[index];
+      if (source.classList.contains("layout-page-bg")) {
+        if (!sourcePage.classList.contains("has-pdf-bg")) {
+          target.remove();
+          continue;
+        }
+        // 压缩原始背景交给浏览器按需解码，打印副本不再常驻一整页画布。
+        const image = document.createElement("img");
+        image.className = "layout-page-bg";
+        image.setAttribute("aria-hidden", "true");
+        image.alt = "";
+        image.src = source.toDataURL("image/png");
+        target.replaceWith(image);
+        await image.decode();
+        continue;
+      }
       try {
         target.width = source.width;
         target.height = source.height;
@@ -5375,6 +6338,11 @@
   }
 
   async function withLayoutPaintPrintRoot(callback) {
+    const pane = arguments[1];
+    return withReaderPrintSnapshot(() => buildLayoutPaintPrintRoot(callback, pane));
+  }
+
+  async function buildLayoutPaintPrintRoot(callback) {
     const pane = arguments[1] === "source" ? "source" : "translation";
     const source = pane === "source"
       ? await ensureSourceLayoutExportPane()
@@ -5411,31 +6379,36 @@
     style.id = "litmtrans-layout-paint-print-style";
     style.textContent = layoutPaintPrintStyle(printPaper, printScale);
     document.head.appendChild(style);
-    pages.forEach((page, index) => {
-      const { width, height } = pageSizes[index];
-      const sheet = document.createElement("section");
-      sheet.className = "layout-paint-print-page";
-      // Match the Python/Qt exporter: the physical page and paint scale agree,
-      // while the containing sheet stays one CSS pixel short to absorb printer
-      // quantization without producing a blank continuation page.
-      sheet.style.height = `${Math.max(1, printPaper.height - 1)}px`;
-      const clone = page.cloneNode(true);
-      clone.style.width = `${width}px`;
-      clone.style.height = `${height}px`;
-      clone.style.zoom = "1";
-      clone.style.transform = `scale(${printScale})`;
-      clone.style.transformOrigin = "top left";
-      clone.querySelectorAll(".layout-line-debug-box, .layout-collision-debug-layer, .layout-awaiting-overlay")
-        .forEach(node => node.remove());
-      copyLayoutCanvasPaint(page, clone);
-      sheet.appendChild(clone);
-      root.appendChild(sheet);
-    });
-    document.body.appendChild(root);
-    document.body.dataset.printSnapshot = "layout-paint";
-    await nextLayoutPaint();
-    await nextLayoutPaint();
-    try { return await callback(pages.length, printPaper); }
+    const backgrounds = source._litmtransBgManager;
+    try {
+      for (const [index, page] of pages.entries()) {
+        await backgrounds?.preparePageForPrint(page);
+        const { width, height } = pageSizes[index];
+        const sheet = document.createElement("section");
+        sheet.className = "layout-paint-print-page";
+        // Match the Python/Qt exporter: the physical page and paint scale agree,
+        // while the containing sheet stays one CSS pixel short to absorb printer
+        // quantization without producing a blank continuation page.
+        sheet.style.height = `${Math.max(1, printPaper.height - 1)}px`;
+        const clone = page.cloneNode(true);
+        clone.style.width = `${width}px`;
+        clone.style.height = `${height}px`;
+        clone.style.zoom = "1";
+        clone.style.transform = `scale(${printScale})`;
+        clone.style.transformOrigin = "top left";
+        clone.querySelectorAll(".layout-line-debug-box, .layout-collision-debug-layer, .layout-awaiting-overlay")
+          .forEach(node => node.remove());
+        await copyLayoutCanvasPaint(page, clone);
+        sheet.appendChild(clone);
+        root.appendChild(sheet);
+        backgrounds?.releasePageAfterPrint(page);
+      }
+      document.body.appendChild(root);
+      document.body.dataset.printSnapshot = "layout-paint";
+      await nextLayoutPaint();
+      await nextLayoutPaint();
+      return await callback(pages.length, printPaper);
+    }
     finally {
       delete document.body.dataset.printSnapshot;
       void syncReaderTheme();
@@ -5512,6 +6485,10 @@
   }
 
   async function withStreamPrintRoot(pane, callback) {
+    return withReaderPrintSnapshot(() => buildStreamPrintRoot(pane, callback));
+  }
+
+  async function buildStreamPrintRoot(pane, callback) {
     const sourceMarkdown = Markdown.repairEquationReferenceTranslation(
       "",
       String(state.data?.parsed?.markdown || "")
@@ -5527,7 +6504,7 @@
     const content = document.createElement("article");
     content.className = "markdown-body";
     root.appendChild(content);
-    renderMarkdownInto(content, markdown, { imageLoading: "eager" });
+    renderMarkdownInto(content, markdown, { imageLoading: "eager", parseProvider: state.data?.parsed?.meta?.parseProvider });
     const style = document.createElement("style");
     style.id = "litmtrans-stream-print-style";
     style.textContent = streamPrintStyle();
@@ -5978,24 +6955,33 @@
     }
   }
 
-  async function createLayoutPDFAttachmentsAfterTranslation() {
+  async function createLayoutPDFAttachmentsAfterTranslation({ tableUpdate = false } = {}) {
+    if (!tableUpdate && (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending)) return null;
     if (!hasCurrentTranslationForExport(true)) return;
+    const expectedIdentity = layoutPDFExportIdentity();
     // The final translation publication precedes the visual settle task by a
     // few paints. Await it before marking the background attachment export as
     // printable, so PDFs never preserve the temporary fitting mask.
     if (!await waitForLayoutPDFReady()) return null;
+    if (expectedIdentity !== layoutPDFExportIdentity()) return null;
+    if (!tableUpdate && (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending)) return null;
     // This command is only queued after the translation service has emitted
     // its final publication. It consumes the reader's existing fitted state
     // and deliberately never starts another visual-fit pass.
     const layoutIdentity = layoutPDFExportIdentity();
     if (!layoutIdentity) throw new Error("缺少已完成排版译文的版本标识");
     const targetLanguage = state.data?.layout?.meta?.targetLanguage || state.settings?.targetLanguage;
-    return withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>
-        hostCall("create-layout-pdf-attachments", { layoutIdentity, targetLanguage, expectedPages, layoutPaper })
-    );
+    const parseRevisionID = state.data?.parsed?.meta?.parseRevisionID || "";
+    exportBusy = true;
+    updateOperationUI();
+    try { return await withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>
+        hostCall("create-layout-pdf-attachments", { layoutIdentity, parseRevisionID, targetLanguage, expectedPages, layoutPaper })
+    ); }
+    finally { exportBusy = false; updateOperationUI(); }
   }
 
   function queueLayoutPDFAttachmentsAfterFinalPublication() {
+    if (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending || tableOpenResolved !== tableDocumentKey()) return;
     const model = state.data?.layout?.model;
     const layoutPDFIdentity = layoutPDFExportIdentity();
     if (!model?.pages?.length || !layoutPDFIdentity) return;
@@ -6011,7 +6997,10 @@
       try {
         const attachments = await createLayoutPDFAttachmentsAfterTranslation();
         if (attachments?.cancelled) addLog("已保留原PDF附件和笔记；新译文可在阅读器中查看或手动导出。");
-        else if (attachments) addLog(`已在文献条目下生成PDF附件：${attachments.translationTitle}、${attachments.comparisonTitle}`);
+        else if (attachments) {
+          if (state.data?.item) state.data.item.layoutPDFIdentity = layoutPDFIdentity;
+          addLog(`已在文献条目下生成PDF附件：${attachments.translationTitle}、${attachments.comparisonTitle}`);
+        }
         else state.layoutPDFGenerationKey = "";
       }
       catch (error) {
@@ -6020,6 +7009,187 @@
         toast(message, "warning");
       }
     })();
+  }
+
+  function tableDocumentKey() {
+    return `${state.data?.item?.documentID || ""}|${state.settings?.targetLanguage || ""}`;
+  }
+
+  async function waitForTableDecisionSlot(key) {
+    while (key === tableDocumentKey() && (!startupNoticeGateClosed || document.hidden
+      || document.querySelector("dialog[open]") || state.running.size || exportBusy || document.body.dataset.printSnapshot)) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return key === tableDocumentKey();
+  }
+
+  function tableDecision(message, { manual = false } = {}) {
+    const dialog = $("table-decision-dialog");
+    $("table-decision-message").textContent = message;
+    $("table-decision-manual").hidden = !manual;
+    return new Promise(resolve => {
+      let accepted = false;
+      const yes = () => { accepted = true; dialog.close(); };
+      const no = () => dialog.close();
+      const byHand = () => { accepted = "manual"; dialog.close(); };
+      const close = () => {
+        $("table-decision-yes").removeEventListener("click", yes);
+        $("table-decision-no").removeEventListener("click", no);
+        $("table-decision-manual").removeEventListener("click", byHand);
+        dialog.removeEventListener("close", close);
+        resolve(accepted);
+      };
+      $("table-decision-yes").addEventListener("click", yes);
+      $("table-decision-no").addEventListener("click", no);
+      $("table-decision-manual").addEventListener("click", byHand);
+      dialog.addEventListener("close", close);
+      dialog.showModal();
+    });
+  }
+
+  function queueTableTask(action) {
+    const key = tableDocumentKey();
+    tableDecisionQueue = tableDecisionQueue.then(async () => {
+      if (!await waitForTableDecisionSlot(key)) return;
+      tableInteraction = true;
+      updateOperationUI();
+      try { await action(key); }
+      catch (error) { if (!error.cancelled) toast(error.message || String(error), "error"); }
+      finally {
+        tableInteraction = false;
+        updateOperationUI();
+        updateAnnouncementUI();
+      }
+    });
+    return tableDecisionQueue;
+  }
+
+  async function rememberTableDisplay(enabled, changed, status) {
+    status ||= await hostCall("table-translation-status");
+    const result = await hostCall("set-table-display", { enabled, changed, hasPDF: status.hasPDF });
+    state.data.item.layoutTableDisplay = enabled;
+    state.data.item.tablePDFPending = Boolean(result.tablePDFPending);
+  }
+
+  async function askTablePDFUpdate(key, status) {
+    if (!state.data?.item?.tablePDFPending || !status.hasPDF || !hasCurrentTranslationForExport(true)) return;
+    if (!await waitForTableDecisionSlot(key)) return;
+    const revision = tablePreferenceRevision;
+    if (!await tableDecision("表格显示已切换，是否更新条目下的译文 PDF 和对照 PDF？已有批注的旧附件会保留。")) return;
+    if (key !== tableDocumentKey() || revision !== tablePreferenceRevision) return;
+    const previousMode = state.mode, previousView = state.readerView;
+    let attachments;
+    try {
+      state.mode = "layout";
+      state.readerView = "both";
+      renderMode();
+      await ensureTranslationLayoutExportPane();
+      attachments = await createLayoutPDFAttachmentsAfterTranslation({ tableUpdate: true });
+    } finally {
+      state.mode = previousMode;
+      state.readerView = previousView;
+      renderMode();
+    }
+    if (attachments && !attachments.cancelled) {
+      state.data.item.tablePDFPending = false;
+      state.data.item.layoutPDFIdentity = layoutPDFExportIdentity();
+      toast("PDF 附件已更新");
+    }
+  }
+
+  function queueTableOpenCheck() {
+    const key = tableDocumentKey();
+    if (tableOpenChecked === key) return;
+    tableOpenChecked = key;
+    queueTableTask(async current => {
+      try {
+        if (!state.data?.parsed?.hasLayout) return;
+        const status = await hostCall("table-translation-status");
+        const revision = tablePreferenceRevision;
+        let enabled = state.settings?.translateTables !== false;
+        const previous = status.previousDisplay ?? status.available;
+        if (!enabled && previous && status.available) {
+          if (!await waitForTableDecisionSlot(current)) return;
+          enabled = await tableDecision("这篇文献此前启用了翻译表格，当前全局设置为不翻译。是否重新勾选“翻译表格”？此选择会修改全局设置。选择否将显示原表图片。");
+          if (revision !== tablePreferenceRevision) return;
+          if (enabled) {
+            await hostCall("set-table-preference", { enabled: true });
+            state.settings.translateTables = true;
+          }
+        }
+        els["translate-tables-check"].checked = enabled;
+        const changed = Boolean(status.available && previous !== enabled);
+        await rememberTableDisplay(enabled, changed, status);
+        updateTableDisplay();
+        if (changed) await askTablePDFUpdate(current, status);
+      } finally {
+        if (current === tableDocumentKey()) tableOpenResolved = current;
+      }
+    }).then(() => {
+      if (key === tableDocumentKey() && tableOpenResolved === key && state.data?.layout?.meta?.complete) {
+        queueLayoutPDFAttachmentsAfterFinalPublication();
+      }
+    });
+  }
+
+  async function changeTablePreference(enabled, { external = false } = {}) {
+    const originalKey = tableDocumentKey();
+    const before = state.settings?.translateTables !== false;
+    const revision = ++tablePreferenceRevision;
+    tablePreferenceSaving = true;
+    updateOperationUI();
+    try {
+      while (exportBusy || document.body.dataset.printSnapshot) await new Promise(resolve => setTimeout(resolve, 100));
+      if (external) enabled = (await hostCall("get-settings")).translateTables !== false;
+      if (!external) await hostCall("set-table-preference", { enabled });
+      if (originalKey !== tableDocumentKey() || revision !== tablePreferenceRevision) return;
+      state.settings = { ...state.settings, translateTables: enabled };
+      els["translate-tables-check"].checked = enabled;
+      if (before !== enabled && state.data?.layout?.model?.tableTranslationHash) state.data.item.tablePDFPending = true;
+      updateTableDisplay();
+    } catch (error) {
+      els["translate-tables-check"].checked = before;
+      toast(error.message || String(error), "error");
+      return;
+    } finally { tablePreferenceSaving = false; updateOperationUI(); }
+    return queueTableTask(async key => {
+      if (key !== originalKey || revision !== tablePreferenceRevision) return;
+      if (!state.data?.parsed?.hasLayout) return;
+      const status = await hostCall("table-translation-status");
+      const changed = Boolean(status.available && before !== enabled);
+      await rememberTableDisplay(enabled, changed, status);
+      if (enabled && status.missing && !external) {
+        const message = status.available ? "部分表格缺少译文，是否补翻缺失的表格？" : "当前文献的表格尚无可用译文，是否翻译？";
+        if (!await waitForTableDecisionSlot(key)) return;
+        const choice = await tableDecision(message, { manual: true });
+        if (key !== tableDocumentKey() || revision !== tablePreferenceRevision) return;
+        if (choice) {
+          if (choice === "manual") {
+            await openTableManualTranslation();
+            return;
+          }
+          const oldHash = state.data?.layout?.model?.tableTranslationHash || "";
+          let result, failure;
+          tableSupplementRunning = true;
+          updateOperationUI();
+          try { result = await hostCall("translate-tables", { engine: state.aiMode === "web" ? "deepseek_web" : "api", aiMode: state.aiMode }); }
+          catch (error) { failure = error; }
+          finally { tableSupplementRunning = false; updateOperationUI(); }
+          if (key !== tableDocumentKey()) return;
+          if (failure) {
+            if (!failure.cancelled) toast(failure.message || String(failure), "error");
+            if (revision === tablePreferenceRevision) await askTablePDFUpdate(key, status);
+            return;
+          }
+          setData(result.state);
+          if (state.settings?.translateTables !== false && (state.data?.layout?.model?.tableTranslationHash || "") !== oldHash) await rememberTableDisplay(true, true, status);
+          if (result.remaining) toast("部分表格未获得有效译文，已保留原图", "warning");
+        }
+      } else if (enabled && !status.total && !external) {
+        toast("当前文献没有可翻译的结构化表格");
+      }
+      if (revision === tablePreferenceRevision) await askTablePDFUpdate(key, status);
+    });
   }
 
   function chatContextPayload() {
@@ -6614,6 +7784,15 @@
     document.addEventListener("click", event => {
       if (menu && !menu.contains(event.target)) removeMenu();
       if (event.button !== 0) return;
+      const tableTarget = event.target?.closest?.(".layout-table-translation-host, .layout-table-wrap table");
+      if (tableTarget && readerPaneForTarget(tableTarget)
+        && (state.settings?.translateTables !== false || !tableTarget.classList.contains("layout-table-translation-host"))
+        && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        openLayoutTableViewer(tableTarget);
+        return;
+      }
       const formula = layoutFormulaTarget(event.target);
       if (formula && !event.ctrlKey && !event.metaKey && !event.shiftKey && !formula.closest("#layout-formula-lightbox")) {
         event.preventDefault();
@@ -7174,6 +8353,9 @@
     state.chatRenderMarkdown = settings.chatRenderMarkdown !== false;
     els["setting-chat-api-key"].value = settings.chatAPIKey || "";
     els["setting-mineru-token"].value = settings.mineruToken || "";
+    els["setting-parse-provider"].value = settings.parseProvider || "mineru";
+    els["setting-paddle-token"].value = settings.paddleToken || "";
+    updateParserFields();
     els["setting-mineru-model"].value = "vlm";
     if (els["setting-caj-double-click-action"]) els["setting-caj-double-click-action"].value = settings.cajDoubleClickAction || "ask";
     if (els["setting-show-native-reader-ask-ai"]) els["setting-show-native-reader-ask-ai"].checked = settings.showNativeReaderAskAI !== false;
@@ -7757,6 +8939,12 @@
     return persistPromptLibrary();
   }
 
+  function updateParserFields() {
+    const paddle = els["setting-parse-provider"].value === "paddle";
+    els["setting-mineru-fields"].hidden = paddle;
+    els["setting-paddle-fields"].hidden = !paddle;
+  }
+
   function settingsPayload() {
     const translationProvider = els["setting-provider"].value;
     const chatProvider = els["setting-chat-provider"].value;
@@ -7796,6 +8984,7 @@
       webPageImageQuality: els["setting-web-page-image-quality"].value,
       webInputMode: els["setting-web-input-mode-auto"].checked ? "auto" : "clipboard",
       deleteWebTranslationSessions: els["setting-delete-web-translation-sessions"].checked,
+      parseProvider: els["setting-parse-provider"].value,
       mineruModel: "vlm",
       // MinerU's stable parsing profile is intentionally not user-configurable.
       mineruOCR: false,
@@ -8086,11 +9275,15 @@
     });
   }
 
-  async function ensureMinerUTokenForParse(options = {}) {
+  async function ensureParserTokenForParse(options = {}) {
     const settings = await hostCall("get-settings");
     state.settings = mergePromptLibraryDraft(settings);
     const expired = options.reason === "expired";
-    if (!options.force && String(settings?.mineruToken || "").trim()) return true;
+    const paddle = settings.parseProvider === "paddle";
+    const name = paddle ? "Paddle" : "MinerU";
+    const key = paddle ? "paddleToken" : "mineruToken";
+    if (!options.force && String(settings?.[key] || "").trim()) return true;
+    if (!options.force && state.data?.parsed?.markdown) return true;
 
     const dialog = els["mineru-token-dialog"];
     const title = els["mineru-token-dialog-title"];
@@ -8098,13 +9291,22 @@
     const input = els["mineru-token-input"];
     const errorNode = els["mineru-token-error"];
     const saveButton = els["save-mineru-token-and-parse"];
-    title.textContent = expired ? "MinerU访问令牌可能已过期" : "配置MinerU访问令牌";
+    title.textContent = expired ? `${name}访问令牌可能已失效` : `配置${name}访问令牌`;
+    dialog.querySelector("label[for=mineru-token-input]").textContent = `${name}访问令牌`;
+    const link = dialog.querySelector("a[data-external-url]");
+    if (link) {
+      const url = paddle ? "https://aistudio.baidu.com/account/accessToken" : "https://mineru.net/apiManage/token";
+      link.href = link.dataset.externalUrl = url;
+      link.dataset.mineruTokenLink = paddle ? "false" : "true";
+      link.textContent = `${name}令牌官网`;
+    }
+    input.placeholder = `请粘贴${name}访问令牌`;
     description.textContent = expired
-      ? "MinerU令牌有效期为三个月，请前往官网重新创建并替换。"
+      ? `${name}访问令牌无法通过验证，请前往官网检查并替换。`
       : "解析文献前需要先填写访问令牌。";
     input.value = "";
     errorNode.hidden = !expired;
-    errorNode.textContent = expired ? "当前令牌已无法通过MinerU验证，请粘贴新令牌后重试。" : "";
+    errorNode.textContent = expired ? `当前令牌已无法通过${name}验证，请粘贴新令牌后重试。` : "";
     saveButton.disabled = false;
     saveButton.textContent = expired ? "保存新令牌并重试" : "保存并继续解析";
 
@@ -8128,7 +9330,7 @@
       const onSave = async () => {
         const token = input.value.trim();
         if (!token) {
-          errorNode.textContent = "请先填写MinerU访问令牌。";
+          errorNode.textContent = `请先填写${name}访问令牌。`;
           errorNode.hidden = false;
           input.focus();
           return;
@@ -8136,9 +9338,9 @@
         try {
           saveButton.disabled = true;
           errorNode.hidden = true;
-          await hostCall("save-mineru-token", { token });
-          state.settings = { ...state.settings, mineruToken: token };
-          els["setting-mineru-token"].value = token;
+          await hostCall(paddle ? "save-paddle-token" : "save-mineru-token", { token });
+          state.settings = { ...state.settings, [key]: token };
+          els[paddle ? "setting-paddle-token" : "setting-mineru-token"].value = token;
           finish(true);
           dialog.close("saved");
         }
@@ -8161,9 +9363,9 @@
     try {
       lastActionError = "";
       state.reasoning = "";
-      if (method === "parse" && !await ensureMinerUTokenForParse()) return null;
+      if (method === "parse" && !await ensureParserTokenForParse()) return null;
       const result = await hostCall(method, payload);
-      if (method === "parse" && result?.state) setData(result.state);
+      if ((method === "parse" || method === "supplement-paddle-lines") && result?.state) setData(result.state);
       else if (method === "translate") {
         state.data.translation = result;
         renderStreamPanes();
@@ -8214,12 +9416,12 @@
         const message = String(error?.message || error);
         lastActionError = message;
         const cacheProtectionPrefix = "DEEPSEEK_FAST_CACHE_PROTECTION:";
-        if (method === "parse" && U.isMinerUTokenCredentialError?.(error)) {
+        if (method === "parse" && state.settings?.parseProvider !== "paddle" && U.isMinerUTokenCredentialError?.(error)) {
           const notice = "MinerU访问令牌可能已过期或失效，请前往官网重新创建。";
           lastActionError = notice;
           setStatus("MinerU访问令牌需要更新", null, "error");
           addLog(notice, "error");
-          const replaced = await ensureMinerUTokenForParse({ force: true, reason: "expired" });
+          const replaced = await ensureParserTokenForParse({ force: true, reason: "expired" });
           if (replaced) return runAction(method, payload, options);
         }
         else if (message.startsWith(cacheProtectionPrefix)) {
@@ -8995,10 +10197,14 @@
         // checkpoint, not mistake it for a finished version and erase it.
         const force = Boolean(
           state.data?.layout?.meta?.complete
-          && Object.keys(state.data?.layout?.translations || {}).length
+          && (Object.keys(state.data?.layout?.translations || {}).length || state.data?.layout?.model?.tableTranslationHash)
         );
         if (force && !window.confirm("确认重新进行排版翻译？当前译文会继续用于阅读和导出，直到新译文完成并通过校验后自动替换。")) return;
-        if (force) setStatus("正在重新翻译 · 当前仍显示上一版，完成后自动替换", null, "running");
+        if (force) {
+          if (state.data?.item) state.data.item.layoutPDFIdentity = "";
+          state.layoutPDFGenerationKey = "";
+          setStatus("正在重新翻译 · 当前仍显示上一版，完成后自动替换", null, "running");
+        }
         const isWeb = state.aiMode === "web" || state.settings?.chatEngine === "deepseek_web" || state.settings?.translationProvider === "deepseek_web";
         const engine = isWeb ? "deepseek_web" : undefined;
         await runAction(
@@ -9017,20 +10223,28 @@
       await runAction("translate", { mode: translationMode, force, engine, aiMode: state.aiMode }, { success: force ? "重新翻译完成" : "全文翻译完成" });
     };
     els["translate-button"].addEventListener("click", () => { void startTranslation(); });
-    const openManualTranslation = async () => {
+    const openManualTranslation = async ({ tablesOnly = false } = {}) => {
       if (!state.data?.parsed?.markdown) {
         if (!window.confirm("这篇文献尚未解析。是否立即解析？")) return;
         const parsed = await runAction("parse", {}, { success: "解析完成" });
         if (!parsed) return;
       }
       const mode = state.mode === "layout" ? "layout" : "stream";
-      const result = await hostCall("manual-translation-command", { mode });
+      const result = await hostCall(tablesOnly ? "manual-table-command" : "manual-translation-command", { mode });
+      manualTablesOnly = tablesOnly;
+      manualTableContext = tablesOnly ? result : null;
       manualTranslationSteps = [{ command: String(result?.command || ""), response: "" }];
       manualLayoutTranslations = {};
       activeManualTranslationStep = 0;
       renderManualTranslationSteps();
       els["manual-translation-dialog"].showModal();
     };
+    openTableManualTranslation = () => openManualTranslation({ tablesOnly: true });
+    els["manual-translation-dialog"].addEventListener("close", () => {
+      if (!manualTablesOnly) return;
+      manualTablesOnly = false;
+      queueTableTask(async key => askTablePDFUpdate(key, await hostCall("table-translation-status")));
+    });
     const manualStepLabel = index => String(index + 1);
     const renderManualTranslationSteps = () => {
       const step = manualTranslationSteps[activeManualTranslationStep] || { command: "", response: "" };
@@ -9070,6 +10284,22 @@
     els["render-manual-translation"].addEventListener("click", async () => {
       const response = els["manual-translation-response"].value;
       if (!response.trim()) { setStatus("请先粘贴AI的回答", null, "neutral"); return; }
+      if (manualTablesOnly) {
+        try {
+          const key = tableDocumentKey();
+          tableInteraction = true;
+          const result = await hostCall("translate-tables", { manual: true, responses: response,
+            expectedFingerprint: manualTableContext.fingerprint, targetLanguage: manualTableContext.targetLanguage });
+          if (key !== tableDocumentKey()) return;
+          setData(result.state);
+          await rememberTableDisplay(state.settings?.translateTables !== false, true);
+          manualTablesOnly = false;
+          els["manual-translation-dialog"].close();
+          queueTableTask(async current => askTablePDFUpdate(current, await hostCall("table-translation-status")));
+        } catch (error) { toast(error.message || String(error), "error"); }
+        finally { tableInteraction = false; updateOperationUI(); }
+        return;
+      }
       const mode = state.mode === "layout" ? "layout" : "stream";
       manualTranslationSteps[activeManualTranslationStep].response = response;
       const responses = manualTranslationSteps.map(step => step.response).filter(Boolean);
@@ -9125,9 +10355,7 @@
         const pages = [...document.querySelectorAll(".layout-page")];
         fitLayoutPages(pages);
         const translatedPages = pages.filter(page => page.closest('#translation-layout'));
-        applyLayoutBodyFont(translatedPages);
-        inheritFinalDualColumnBodyFont(translatedPages);
-        inheritFinalTextRegionBodyFont(translatedPages);
+        finalizeLayoutTypography(translatedPages);
         publishCompactLayoutDebugLabels();
       }
     };
@@ -9346,6 +10574,9 @@
       event.preventDefault();
       changeTranslationLayoutPageZoom(event.deltaY, event);
     }, { passive: false });
+    els["translate-tables-check"].addEventListener("change", () => {
+      void changeTablePreference(els["translate-tables-check"].checked);
+    });
     els["sync-scroll-check"].addEventListener("change", () => {
       if (state.mode === "layout") {
         state.syncScroll = true;
@@ -9389,6 +10620,9 @@
         "--reader-font-size",
         `${value || Number(state.settings?.readerFontPt) || 12}pt`
       );
+    });
+    els["supplement-ocr-button"]?.addEventListener("click", () => {
+      void runAction("supplement-paddle-lines", {}, { success: "行信息补充完成" });
     });
     els["copy-source-markdown-button"]?.addEventListener("click", () => {
       if (copySourceMarkdownBusy || state.running.has("parse")) return;
@@ -9622,7 +10856,10 @@
       attributeFilter: ["open"]
     });
     for (const dialog of document.querySelectorAll("dialog")) {
-      dialog.addEventListener("close", () => syncDeepSeekWebBounds());
+      dialog.addEventListener("close", () => {
+        syncDeepSeekWebBounds();
+        updateAnnouncementUI();
+      });
     }
 
     els["clear-selection-button"].addEventListener("click", () => {
@@ -9721,10 +10958,15 @@
     els["image-preview-reuse"].addEventListener("click", reusePreviewImage);
     els["image-preview-copy"].addEventListener("click", copyPreviewImage);
     els["image-preview-save"].addEventListener("click", savePreviewImage);
+    els["table-preview-copy"].addEventListener("click", copyPreviewTable);
+    els["table-preview-save-html"].addEventListener("click", savePreviewTableHTML);
     els["image-preview-close"].addEventListener("click", () => els["image-preview-dialog"].close());
     els["image-preview-dialog"].addEventListener("close", () => {
       els["image-preview-image"].removeAttribute("src");
       state.previewImage = null;
+      state.previewTable = null;
+      els["table-preview-body"].replaceChildren();
+      setPreviewTableMode(false);
       state.previewScale = 1;
     });
     const previewStage = els["image-preview-image"].closest(".image-preview-stage");
@@ -10071,7 +11313,7 @@
       if (providerID) {
         const provider = els[providerID].value;
         queueSettingsCredentialWrite("save-provider-api-key", { provider, apiKey: value }, `${inputID}:${provider}`);
-      } else queueSettingsCredentialWrite("save-mineru-token", { token: value }, inputID);
+      } else queueSettingsCredentialWrite(inputID === "setting-paddle-token" ? "save-paddle-token" : "save-mineru-token", { token: value }, inputID);
     };
     els["setting-api-key"].addEventListener("change", () => saveCredential("setting-api-key", "setting-provider"));
     els["setting-base-url"].addEventListener("input", () => {
@@ -10085,6 +11327,8 @@
     });
     els["setting-chat-api-key"].addEventListener("change", () => saveCredential("setting-chat-api-key", "setting-chat-provider"));
     els["setting-mineru-token"].addEventListener("change", () => saveCredential("setting-mineru-token"));
+    els["setting-paddle-token"].addEventListener("change", () => saveCredential("setting-paddle-token"));
+    els["setting-parse-provider"].addEventListener("change", () => { updateParserFields(); scheduleSettingsAutoSave(50); });
     const refreshModels = async (purpose) => {
       const chat = purpose === "chat";
       const button = els[chat ? "refresh-chat-models-button" : "refresh-models-button"];
@@ -10246,12 +11490,12 @@
     });
 
     els["clear-document-button"].addEventListener("click", async () => {
-      if (!window.confirm("确定清除这篇文献的解析结果、译文和对话记录吗？\n\nZotero中的原始附件不会被修改。")) return;
+      if (!window.confirm("确定清除这篇文献的解析结果、译文、对话记录和字号设置吗？\n\n插件生成的译文 PDF 和对照 PDF 将移入 Zotero 回收站，原始附件不会被修改。")) return;
       try {
         if (settingsAutoSavedRevision < settingsAutoSaveRevision) await flushSettingsAutoSave(false);
         setData(await hostCall("clear-document"));
         await closeSettingsDialog();
-        toast("这篇文献的数据已清除");
+        toast("该文献条目的Litmtrans产生的数据已清除");
       }
       catch (error) { toast(error.message, "error"); }
     });
@@ -10536,7 +11780,8 @@
     model: "版面解析与模型",
     translation: "双语译文数据",
     cajSource: "CAJ 转换与阅读缓存",
-    mineruResult: "原始解析包 (MinerU)",
+    mineruResult: "原始解析结果",
+    parserHistory: "历史解析与译文",
     chat: "文献对话与附件",
     deepseekWeb: "页面转图缓存",
     diagrams: "图谱快照",
@@ -10767,7 +12012,7 @@
           subRow.className = "tree-sub-row";
           subRow.title = `${cat.label}（${cat.formatted}，${cat.files} 个文件）\n\n${cat.desc || ""}\n\n💡 提示：双击可直接在系统文件管理器中打开对应文件夹`;
 
-          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult" || cat.key === "diagrams" || cat.key === "deepseekWeb")
+          const cleanBtn = (cat.key === "images" || cat.key === "translation" || cat.key === "chat" || cat.key === "cajSource" || cat.key === "mineruResult" || cat.key === "parserHistory" || cat.key === "diagrams" || cat.key === "deepseekWeb")
             ? `<button class="tree-action-link danger" type="button" data-action="clear-sub" data-id="${escapeHTML(doc.id)}" data-sub="${cat.key}" title="清空此单项缓存">清空</button>`
             : "";
 
@@ -11119,8 +12364,8 @@
           } catch (err) { toast(err.message, "error"); }
         } else if (action === "clear-doc") {
           const confirmMsg = isCAJ
-            ? `确定清除文献《${docTitle || docID}》的全部插件缓存吗？\n\n解析结果、译文和对话记录将被删除，自动生成的 LitMTrans 阅读附件也会移除。原 CAJ 附件和已导出的 PDF 不受影响。`
-            : `确定清除文献《${docTitle || docID}》的所有解析、图片与译文数据吗？\n\nZotero中的原PDF附件不会受影响。`;
+            ? `确定清除文献《${docTitle || docID}》的全部插件缓存和字号设置吗？\n\n自动生成的 LitMTrans 阅读附件、译文 PDF 和对照 PDF 将移入 Zotero 回收站。原 CAJ 附件和导出到其他文件夹的文件不受影响。`
+            : `确定清除文献《${docTitle || docID}》的所有解析、图片、译文、对话记录和字号设置吗？\n\n插件生成的译文 PDF 和对照 PDF 将移入 Zotero 回收站，原始 PDF 附件不会被修改。`;
           if (!window.confirm(confirmMsg)) return;
           try {
             const res = await hostCall("clear-storage-data", { target: "document", documentID: docID, category: "all" });
@@ -11136,13 +12381,16 @@
             translation: "双语译文数据",
             chat: "对话与附件记录",
             cajSource: "CAJ 转换与阅读缓存",
-            mineruResult: "原始解析数据包 (MinerU)"
+            mineruResult: "原始解析结果",
+            parserHistory: "历史解析与译文"
           };
           const label = subNames[sub] || sub;
           const confirmMsg = sub === "cajSource"
             ? `确定清空这篇文献的【CAJ 转换与阅读缓存】吗？\n\n自动生成的 LitMTrans 阅读附件也会一起移除；原 CAJ 附件、已导出的 PDF 和译文不会受影响。下次打开时会自动重建。`
             : sub === "mineruResult"
-            ? `确定清空这篇文献的【原始解析数据包 (MinerU)】吗？\n\n清空后将释放该项占用的磁盘空间，且完全不影响当前已生成的排版与双语译文阅读效果。`
+            ? `确定清空这篇文献的【原始解析结果】吗？\n\n清空后将释放该项占用的磁盘空间，且完全不影响当前已生成的排版与双语译文阅读效果。`
+            : sub === "parserHistory"
+            ? `确定删除这篇文献的历史解析与译文备份吗？\n\n当前正文、译文及Zotero中的PDF附件不受影响；删除后无法从这些备份找回旧版本。`
             : `确定清空这篇文献的【${label}】缓存吗？`;
           if (!window.confirm(confirmMsg)) return;
           try {
@@ -11187,7 +12435,7 @@
   // Limit fitting to the pages scheduled by the reader.
   let activeFitPages = null;
   // This namespace invalidates incompatible browser-side fit caches.
-  const fitCacheVersion = 'layout-fit-v56-complete-doi-wraps';
+  const fitCacheVersion = 'layout-fit-v68-maintitle-symmetry';
   // A narrow transition may back off without changing the shared body font.
   const ALLOW_INHERITED_BODY_FONT_BACKOFF = true;
   let bodyIterationInspectionRound = 0;
@@ -11391,6 +12639,73 @@
       localStorage.setItem(key, JSON.stringify({ complete: true, count: nodes.length, styles, bodyInspection }));
     } catch (_error) {
       // localStorage may be unavailable for file URLs or over quota.
+    }
+  }
+
+  function singleLineTextInkBand(node, context) {
+    const hostRect = node.getBoundingClientRect();
+    const height = parseFloat(getComputedStyle(node).height);
+    if (!(height > 0 && hostRect.height > 0)) return null;
+    const scaleY = hostRect.height / height;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let top = Infinity;
+    let bottom = -Infinity;
+    let text;
+    while ((text = walker.nextNode())) {
+      if (!text.textContent.trim()) continue;
+      const parent = text.parentElement;
+      if (parent.closest('.layout-line-debug-box, .layout-collision-debug-layer, [aria-hidden="true"]')) continue;
+      const style = getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      context.textBaseline = 'alphabetic';
+      const metrics = context.measureText(text.textContent);
+      if (!Number.isFinite(metrics.actualBoundingBoxAscent) || !Number.isFinite(metrics.actualBoundingBoxDescent)) return null;
+      // Range 包含字体度量留白；用真实基线与 Canvas 墨迹范围定位笔画上下缘。
+      const marker = document.createElement('span');
+      marker.style.cssText = 'display:inline-block;width:0;height:0;margin:0;padding:0;border:0;vertical-align:baseline;';
+      parent.insertBefore(marker, text);
+      const baseline = (marker.getBoundingClientRect().top - hostRect.top) / scaleY;
+      marker.remove();
+      top = Math.min(top, baseline - metrics.actualBoundingBoxAscent);
+      bottom = Math.max(bottom, baseline + metrics.actualBoundingBoxDescent);
+    }
+    return Number.isFinite(top) && bottom > top ? { top, bottom, height } : null;
+  }
+
+  function fitSingleLineTextInk(pages) {
+    const selector = '.layout-flow-stream.debug-text[data-style-kind="text"][data-flow-kind="text"][data-original-lines="single"]';
+    const context = document.createElement('canvas').getContext('2d');
+    if (!context) return;
+    for (const page of pages || []) {
+      if (page.closest('#source-layout')) continue;
+      for (const node of page.querySelectorAll(selector)) {
+        if (node.matches('.from-list, .toc-stream, [data-body-inherited="1"], [data-body-style-inherited="1"]')
+            || node.dataset.textRegion) continue;
+        const paragraphs = node.querySelectorAll(':scope > .flow-para');
+        // 仅处理可按单行字形测量的文本；公式及显式换行保留原有行为。
+        if (paragraphs.length !== 1 || node.querySelector('br, img, svg, canvas, table, .katex, mjx-container')) continue;
+        const paragraph = paragraphs[0];
+        const original = { fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, top: paragraph.style.top };
+        let fontSize = parseFloat(getComputedStyle(node).fontSize);
+        if (!(fontSize > 0)) continue;
+        node.style.lineHeight = '1';
+        paragraph.style.top = '0px';
+        let band = singleLineTextInkBand(node, context);
+        for (let attempt = 0; band && band.bottom - band.top > band.height + .01 && attempt < 3; attempt++) {
+          fontSize *= Math.max(.01, band.height - .01) / (band.bottom - band.top);
+          node.style.fontSize = `${fontSize.toFixed(3)}px`;
+          band = singleLineTextInkBand(node, context);
+        }
+        if (!band || band.bottom - band.top > band.height + .01) {
+          node.style.fontSize = original.fontSize;
+          node.style.lineHeight = original.lineHeight;
+          paragraph.style.top = original.top;
+          continue;
+        }
+        // 只向上贴齐墨迹，字号只缩不放；不改变单行借宽与水平居中规则。
+        paragraph.style.top = `${(-band.top).toFixed(3)}px`;
+      }
     }
   }
 
@@ -11662,8 +12977,13 @@
       // 内容为障碍；其它文本迭代以布局边框为障碍。
       const allSourceRects = textRectsInPage(node);
       if (options.boundNodeBox) {
-        const rect = allSourceRects.find(rect => rect.left < own.left - .01 || rect.top < own.top - .01
-          || rect.right > own.right + .01 || rect.bottom > own.bottom + .01);
+        // 使用与文字相同的小数坐标，避免 offset 取整把贴框文字误判为越界。
+        const bounds = isPaddlePageFurniture(node)
+          ? viewportRectInPage(page, node.getBoundingClientRect()) : own;
+        // Gecko 小字号的 Range 字体度量与 KaTeX 标号可高出行框，不能据此在起始字号终止迭代。
+        const topTolerance = isPaddlePageFurniture(node) ? 1.5 : .01;
+        const rect = allSourceRects.find(rect => rect.left < bounds.left - .01 || rect.top < bounds.top - topTolerance
+          || rect.right > bounds.right + .01 || rect.bottom > bounds.bottom + .01);
         if (rect) return { source: node, blocker: null, rect, sourceName: blockDebugName(node), blockerName: 'block-boundary' };
       }
       if (options.boundNodeBottom && node.dataset.styleKind !== 'body_text' && node.dataset.bodyStyleInherited !== '1'
@@ -11992,7 +13312,8 @@
       .filter((value) => Number.isFinite(value) && value > 0));
     if (!Number.isFinite(fontSize) || fontSize <= 0) return;
     for (const node of inheritedNodes) {
-      const lineRatio = parseFloat(node.style.lineHeight || node.dataset.lineRatio || '1.1') || 1.1;
+      const minLineRatio = node.dataset.equationDense === '1' ? 1.02 : 1.1;
+      const lineRatio = Math.max(minLineRatio, parseFloat(node.style.lineHeight || node.dataset.lineRatio || '1.1') || 1.1);
       applyGroup([node], fontSize, lineRatio);
     }
   }
@@ -12000,9 +13321,21 @@
   function tuneEach(selector, options) {
     const nodes = scopedNodes(selector);
     for (const node of nodes) {
-      const result = tuneNodes([node], options);
+      const nodeOptions = typeof options.minLineRatio === 'function'
+        ? { ...options, minLineRatio: options.minLineRatio(node) } : options;
+      const result = tuneNodes([node], nodeOptions);
       options.onFitted?.(node, result);
     }
+  }
+
+  function isPaddlePageFurniture(node) {
+    return node.dataset.parseProvider === 'paddle'
+      && node.matches('.type-page_header, .type-header, .type-page_footer, .type-footer, .type-page_footnote, .type-footnote, .type-page_number');
+  }
+
+  function pageFurnitureMinLineRatio(node) {
+    // Paddle 的页边文字框贴近字形，双倍行高会占去字号增长空间。
+    return isPaddlePageFurniture(node) ? 1.4 : 2;
   }
 
   function isOrdinaryMultilineText(node) {
@@ -12011,6 +13344,12 @@
       && node.dataset.styleKind !== 'body_text'
       && node.dataset.blockKind !== 'body_text'
       && node.dataset.bodyStyleInherited !== '1';
+  }
+
+  function proseFitMinLineRatio(node) {
+    // 独立摘要与普通多行文本先保留行距；交叉命中的正文、列表仍沿用原规则。
+    return node.dataset.fromList !== '1' && node.dataset.bodyStyleInherited !== '1'
+      && (shouldAdjustAbstractFont(node) || isOrdinaryMultilineText(node)) ? 1.3 : 1.1;
   }
 
   function stoppedAtNextLowerBlock(node, result) {
@@ -12049,6 +13388,8 @@
 
   function applyFinalBodyStyle(node, font, lineRatio, alignment, boundBottom = false) {
     const originalStyle = { fontSize: node.style.fontSize, lineHeight: node.style.lineHeight, textAlign: node.style.textAlign };
+    const minLineRatio = node.dataset.equationDense === '1' ? 1.02 : 1.1;
+    lineRatio = Math.max(minLineRatio, lineRatio);
     const requestedLineRatio = lineRatio;
     const scale = Number(node.dataset.layoutFontScale || 1);
     node.style.fontSize = `${(font * scale).toFixed(2)}px`;
@@ -12072,7 +13413,6 @@
     };
     // 最后继承正文样式；碰撞时只压缩行距，仍无法避让才整体恢复。
     let collision = hasCollision();
-    const minLineRatio = 1.02;
     while (collision && lineRatio > minLineRatio + .001) {
       lineRatio = Math.max(minLineRatio, Number((lineRatio - .025).toFixed(3)));
       node.style.lineHeight = String(lineRatio);
@@ -12326,6 +13666,7 @@
     let lineRatio = baseLineRatio;
     const minFont = Number.isFinite(options.minFont) ? options.minFont : Math.max(4.8, fontSize * 0.55);
     const minLineRatio = Number.isFinite(options.minLineRatio) ? options.minLineRatio : 1.0;
+    lineRatio = Math.max(minLineRatio, lineRatio);
     if (options.coupleFontAndLine) {
       lineRatio = Math.max(minLineRatio, Math.min(options.maxLineRatio, lineRatio));
     }
@@ -12483,7 +13824,7 @@
 
     const minLineRatio = Number.isFinite(options.collisionMinLineRatio)
       ? options.collisionMinLineRatio
-      : 1.02;
+      : 1.1;
 
     const snapshotStyles = () => bodyNodes.map((node) => ({
       node,
@@ -12517,10 +13858,9 @@
       let collision = initialCollision;
       const fontSize = layoutControlFontSize(source);
       let lineRatio = parseFloat(source.style.lineHeight || source.dataset.lineRatio || '1.1') || 1.1;
-      const sourceMinLineRatio = minLineRatio;
+      const sourceMinLineRatio = source.dataset.equationDense === '1' ? 1.02 : minLineRatio;
 
-      // 正文碰撞只允许降低碰撞源自己的行距，最低保持 1.02 倍字号；字号
-      // 仍属于全文共享状态，禁止任何正文块单独缩小字号。
+      // 普通正文保留 1.1 倍行高，公式间短正文沿用紧凑下限；禁止单独缩小正文字号。
       for (let safety = 0; collision && safety < 80 && lineRatio > sourceMinLineRatio + 0.001; safety += 1) {
         lineRatio = Math.max(sourceMinLineRatio, lineRatio - options.lineStep);
         applyGroup([source], fontSize, lineRatio);
@@ -12581,7 +13921,8 @@
       let lineRatio = parseFloat(node.style.lineHeight || node.dataset.lineRatio || "1.1") || 1.1;
       const isRef = node.dataset.flowKind === "ref_text";
       const minFont = isRef ? 4.8 : 5.0;
-      const minLineRatio = isRef ? 0.98 : 1.0;
+      const minLineRatio = 1.1;
+      lineRatio = Math.max(minLineRatio, lineRatio);
       applyGroup([node], fontSize, lineRatio);
       for (let i = 0; i < 120 && node.scrollHeight > node.clientHeight + 1 && (fontSize > minFont || lineRatio > minLineRatio); i += 1) {
         if (lineRatio > minLineRatio) {
@@ -12608,7 +13949,7 @@
       const code = node.querySelector(':scope > .layout-code') || node.querySelector('.layout-code');
       if (!code) continue;
       const minFont = 7.0;
-      const minLineRatio = 1.10;
+      const minLineRatio = 1.05;
       const requestedFont = layoutControlFontSize(node, 10);
       const requestedLineRatio = parseFloat(node.style.lineHeight || node.dataset.lineRatio || '1.18') || 1.18;
       let fontSize = Math.max(minFont, requestedFont);
@@ -12644,10 +13985,11 @@
   // audit after every style mutation. Unlike the iteration probes, this checks
   // every visible glyph against every layout box, including cross-group cases
   // such as body text beside references. Only a detected source is backed off.
-  function enforceFinalTextCollisionSafety() {
+  function enforceFinalTextCollisionSafety(pages = null) {
+    const pageSet = pages ? new Set(pages) : null;
     const nodes = scopedNodes(
       '.layout-flow-stream[data-flow-kind="text"], .layout-flow-stream[data-flow-kind="ref_text"]'
-    ).filter((node) => node && node.style);
+    ).filter((node) => node && node.style && (!pageSet || pageSet.has(node.closest('.layout-page'))));
     const exhausted = new Set();
     const repairCounts = new Map();
     // Covers the full 42px-to-4.8px backoff range with a small margin.
@@ -12708,7 +14050,7 @@
         && source.dataset.bodyInherited === '1';
       const isBodyText = source.dataset.styleKind === 'body_text'
         && (!isInheritedBodyText || !ALLOW_INHERITED_BODY_FONT_BACKOFF);
-      const minLineRatio = isBodyText ? 1.02 : 0.98;
+      const minLineRatio = source.dataset.equationDense === '1' ? 1.02 : 1.1;
       const ownBox = elementBoxInPage(source);
       const firstLineTopCollision = !isBodyText
         && collision.rect
@@ -12782,7 +14124,7 @@
       };
       clearAllCollisionDebugLayers();
       tuneEach('.layout-block.type-page_header, .layout-block.type-header, .layout-block.type-page_footer, .layout-block.type-footer, .layout-block.type-page_footnote, .layout-block.type-page_number', {
-        step: .25, minFont: 2.5, maxFont: 20, minLineRatio: 2, maxLineRatio: 2, lineStep: .025,
+        step: .25, minFont: 2.5, maxFont: 20, minLineRatio: pageFurnitureMinLineRatio, maxLineRatio: 2, lineStep: .025,
         startFromMinimum: true, coupleFontAndLine: true, allowOverflow: true, stopWhenFilled: false,
         boundNodeBox: true, avoidBlockOverlap: true, avoidPageOverflow: true, showLimiter: debugMode
       });
@@ -12800,7 +14142,7 @@
         minFont: 6.0,
         maxFont: 28.0,
         lineStep: 0.025,
-        minLineRatio: 0.98,
+        minLineRatio: 1.05,
         maxLineRatio: 1.35,
         // MinerU title boxes commonly describe the source ink band and are
         // only 10-12px tall.  Let translated headings extend beyond that box;
@@ -12838,7 +14180,7 @@
       const bodyFitOptions = {
         step: 0.5,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
-        minLineRatio: collisionFirstTextFit ? 1.12 : undefined,
+        minLineRatio: 1.1,
         maxFont: 13,
         lineStep: 0.04,
         maxLineRatio: 1.45,
@@ -12864,7 +14206,7 @@
         // 对未填满正文执行二次迭代，但所有正文始终共享同一个字号。
         continueUnderfilledNodes: collisionFirstTextFit,
         minTextFillRatio: 0.85,
-        collisionMinLineRatio: 1.02,
+        collisionMinLineRatio: 1.1,
         // 首轮共享增长只改字号；二次迭代发生碰撞时，仅允许碰撞源局部降低行距，
         // 禁止任何正文块单独降低字号。
         coupleFontAndLine: true,
@@ -12879,7 +14221,7 @@
       tuneGroup('.layout-flow-stream[data-from-list="1"][data-flow-kind="text"]', {
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
-        minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
+        minLineRatio: 1.1,
         maxFont: 13,
         lineStep: 0.035,
         maxLineRatio: 1.85,
@@ -12900,7 +14242,7 @@
         boundNodeBottom: true,
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
-        minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
+        minLineRatio: proseFitMinLineRatio,
         maxFont: 13,
         lineStep: 0.035,
         maxLineRatio: 1.85,
@@ -12917,7 +14259,7 @@
         boundNodeBottom: true,
         step: 0.35,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
-        minLineRatio: collisionFirstTextFit ? 0.98 : undefined,
+        minLineRatio: proseFitMinLineRatio,
         maxFont: 13,
         lineStep: 0.035,
         maxLineRatio: 1.85,
@@ -12934,7 +14276,7 @@
         minFont: 5.2,
         maxFont: 10.5,
         lineStep: 0.025,
-        minLineRatio: 1.0,
+        minLineRatio: 1.1,
         maxLineRatio: 1.55,
         allowOverflow: false,
         avoidBlockOverlap: true,
@@ -12952,7 +14294,7 @@
         minFont: 4.8,
         maxFont: 12,
         lineStep: 0.025,
-        minLineRatio: 0.98,
+        minLineRatio: 1.1,
         maxLineRatio: 1.65,
         allowOverflow: false,
         avoidBlockOverlap: true,
@@ -12966,17 +14308,6 @@
         '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])'
       ));
       if (persist) saveFitCache();
-      // A document may save a manual body-font override. Re-fitting must
-      // retain it, with line height scaled alongside the font.
-      const userBodyFontPt = parseFloat(document.body.dataset.userBodyFontPt || '');
-      if (Number.isFinite(userBodyFontPt)) {
-        for (const node of document.querySelectorAll(
-          '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]'
-        )) {
-          node.style.fontSize = `${userBodyFontPt}pt`;
-          node.dataset.userBodyFontPt = userBodyFontPt.toFixed(2);
-        }
-      }
     } catch (error) {
       if (!document.body.classList.contains('layout-debug')) return;
       for (const node of document.querySelectorAll('.layout-flow-stream')) {

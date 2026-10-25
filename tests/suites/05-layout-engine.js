@@ -374,7 +374,7 @@ async function testLayoutCodeAndContentsRules() {
   assert(workbenchSource.includes("code.style.overflow = 'auto';"), "overlong code must fall back to an internal scrollbar");
   assert(workbenchSource.includes("clampTranslatedCodeOverflow();"), "the translated code fitter must run with the layout fit pass");
   assert(workbenchSource.includes("const minFont = 7.0;"), "code fitting must preserve a readable minimum font size");
-  assert(workbenchSource.includes("const minLineRatio = 1.10;"), "code fitting must preserve a readable minimum line-height");
+  assert(workbenchSource.includes("const minLineRatio = 1.05;"), "code fitting must preserve its configured minimum line-height");
   assert(workbenchCSS.includes("line-height: inherit;"), "code line-height must inherit the fitted parent value");
   assert(workbenchSource.includes("renderLayoutTocRows"), "the workbench must use the dedicated contents row renderer");
   assert(
@@ -455,14 +455,14 @@ function testLayoutTranslationValidation() {
   assert.equal(LayoutHelpers.sanitizeModelText("bad\bTeX\f"), "badTeX");
   const parser = new LayoutTranslationService(new MemoryStorage(), { getSettings: () => ({ targetLanguage: "简体中文" }) });
   const transportRecord = { id: "transport", type: "text", text: "Source \\(x\\)." };
-  assert.deepEqual(
+  assert.equal(
     parser.parseTranslationResponse(
       JSON.stringify({ translations: [{ id: "transport", text: "译文\b" }], formula_replacements: [] }),
       [transportRecord],
       { sanitizeUnsafe: true }
-    ).translations,
-    {},
-    "JSON escape artefacts from model TeX must be retried instead of reaching the renderer"
+    ).translations.transport,
+    "译文",
+    "control characters must be removed without discarding the translated block"
   );
   assert.equal(
     parser.parseTranslationResponse(
@@ -560,8 +560,8 @@ function testLayoutTranslationValidation() {
     "English",
     true
   );
-  assert.equal(zhToEnUntranslatedRetry.length, 1);
-  assert(zhToEnUntranslatedRetry[0].reasons.includes("untranslated"));
+  assert.equal(zhToEnUntranslatedRetry.length, 0,
+    "an unchanged nonempty answer must be accepted even when language heuristics disagree");
 
   assert.equal(
     LayoutHelpers.looksUntranslated(fragment, fragment.text, "简体中文"),
@@ -637,8 +637,8 @@ function testLayoutTranslationValidation() {
       { formula: "测得的数值为 x+y。" },
       "简体中文"
     ).length,
-    1,
-    "losing a formula delimiter remains a structural retry condition"
+    0,
+    "a formula delimiter difference must not trigger automatic retranslation of nonempty content"
   );
   const variableList = {
     id: "variable-list",
@@ -698,6 +698,7 @@ async function testManualLayoutJSONLProtocol() {
     { getSettings: () => ({ targetLanguage: "简体中文" }) }
   );
   service.extractRecords = async () => records;
+  service.loadLayout = async () => ({ rawText: "manual-jsonl-source", pages: [] });
   const pipeline = new DocumentPipeline({
     storage: {},
     mineru: { loadParsed: async () => ({ hasLayout: true }) },
@@ -899,7 +900,7 @@ async function testLayoutConcurrentGroupsAndCache() {
         return [
           record.id,
           attemptsByID.get(record.id) === 1
-            ? record.text
+            ? ""
             : `这是第 ${recordOrdinal} 个块的完整中文译文。`
         ];
       })),
@@ -1100,6 +1101,101 @@ async function testStaleDeepSeekFastPreferenceDoesNotAffectGemini() {
     "Gemini translation must not show a DeepSeek fallback or fast-mode message");
 }
 
+async function testLayoutAcceptsNonemptyAnswersWithoutQualityRetries() {
+  for (const web of [false, true]) {
+    const storage = new MemoryStorage();
+    const records = [
+      { id: "a", page: 1, type: "text", text: "An English source sentence that the model chooses to keep unchanged for this particular translation." },
+      { id: "b", page: 1, type: "text", text: "First distinct source paragraph." },
+      { id: "c", page: 1, type: "text", text: "Second distinct source paragraph." },
+      { id: "d", page: 1, type: "text", text: "The value is \\(x+y\\)." },
+      { id: "e", page: 1, type: "text", text: "Text with a transport artefact." }
+    ];
+    const answers = { a: records[0].text, b: "模型选择的长译文。".repeat(30), c: "模型选择的长译文。".repeat(30), d: "数值为 x+y。", e: "译文\b内容" };
+    let calls = 0;
+    const llm = {
+      getSettings: () => ({ provider: "gemini", model: "test-model", targetLanguage: "简体中文" }),
+      isWebEngineActive: () => web,
+      resolveConfig: options => options,
+      ensureConfiguredModel: async options => options,
+      complete: async () => {
+        calls++;
+        return { text: JSON.stringify({ translations: records.map(record => ({ id: record.id, text: answers[record.id] })) }) };
+      }
+    };
+    const service = new LayoutTranslationService(storage, llm);
+    service.loadLayout = async () => ({ rawText: "nonempty-answer-source" });
+    service.extractRecords = async () => records;
+    service.extractFormulaContext = async () => [];
+    service.buildModel = async (_documentID, translations) => ({ translations: { ...translations } });
+    const result = await service.translate("nonempty-answer", { mode: "full_context" });
+    assert.equal(calls, 1, "unchanged, expanded, duplicated or formula-different answers must not trigger extra requests");
+    assert.deepEqual({ ...result.translations }, { ...answers, e: "译文内容" });
+    const cached = await service.translate("nonempty-answer", { mode: "full_context" });
+    assert.equal(cached.cached, true, "accepted answers must remain usable from cache without heuristic retranslation");
+    assert.equal(calls, 1);
+    for (const payload of [{ id: "a", text: "已有译文" }, [{ id: "a", text: "已有译文" }]]) {
+      assert.equal(service.parseTranslationResponse(JSON.stringify(payload), records).translations.a, "已有译文");
+    }
+    const missing = LayoutHelpers.classifyRetryRecords(records, { a: " ", b: "", c: "已有内容", d: "0" });
+    assert.deepEqual(missing.map(item => item.record.id), ["a", "b", "e"]);
+    assert(missing.every(item => item.reasons.length === 1 && item.reasons[0] === "missing"));
+  }
+}
+
+async function testLayoutRetriesMissingBlocksAfterRepairOnce() {
+  for (const fastMode of [false, true]) {
+    for (const finishes of [false, true]) {
+      const storage = new MemoryStorage();
+      const records = [
+        { id: "p001_b0001", page: 1, type: "text", text: "First source block." },
+        { id: "p001_b0002", page: 1, type: "text", text: "Second source block." },
+        { id: "p001_b0003", page: 1, type: "text", text: "Third source block." },
+        { id: "p001_b0004", page: 1, type: "text", text: "The value is \\(x+1\\)." }
+      ];
+      const calls = [];
+      const llm = {
+        getSettings: () => ({
+          provider: fastMode ? "deepseek" : "gemini", baseURL: "https://example.invalid", model: "test-model",
+          apiKey: "test-key", targetLanguage: "简体中文", deepseekFastLayoutTranslation: fastMode
+        }),
+        resolveConfig: options => options,
+        ensureConfiguredModel: async options => options
+      };
+      const service = new LayoutTranslationService(storage, llm);
+      service.loadLayout = async () => ({ rawText: "missing-after-repair-source" });
+      service.extractRecords = async () => records;
+      service.extractFormulaContext = async () => [];
+      service.buildGuide = async () => "";
+      service.buildModel = async (_documentID, translations) => ({ translations: { ...translations } });
+      service.fastGroupRecords = group => [group];
+      service.translateGroup = async (group, _guide, _reference, _documentID, _identity, settings) => {
+        calls.push(group.map(record => record.id));
+        if (calls.length === 1) {
+          return { translations: { p001_b0001: "第一个完整译文。", p001_b0004: "数值。" }, formulaReplacements: {} };
+        }
+        assert(settings.deferLayoutRetry, "document repairs must not trigger nested retries");
+        return {
+          translations: calls.length === 2
+            ? { p001_b0002: "第二个完整译文。", p001_b0004: "数值。" }
+            : finishes ? { p001_b0003: "第三个完整译文。" } : {},
+          formulaReplacements: {}
+        };
+      };
+      const result = await service.translate("missing-after-repair", { mode: "full_context" });
+      assert.deepEqual(calls, [
+        records.map(record => record.id),
+        ["p001_b0002", "p001_b0003"],
+        ["p001_b0003"]
+      ], "allow one extra request for missing blocks, without repeating successful or formula-only blocks");
+      assert.equal(result.translations.p001_b0001, "第一个完整译文。");
+      assert.equal(result.translations.p001_b0002, "第二个完整译文。");
+      assert.equal(result.translations.p001_b0003, finishes ? "第三个完整译文。" : records[2].text,
+        "if the last attempt still omits a block, retain the existing source-text fallback");
+    }
+  }
+}
+
 async function testLayoutRetriesFailedTransportGroupOnce() {
   const storage = new MemoryStorage();
   const records = [
@@ -1250,10 +1346,8 @@ async function testLayoutTargetedRetryKeepsPrimaryPrefix() {
     [record], "guide", "", "doc", "identity",
     { targetLanguage: "简体中文", enableUntranslatedCheck: true }, 0, 1, null, null
   );
-  assert.equal(calls.length, 3, "the internal opt-in must retain the legacy heuristic");
-  assert.deepEqual(calls[2].slice(0, 2), calls[1]);
-  assert.equal(calls[2].length, 3);
-  assert.equal(enabledResult.translations[record.id], "这是一段用于重试验证和排版检查的完整中文译文。");
+  assert.equal(calls.length, 2, "a legacy heuristic flag must not retranslate an accepted answer");
+  assert.equal(enabledResult.translations[record.id], record.text);
 
   await service.translateGroup(
     [record], "guide", "", "doc", "identity",
@@ -1322,15 +1416,12 @@ async function testLayoutFormatRetryIsSurgicalAndBounded() {
     }
   };
   const service = new LayoutTranslationService(storage, llm);
-  await service.translateGroup(
+  const result = await service.translateGroup(
     [record], "", "", "doc", "identity",
     { targetLanguage: "简体中文", enableUntranslatedCheck: false }, 0, 1, null, null
   );
-  assert.equal(calls.length, 2, "a pure formula issue must receive at most one paid format retry");
-  assert.equal(calls[1].options.thinkingMode, "disabled");
-  assert.equal(calls[1].options.reasoningEffort, "minimal");
-  assert.equal(calls[1].messages.length, 2, "a pure format retry must not resend the full primary context");
-  assert(String(calls[1].messages[1].content).includes("retry_details"));
+  assert.equal(calls.length, 1, "formula heuristics must not trigger a paid retry for a nonempty answer");
+  assert.equal(result.translations[record.id], "数值为 x+y。", "keep the model's original answer");
 }
 
 async function testCompleteReferenceCorpus() {
@@ -1387,11 +1478,11 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
   const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
   assert(controller.includes('async createLayoutComparisonPDF(sourcePath, translationPath, outputPath)'));
-  assert(controller.includes('const translationTitle = `${targetLanguage}-译文-${stem}`;'), "generated translation PDFs must use the target-language prefix without a layout label");
-  assert(controller.includes('const comparisonTitle = `${targetLanguage}-译文对照版-${stem}`;'), "generated comparison PDFs must use the target-language prefix without a layout label");
+  assert(controller.includes('const translationTitle = `${targetLanguage}-译文-${stem}`;'), "generated translation PDFs must use the target-language prefix without a parser label");
+  assert(controller.includes('const comparisonTitle = `${targetLanguage}-译文对照版-${stem}`;'), "generated comparison PDFs must use the target-language prefix without a parser label");
   assert(controller.includes('await this.createGeneratedPDFAttachment(context, translationPath, translationTitle)'));
   assert(controller.includes('await this.createGeneratedPDFAttachment(context, comparisonPath, comparisonTitle)'));
-  assert(controller.includes('titles.has(Zotero.Items.get(id)?.getField?.("title"))'), "retranslation must match generated attachments by their stable title");
+  assert(controller.includes('"generated-pdfs.json"') && !controller.includes('titles.has(Zotero.Items.get(id)?.getField?.("title"))'), "replacement must use generated ownership records instead of matching titles");
   assert(controller.includes('await Zotero.Items.trashTx(existingIDs);'), "confirmed old attachments must be moved to trash together after replacements are saved");
   assert(!controller.includes('item.trashTx()'), "attachment replacement must use Zotero.Items.trashTx(), not a nonexistent item method");
   assert(controller.includes('page.drawPage(embedded,'), "comparison PDF must draw source and translation pages together");
@@ -1399,12 +1490,12 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   assert(controller.includes('let stableChecks = 0;'), "PDF export must wait for the asynchronous writer to finish reading print DOM");
   assert(controller.includes('if (stableChecks < 12)'), "PDF export must not clean up its print snapshot after only the first written bytes");
   assert(controller.includes('const expectedPages = Math.max(0, Number(payload.expectedPages || 0));'), "printed layout PDFs must verify their expected page count");
-  assert(controller.includes('const contentIndexes = Array.from({ length: expectedPages }, (_, index) => index * 2);'), "an exact Gecko continuation-page double must be compacted before page-count validation");
+  assert(!controller.includes('const contentIndexes = Array.from({ length: expectedPages }, (_, index) => index * 2);'), "page counts alone must never authorize dropping alternating real PDF pages");
   assert(!controller.includes('const layoutScale = Number(payload.layoutScale || 0);'), "layout pages must be paint-scaled before printing instead of rewritten after printing");
   assert(controller.includes('const layoutPDFIdentity = String(payload.layoutIdentity || "")'), "controller must use the completed layout identity provided by the workbench");
   assert(workbench.includes('queueLayoutPDFAttachmentsAfterFinalPublication();'), "final layout event must queue PDF attachment generation");
   assert(workbench.includes('if (result?.meta?.complete === true) queueLayoutPDFAttachmentsAfterFinalPublication();'), "the first completed layout response must provide the PDF-generation fallback");
-  assert(controller.includes('await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity })'), "completed PDF exports must be persisted to avoid duplicate regeneration");
+  assert(controller.includes('await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false })'), "completed PDF exports must persist their identity and resolve pending table changes");
   assert(workbench.includes('withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>'), "automatic PDF generation must reuse the same complete-page print root as manual export");
   assert(workbench.includes('async function waitForLayoutPDFReady()'), "PDF exports must wait for the translated layout to finish fitting");
   assert(workbench.includes('if (!await waitForLayoutPDFReady()) return null;'), "automatic attachment exports must defer while the fitting mask is active");
@@ -1416,7 +1507,7 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   assert(workbench.includes('contain:layout paint'), "each complete print page must contain scaled paint to prevent a blank continuation page");
   assert(workbench.includes('hostCall("export-pdf", { pane, layout: true, expectedPages, layoutPaper })'), "manual PDF export must use the same already-scaled print DOM as automatic export");
   assert(workbench.includes('document.body.dataset.printLayout = "false";'), "only stream exports may enable the legacy live-DOM print stylesheet");
-  assert(workbench.includes('hostCall("create-layout-pdf-attachments", { layoutIdentity, targetLanguage, expectedPages, layoutPaper })'), "automatic PDF attachments must preserve the completed translation language while using the same already-scaled print DOM as manual export");
+  assert(workbench.includes('hostCall("create-layout-pdf-attachments", { layoutIdentity, parseRevisionID, targetLanguage, expectedPages, layoutPaper })'), "automatic PDF attachments must carry their parse origin and completed translation language");
   assert(!workbench.includes('page:litmtransFrozen${index}'), "frozen PDF pages must not use Gecko's named-page continuation path");
   assert(!controller.includes('page.setSize(width, height);'), "all layout pages must retain the same common print sheet instead of restoring mixed source MediaBoxes");
   assert(!controller.includes('layoutPageSizes'), "mixed per-page source sizes must not be sent into post-print PDF rewriting");
@@ -1427,8 +1518,87 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   assert(!controller.includes('settings.paperName ='), "layout PDF printing must not add unsupported properties to Zotero's WrappedNative print settings");
   assert(workbench.includes('transform:scale(${printScale}) !important;'), "text and KaTeX must remain in one inline layout and receive the same paint transform");
   assert(!workbench.includes('hostCall("export-pdf", { pane, layout: true, expectedPages, layoutScale:'), "layout PDF export must not request post-print content scaling");
+  assert(workbench.includes('retranslationCount = Number(state.data?.layout?.meta?.retranslationCount || 0)'), "layout PDF export identity must incorporate retranslation revisions");
+  const layout = fs.readFileSync(path.join(root, "src", "layout.js"), "utf8");
+  assert(layout.includes('retranslationCount: Number(current.meta?.retranslationCount || 0) + 1'), "forced retranslations must increment retranslationCount");
   const workbenchCSS = fs.readFileSync(path.join(root, "src", "workbench.css"), "utf8");
   assert(workbenchCSS.includes('body[data-print-pane] .toast-region,'), "print output must exclude transient completion toasts");
+}
+
+async function testWebMachineRetranslationIncrementsPDFRevision() {
+  for (const provider of ["edge_local", "free_machine"]) {
+    const documentID = "1-FREE-MACHINE";
+    const stored = new Map();
+    const paths = {
+      root: "/test/free-machine",
+      translations: "/test/free-machine/translations.json",
+      formulaReplacements: "/test/free-machine/formula.json",
+      meta: "/test/free-machine/meta.json"
+    };
+    let translationText = "第一版译文";
+    let translationCalls = 0;
+    let failTranslation = false;
+    const events = [];
+    const storage = {
+      path: (...parts) => parts.join("/"),
+      temporaryDir: () => "/test/staging",
+      ensureDir: async () => {},
+      readJSON: async (file, fallback) => stored.has(file) ? stored.get(file) : fallback,
+      writeJSON: async (file, value) => { stored.set(file, JSON.parse(JSON.stringify(value))); },
+      publishFilesAtomically: async entries => {
+        for (const entry of entries) {
+          assert(stored.has(entry.source), "the staged translation files must exist before publication");
+          stored.set(entry.destination, stored.get(entry.source));
+        }
+      },
+      remove: async () => {}
+    };
+    const service = {
+      storage,
+      paths: () => paths,
+      webMachine: {
+        translateRecords: async () => {
+          translationCalls++;
+          if (failTranslation) throw new Error("simulated machine translation failure");
+          return { p001_b0001: translationText };
+        }
+      },
+      loadLayout: async () => ({ rawText: "Source text" }),
+      extractRecords: async () => [{ id: "p001_b0001", type: "text", text: "Source text" }],
+      tableRequestPlan: () => ({ ids: new Set(), records: [], tables: [] }),
+      loadTranslations: async () => ({
+        meta: stored.get(paths.meta) || null,
+        translations: stored.get(paths.translations) || {},
+        formulaReplacements: stored.get(paths.formulaReplacements) || {}
+      }),
+      saveTableTranslations: async () => ({ tables: [] }),
+      buildModel: async () => ({ pages: [{ blocks: [] }] })
+    };
+    const settings = { provider, targetLanguage: "简体中文", sourceLanguage: "en", machineSourceLanguage: "en", translateTables: false };
+    const run = force => LayoutTranslationService.prototype.translateWebMachine.call(
+      service, documentID, { ...settings, force }, event => events.push(event), null
+    );
+    const initial = await run(false);
+    assert.equal(initial.meta.retranslationCount, undefined, "first-time machine translation must retain the legacy PDF identity");
+    assert.equal(events.at(-1).meta.identity, initial.meta.identity, "the final publication event must carry persisted translation metadata");
+    translationText = "第二版译文";
+    const second = await run(true);
+    assert.equal(second.meta.retranslationCount, 1, "first forced retranslation must advance the PDF export identity");
+    assert.equal(stored.get(paths.meta).retranslationCount, 1, "the new revision must be persisted");
+    assert.equal(events.at(-1).meta.retranslationCount, 1, "PDF generation must receive the revision in the completion event");
+    translationText = "第三版译文";
+    const third = await run(true);
+    assert.equal(third.meta.retranslationCount, 2, "successive forced retranslations must advance monotonically");
+    assert.equal(events.at(-1).meta.retranslationCount, 2);
+    const cached = await run(false);
+    assert.equal(cached.cached, true);
+    assert.equal(cached.meta.retranslationCount, 2, "cache hits must not generate a new revision");
+    assert.equal(events.at(-1).meta.retranslationCount, 2, "cached completion must still publish metadata");
+    assert.equal(translationCalls, 3, "cache reuse must avoid repeated machine translation");
+    failTranslation = true;
+    await assert.rejects(run(true), /simulated machine translation failure/);
+    assert.equal(stored.get(paths.meta).retranslationCount, 2, "a failed retranslation must preserve the last published revision");
+  }
 }
 
 function testLayoutBodyLeadingIsSlightlyRelaxed() {
@@ -1533,8 +1703,8 @@ function testLayoutMultiPassTargetedRetryWithErrorFeedback() {
     "layout retry payload must distinguish symbol-format-only repairs"
   );
   assert(
-    layoutCode.includes('const maxDocumentRetryPasses = 1;'),
-    "document recovery phase must issue at most one targeted pass"
+    layoutCode.includes('const maxDocumentRetryPasses = 2;'),
+    "document recovery may add only one missing-block pass after the targeted repair"
   );
 }
 
@@ -1628,13 +1798,15 @@ function testLayoutFitParityForTitlesAndGlyphCollision() {
     "the runtime reader must retain Python's second body-text iteration");
   assert(workbenchCode.includes("reason=line-backoff-exhausted"),
     "a failed body-text growth round must roll back instead of shrinking one body block");
-  assert(workbenchCode.includes("collisionMinLineRatio: 1.02")
-    && workbenchCode.includes("const sourceMinLineRatio = minLineRatio;")
-    && workbenchCode.includes("const minLineRatio = isBodyText ? 1.02 : 0.98;"),
-  "body-text collision recovery must use the 1.02 local line-height minimum");
+  assert(workbenchCode.includes("collisionMinLineRatio: 1.1")
+    && workbenchCode.includes("const sourceMinLineRatio = source.dataset.equationDense === '1' ? 1.02 : minLineRatio;")
+    && workbenchCode.includes("const minLineRatio = source.dataset.equationDense === '1' ? 1.02 : 1.1;"),
+  "collision recovery must preserve readable leading except for short equation-dense body text");
+  assert(workbenchCSS.includes('.layout-flow-stream.equation-dense { line-height: 1.04 !important; }'),
+    "short body text between equations must retain its compact leading");
   assert(workbenchCode.includes("bodyColumnIndependentFit: true"),
     "body-text fitting must preserve Python's independent-column rule");
-  assert(workbenchCode.includes("function enforceFinalTextCollisionSafety()"),
+  assert(workbenchCode.includes("function enforceFinalTextCollisionSafety(pages = null)"),
     "the runtime reader must retain Python's final glyph-level safety audit");
   assert(workbenchCode.includes("function syncInheritedBodyFontToBodyGroup()")
     && workbenchCode.includes("syncInheritedBodyFontToBodyGroup();"),
@@ -1709,7 +1881,7 @@ function testAbstractRecognitionAndBodyProtection() {
   const manualSource = source.slice(manualStart, source.indexOf('  function applyLayoutFitSnapshot(', manualStart));
   const manual = vm.runInNewContext(`${manualSource}\napplyLayoutBodyFont`, { state: { layoutFontPt: 9 } });
   manual([{ querySelectorAll: () => [nodes[2]] }]);
-  assert.equal(nodes[2].style.fontSize, '9pt', 'manual body font must ignore an erroneous abstract marker');
+  assert.equal(nodes[2].style.fontSize, '12.00px', 'manual body font must ignore an erroneous abstract marker and convert pt to px');
 }
 
 function testFinalTextClearanceBoundaries() {
@@ -1897,6 +2069,379 @@ function testOffsetBodyToolbarFont() {
   main = null; reflect(container); assert.equal(input.value, '6.6', 'ordinary documents retain the original font-control selection');
 }
 
+function testLayoutFontMemoryFollowsRulesVersion() {
+  const snapshot = new Map(prefValues);
+  const constants = context.LitMTrans.Constants;
+  const rulesVersion = constants.LAYOUT_READER_FONT_RULES_VERSION;
+  const workbench = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const keyHelper = workbench.slice(workbench.indexOf('  function layoutFitSnapshotKey('), workbench.indexOf('  function layoutFitPageKey('));
+  const snapshotKey = vm.runInNewContext(`${keyHelper}\nlayoutFitSnapshotKey`, {
+    state: { layoutFontPt: 0, data: { item: { documentID: 'target' }, layout: { model: {} } } },
+    LitMTrans: context.LitMTrans
+  });
+  try {
+    const controller = context.LitMTrans.createController({ id: 'litmtrans@local', version: '2.1.3', rootURI: 'file:///plugin/' });
+    U.setPref('readerFontPt', 15);
+    U.setPref('layoutReaderFonts', JSON.stringify({ target: 9, other: 8 }));
+    U.clearPref('layoutReaderFontRulesVersion');
+    assert.deepEqual(controller.getLayoutReaderFonts(), {}, 'unversioned legacy font memories must return to automatic fitting');
+    assert.equal(U.getPref('layoutReaderFontRulesVersion'), rulesVersion);
+    assert.equal(U.getPref('readerFontPt'), 15, 'stream-reader typography must not be reset');
+    controller.saveSettings({ layoutReaderFonts: { target: 18, other: 8 } });
+    assert.equal(U.getPref('layoutReaderFontRulesVersion'), rulesVersion);
+    assert.deepEqual(controller.getLayoutReaderFonts(), { target: 18, other: 8 });
+    const reopened = context.LitMTrans.createController({ id: 'litmtrans@local', version: '2.1.4', rootURI: 'file:///plugin/' });
+    assert.deepEqual(reopened.getLayoutReaderFonts(), { target: 18, other: 8 }, 'a plugin update with unchanged rules must retain new user choices');
+    const previousSnapshotKey = snapshotKey();
+    constants.LAYOUT_READER_FONT_RULES_VERSION = rulesVersion + 1;
+    assert.notEqual(snapshotKey(), previousSnapshotKey, 'rule changes must also invalidate automatic-fit snapshots');
+    assert.deepEqual(reopened.getLayoutReaderFonts(), {}, 'a later layout-rule change must invalidate the previous rules font memories');
+    reopened.saveSettings({ layoutReaderFonts: { target: 20 } });
+    assert.deepEqual(reopened.getLayoutReaderFonts(), { target: 20 }, 'new manual choices under the new rules must persist');
+  } finally {
+    constants.LAYOUT_READER_FONT_RULES_VERSION = rulesVersion;
+    prefValues.clear(); for (const [key, value] of snapshot) prefValues.set(key, value);
+  }
+}
+
+function testSingleLineTextInkAbstractRegionBoundary() {
+  const { parseHTML } = require('linkedom');
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function fitSingleLineTextInk('), source.indexOf('  function measureTextBand('));
+  const stream = (id, extra = '', kind = 'text', lines = 'single') =>
+    `<div id="${id}" class="layout-flow-stream debug-text" data-style-kind="${kind}" data-flow-kind="text" data-original-lines="${lines}" ${extra} style="font-size:16px;line-height:1.825;height:11.5px;width:321.5px"><div class="flow-para" style="white-space:nowrap;width:max-content">出版授权声明</div></div>`;
+  const { document } = parseHTML(`<html><body><div id="translation-layout"><div class="layout-page">
+    ${stream('license', 'data-abstract-body="1"')}
+    ${stream('ordinary')}
+    ${stream('body', '', 'body_text')}
+    ${stream('abstract', 'data-abstract-body="1"', 'abstract')}
+    ${stream('multiline', 'data-abstract-body="1"', 'text', 'multi')}
+    ${stream('inherited', 'data-body-style-inherited="1"')}
+    <div id="title" class="layout-block type-title" style="font-size:16px">标题</div>
+    </div></div><div id="source-layout"><div class="layout-page">${stream('original')}</div></div></body></html>`);
+  const protectedIDs = ['body', 'abstract', 'multiline', 'inherited', 'title', 'original'];
+  const originals = protectedIDs.map(id => document.getElementById(id).outerHTML);
+  const fit = vm.runInNewContext(`${helper}\nfitSingleLineTextInk`, {
+    document: { createElement: () => ({ getContext: () => ({}) }) },
+    getComputedStyle: node => ({ fontSize: node.style.fontSize }),
+    singleLineTextInkBand(node) {
+      const top = 3 + parseFloat(node.firstElementChild.style.top || '0');
+      return { top, bottom: top + parseFloat(node.style.fontSize), height: 11.5 };
+    }
+  });
+  const pages = [...document.querySelectorAll('.layout-page')];
+  fit(pages);
+  for (const id of ['license', 'ordinary']) {
+    const node = document.getElementById(id);
+    assert(parseFloat(node.style.fontSize) <= 11.5, `${id} must fit its glyph height despite an abstract-region marker`);
+    assert.equal(node.style.lineHeight, '1');
+    assert.equal(parseFloat(node.firstElementChild.style.top), -3);
+    assert.equal(node.firstElementChild.style.whiteSpace, 'nowrap');
+    assert.equal(node.firstElementChild.style.width, 'max-content');
+  }
+  assert.equal(document.getElementById('license').dataset.abstractBody, '1', 'fitting must not rewrite existing classification');
+  protectedIDs.forEach((id, index) => assert.equal(document.getElementById(id).outerHTML, originals[index], `${id} must retain its own fitting rules`));
+  const fitted = document.getElementById('license').outerHTML;
+  fit(pages);
+  assert.equal(document.getElementById('license').outerHTML, fitted, 'snapshot replay must not accumulate vertical shifts');
+}
+
+async function testManualBodyFontRemainsUnconstrained() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const manual = source.slice(source.indexOf('  function applyLayoutBodyFont('), source.indexOf('  function applyLayoutFitSnapshot('));
+  const finalize = source.slice(source.indexOf('  function finalizeLayoutTypography('), source.indexOf('  // A layout solve'));
+  const solve = source.slice(source.indexOf('  async function runLayoutFit('), source.indexOf('  // The initial paint and ResizeObserver'));
+  const body = { dataset: {}, style: { fontSize: '8px', lineHeight: '1.4' } };
+  const sourceBody = { dataset: {}, style: { fontSize: '8px', lineHeight: '1.4' } };
+  const rootNode = { classList: { add() {}, remove() {} }, querySelectorAll: () => [layoutPage] };
+  const layoutPage = { isConnected: true, clientWidth: 600, clientHeight: 800, dataset: {}, style: {},
+    closest: selector => selector === '.layout-document' ? rootNode : null,
+    getBoundingClientRect: () => ({ width: 600, height: 800 }), querySelectorAll: () => [body] };
+  const state = { layoutFontPt: 18 };
+  let automaticFits = 0;
+  let released = 0;
+  const api = vm.runInNewContext(`${manual}\n${finalize}\n${solve}\n({runLayoutFit, applyLayoutBodyFont})`, {
+    state, document: {}, fitLayoutTables() {}, demoteFalseSingleLineText() {}, publishCompactLayoutDebugLabels() {},
+    layoutFitPageKey: () => 'current', restoreLayoutFitSnapshot: async () => new Set(),
+    fitLayoutPages: () => { automaticFits++; body.style.fontSize = '8px'; body.style.lineHeight = '1.4'; },
+    inheritFinalDualColumnBodyFont: () => assert.equal(body.style.fontSize, '8px', 'style inheritance must finish before the manual override'),
+    inheritFinalTextRegionBodyFont() {}, fitLayoutFormulas() {}, fitSingleLineTextInk() {}, clampTranslatedCodeOverflow: () => false,
+    releaseBodyLeading: () => { released++; assert.equal(body.style.fontSize, '8px'); },
+    saveLayoutFitSnapshot: () => { layoutPage.dataset.layoutFitKey = 'current'; }
+  });
+  await api.runLayoutFit([layoutPage]);
+  assert.equal(body.style.fontSize, '24.00px', 'manual enlargement must not be reduced by collision checks');
+  assert.equal(body.style.lineHeight, '1.4', 'manual enlargement must not compress the automatic leading');
+  await api.runLayoutFit([layoutPage]);
+  assert.equal(automaticFits, 1, 'restored manual layout must skip automatic refitting');
+  assert.equal(released, 1, 'restoring a completed snapshot must not repeat leading release');
+  assert.equal(body.style.fontSize, '24.00px');
+  delete layoutPage.dataset.layoutFitKey;
+  await api.runLayoutFit([layoutPage]);
+  assert.equal(body.style.fontSize, '24.00px', 'resize-driven refitting must reapply the user choice afterward');
+  api.applyLayoutBodyFont([{ closest: () => ({}), querySelectorAll: () => [sourceBody] }]);
+  assert.equal(sourceBody.style.fontSize, '8px', 'manual translated font must not change parsed source text');
+  state.layoutFontPt = 0;
+  delete layoutPage.dataset.layoutFitKey;
+  await api.runLayoutFit([layoutPage]);
+  assert.equal(body.style.fontSize, '8px', 'clearing the manual choice must restore automatic fitting');
+  const engine = source.slice(source.indexOf('  function runLayoutParityEngine('), source.indexOf('  // Route the inspection hook'));
+  assert(!engine.includes('applyLayoutBodyFont('), 'the automatic collision engine must never consume manual overrides');
+  const fit = source.slice(source.indexOf('  function fitLayoutPages('), source.indexOf('  // A layout solve'));
+  let expanded = false, finalAudit = false;
+  const wrap = {};
+  const page = { closest: () => wrap };
+  vm.runInNewContext(`${fit}\nfitLayoutPages(testPages)`, {
+    testPages: [page], runLayoutParityEngine() {},
+    resetBodyLeadingRelease() {},
+    fitLayoutFormulas: (_pages, options) => { expanded = Boolean(options?.expand); },
+    enforceFinalTextCollisionSafety: checkedPages => {
+      assert(expanded, 'the last text collision audit must observe fully expanded formula geometry');
+      assert.equal(checkedPages[0], page, 'the final audit must stay inside the requested document');
+      finalAudit = true;
+    }
+  });
+  assert(finalAudit);
+}
+
+function testPaddlePageFurnitureFrameCoordinates() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const policy = source.slice(source.indexOf('  function isPaddlePageFurniture('), source.indexOf('  function isOrdinaryMultilineText('));
+  const collision = source.slice(source.indexOf('  function textCollisionDetails('), source.indexOf('  function applyGroup('));
+  const rect = { left: 12, top: 9.8, right: 50, bottom: 18 };
+  const api = vm.runInNewContext(`${policy}\n${collision}\n({ pageFurnitureMinLineRatio, textCollisionDetails })`, {
+    elementBoxInPage: () => ({ left: 10, top: 10, right: 100, bottom: 20 }),
+    viewportRectInPage: () => ({ left: 10, top: 9.75, right: 100, bottom: 20 }),
+    layoutPageSourceSize: () => ({ width: 100, height: 100 }),
+    textRectsInPage: () => [rect], blockDebugName: () => 'test'
+  });
+  for (const provider of ['paddle', 'mineru', '']) {
+    for (const type of ['header', 'page_header', 'footer', 'page_footer', 'page_number', 'page_footnote', 'text']) {
+      const node = { dataset: { parseProvider: provider }, closest: () => ({ querySelectorAll: () => [] }), getBoundingClientRect: () => ({}),
+        matches: selector => selector.split(', ').includes(`.type-${type}`) };
+      const adapted = provider === 'paddle' && type !== 'text';
+      assert.equal(api.pageFurnitureMinLineRatio(node), adapted ? 1.4 : 2);
+      const hit = api.textCollisionDetails([node], { boundNodeBox: true });
+      assert.equal(hit?.blockerName || null, adapted ? null : 'block-boundary',
+        `${provider}/${type}: decimal frame alignment must remain limited to Paddle page furniture`);
+      if (adapted) {
+        rect.top = 8.5;
+        assert.equal(api.textCollisionDetails([node], { boundNodeBox: true }), null,
+          'Gecko small-font and KaTeX top metrics must not stop growth at the minimum font');
+        rect.top = 8.2;
+        assert.equal(api.textCollisionDetails([node], { boundNodeBox: true })?.blockerName, 'block-boundary',
+          'real overflow must still stop font growth');
+        rect.top = 9.8;
+        rect.bottom = 20.2;
+        assert.equal(api.textCollisionDetails([node], { boundNodeBox: true })?.blockerName, 'block-boundary',
+          'top metric tolerance must not relax the bottom boundary');
+        rect.bottom = 18;
+      }
+    }
+  }
+}
+
+function testProseStartingLeadingBoundaries() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const each = source.slice(source.indexOf('  function tuneEach('), source.indexOf('  function stoppedAtNextLowerBlock('));
+  const solve = source.slice(source.indexOf('  function tuneNodes('), source.indexOf('  function continueUnderfilledNodes('));
+  const abstract = source.slice(source.indexOf('  function shouldAdjustAbstractFont('), source.indexOf('  function dualColumnBodyFontCandidates('));
+  const makeNode = kind => ({
+    kind, dataset: { baseFont: '8', lineRatio: '1.1', styleKind: ['body', 'promoted'].includes(kind) ? 'body_text' : 'text',
+      ...(kind === 'list' ? { fromList: '1' } : {}),
+      ...(kind === 'abstract' ? { abstractBody: '1' } : {}),
+      ...(kind === 'inherited' ? { bodyStyleInherited: '1' } : {}) },
+    style: {},
+    matches: selector => selector.startsWith('.layout-title') ? ['title', 'caption'].includes(kind) : true
+  });
+  const nodes = ['ordinary', 'abstract', 'body', 'promoted', 'list', 'inherited', 'title', 'caption'].map(makeNode);
+  const probes = new Map();
+  const results = new Map();
+  const api = vm.runInNewContext(`${abstract}\n${each}\n${solve}\n({tuneEach, proseFitMinLineRatio})`, {
+    window: { __gallopDisabled: true }, scopedNodes: () => nodes, clearFitMarks() {},
+    applyGroup(group, font, leading) {
+      for (const node of group) {
+        if (!probes.has(node)) probes.set(node, []);
+        probes.get(node).push({ font, leading });
+        Object.assign(node.style, { fontSize: String(font), lineHeight: String(leading) });
+      }
+    },
+    beginBodyIterationProbe() {}, recordBodyIterationCollision() {},
+    textCollisionDetails: ([node]) => Number(node.style.fontSize) * Number(node.style.lineHeight) * 6 > 100 ? { source: node } : null
+  });
+  const options = { minFont: 4.8, maxFont: 13, step: .35, lineStep: .035, maxLineRatio: 1.85,
+    startFromMinimum: true, allowOverflow: true, avoidBlockOverlap: true, stopWhenFilled: false,
+    minLineRatio: api.proseFitMinLineRatio, onFitted: (node, result) => results.set(node.kind, result) };
+  api.tuneEach('existing-selector', options);
+  for (const node of nodes) {
+    const expected = ['ordinary', 'abstract'].includes(node.kind) ? 1.3 : 1.1;
+    assert.equal(probes.get(node)[0].leading, expected, `${node.kind} must start with its own leading policy`);
+    assert(probes.get(node).every(probe => probe.leading >= expected - 1e-6));
+  }
+  assert(results.get('ordinary').fontSize < results.get('body').fontSize,
+    'reserving leading may reduce only the independent text font, not the protected body baseline');
+  assert.equal(results.get('ordinary').lineRatio, 1.3);
+  assert.equal(nodes.find(node => node.kind === 'abstract').dataset.styleKind, 'text');
+  const markedList = makeNode('list'); markedList.dataset.abstractBody = '1';
+  const markedInherited = makeNode('inherited'); markedInherited.dataset.abstractBody = '1';
+  assert.equal(api.proseFitMinLineRatio(markedList), 1.1, 'list classification must remain protected even when an abstract marker is present');
+  assert.equal(api.proseFitMinLineRatio(markedInherited), 1.1, 'inherited body style must retain its own baseline');
+  const protectedStyles = new Map(nodes.filter(node => !['ordinary', 'abstract'].includes(node.kind))
+    .map(node => [node.kind, { ...node.style }]));
+  api.tuneEach('existing-selector', { ...options, minLineRatio: 1.1 });
+  for (const node of nodes.filter(node => protectedStyles.has(node.kind))) {
+    assert.deepEqual(node.style, protectedStyles.get(node.kind), `${node.kind} must retain the previous numeric-option behavior`);
+  }
+}
+
+function testBoundedBodyLeadingRelease() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helpers = source.slice(source.indexOf('  function resetBodyLeadingRelease('), source.indexOf('  function fitLayoutPages('));
+  const ratio = node => node.dataset.equationDense === '1' && node.style.priority !== 'important'
+    ? 1.04 : Number(node.style.lineHeight);
+  const makeNode = (capacity = 1.6, leading = 1.1, extra = {}) => ({
+    dataset: { styleKind: 'body_text', flowKind: 'text' },
+    style: { fontSize: '16px', lineHeight: String(leading), priority: '',
+      setProperty(name, value, priority = '') { assert.equal(name, 'line-height'); this.lineHeight = value; this.priority = priority; },
+      getPropertyPriority() { return this.priority; } },
+    box: { left: 0, top: 0, right: 100, bottom: capacity * 100 }, ...extra
+  });
+  const ample = makeNode(), partial = makeNode(1.237), full = makeNode(1.1), overflow = makeNode(1.05);
+  const wider = makeNode(1.6, 1.4), empty = makeNode(1.6, 1.1, { empty: true });
+  const dense = makeNode(); dense.dataset.equationDense = '1';
+  const denseOverflow = makeNode(1.03); denseOverflow.dataset.equationDense = '1';
+  const neighbor = makeNode(1.6, 1.1, { collisionAt: 1.245 });
+  const alreadyColliding = makeNode(1.6, 1.1, { collisionAt: 1 });
+  const leftOverflow = makeNode(1.6, 1.1, { ink: { left: -1 } });
+  const topOverflow = makeNode(1.6, 1.1, { ink: { top: -2 } });
+  const opticalTop = makeNode(1.6, 1.1, { ink: { top: -1 } });
+  const rightOverflow = makeNode(1.6, 1.1, { ink: { right: 101 } });
+  const inlineMath = makeNode(1.3, 1.1, { math: true });
+  const caption = makeNode(); caption.dataset.styleKind = 'caption';
+  const inherited = makeNode(); inherited.dataset.styleKind = 'text'; inherited.dataset.bodyStyleInherited = '1';
+  const abstract = makeNode(); abstract.dataset.styleKind = 'text'; abstract.dataset.abstractBody = '1';
+  const abstractFull = makeNode(1.1); abstractFull.dataset.styleKind = 'text'; abstractFull.dataset.abstractBody = '1';
+  const abstractNeighbor = makeNode(1.6, 1.1, { collisionAt: 1.245 });
+  abstractNeighbor.dataset.styleKind = 'text'; abstractNeighbor.dataset.abstractBody = '1';
+  const absoluteAbstract = makeNode(); absoluteAbstract.dataset.styleKind = 'abstract'; absoluteAbstract.dataset.blockKind = 'abstract';
+  const all = [ample, partial, full, overflow, wider, empty, dense, denseOverflow, neighbor,
+    alreadyColliding, leftOverflow, topOverflow, opticalTop, rightOverflow, inlineMath, caption, inherited,
+    abstract, abstractFull, abstractNeighbor, absoluteAbstract];
+  const page = {
+    closest: () => null,
+    querySelectorAll: selector => selector.startsWith('[data-body-leading-before-release]')
+      ? all.filter(node => node.dataset.bodyLeadingBeforeRelease !== undefined)
+      : all.filter(node => node.dataset.styleKind === 'body_text' || node.dataset.bodyStyleInherited === '1'
+        || (node.dataset.abstractBody === '1' && selector.includes('[data-abstract-body="1"]'))
+        || (node.dataset.blockKind === 'abstract' && selector.includes('.layout-block.type-abstract')))
+  };
+  const ink = node => [{ left: 0, top: 0, right: 100, bottom: ratio(node) * 100, ...node.ink }];
+  const api = vm.runInNewContext(`${helpers}\n({releaseBodyLeading, resetBodyLeadingRelease})`, {
+    getComputedStyle: node => ({ fontSize: node.style.fontSize, lineHeight: String(ratio(node) * 16) }),
+    elementBoxInPage: node => node.box,
+    textRectsInPage: node => node.empty ? [] : ink(node),
+    renderedContentRectsInPage: node => node.math ? [...ink(node), { left: 10, top: 0, right: 20, bottom: ratio(node) * 100 + 10 }] : ink(node),
+    textCollisionDetails: ([node]) => ratio(node) > (node.collisionAt ?? Infinity) ? { source: node } : null
+  });
+  api.releaseBodyLeading([page]);
+  const first = all.map(node => [node.style.fontSize, node.style.lineHeight, node.style.priority]);
+  assert.equal(Number(ample.style.lineHeight), 1.35, 'spacious blocks must stop at the common target');
+  assert(Number(partial.style.lineHeight) > 1.23 && Number(partial.style.lineHeight) <= 1.237);
+  assert(Number(neighbor.style.lineHeight) > 1.24 && Number(neighbor.style.lineHeight) <= 1.245);
+  assert(Number(inlineMath.style.lineHeight) > 1.19 && Number(inlineMath.style.lineHeight) <= 1.2,
+    'visible inline formula geometry must remain inside the frame too');
+  assert.equal(Number(dense.style.lineHeight), 1.35, 'equation-dense body must be eligible without a line-count gate');
+  assert.equal(dense.style.priority, 'important', 'a safe release must override the compact equation CSS');
+  assert.equal(Number(inherited.style.lineHeight), 1.35);
+  assert.equal(Number(abstract.style.lineHeight), 1.35, 'independently identified abstract streams must share the body leading target');
+  assert.equal(Number(absoluteAbstract.style.lineHeight), 1.35, 'absolute abstract blocks must also receive safe leading release');
+  assert.equal(abstract.dataset.styleKind, 'text', 'abstract release must preserve classification and stay outside the shared body font group');
+  assert.equal(abstract.dataset.bodyStyleInherited, undefined);
+  assert(Number(abstractNeighbor.style.lineHeight) > 1.24 && Number(abstractNeighbor.style.lineHeight) <= 1.245,
+    'abstract leading must still stop at neighboring content');
+  assert.equal(Number(opticalTop.style.lineHeight), 1.35, 'ordinary top-edge font metrics must use the existing 1.5 source-pixel tolerance');
+  assert.equal(wider.style.lineHeight, '1.4', 'already spacious leading must not decrease');
+  for (const node of [full, overflow, empty, denseOverflow, alreadyColliding, leftOverflow, topOverflow, rightOverflow, caption, abstractFull]) {
+    assert.equal(node.style.lineHeight, '1.1', 'ineligible or constrained blocks must preserve their exact original style');
+    assert.equal(node.dataset.bodyLeadingBeforeRelease, undefined);
+  }
+  assert(all.every(node => node.style.fontSize === '16px'), 'leading release must never change font size');
+  api.resetBodyLeadingRelease([page]);
+  assert.equal(dense.style.priority, '');
+  assert.equal(ratio(dense), 1.04, 'refitting must restore compact equation behavior before automatic font solving');
+  assert(all.every(node => node.dataset.bodyLeadingBeforeRelease === undefined));
+  api.releaseBodyLeading([page]);
+  assert.deepEqual(all.map(node => [node.style.fontSize, node.style.lineHeight, node.style.priority]), first,
+    'a repeated full solve must start from the same leading instead of accumulating release');
+  const protectedSource = makeNode();
+  api.releaseBodyLeading([{ closest: () => ({}), querySelectorAll: () => [protectedSource] }]);
+  assert.equal(protectedSource.style.lineHeight, '1.1');
+
+  const finalize = source.slice(source.indexOf('  function finalizeLayoutTypography('), source.indexOf('  // A layout solve'));
+  const order = [];
+  vm.runInNewContext(`${finalize}\nfinalizeLayoutTypography([])`, {
+    inheritFinalDualColumnBodyFont: () => order.push('columns'),
+    inheritFinalTextRegionBodyFont: () => order.push('regions'),
+    releaseBodyLeading: () => order.push('leading'), applyLayoutBodyFont: () => order.push('manual')
+  });
+  assert.deepEqual(order, ['columns', 'regions', 'leading', 'manual']);
+}
+
+function testBodyLeadingCollisionRollback() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function continueUnderfilledNodes('), source.indexOf('  function clampTranslatedOverflow('));
+  let nodes = [], safeRatio = 1.08;
+  const probes = [];
+  const applyGroup = (group, font, ratio) => {
+    for (const node of group) Object.assign(node.style, { fontSize: String(font), lineHeight: String(ratio) });
+  };
+  const continueFit = vm.runInNewContext(`${helper}\ncontinueUnderfilledNodes`, {
+    document: { body: { classList: { contains: () => false } } },
+    measureTextBand: () => ({ hasText: true, lastBottom: 50 }),
+    layoutControlFontSize: node => Number(node.style.fontSize), applyGroup,
+    beginBodyIterationProbe() {}, recordBodyIterationCollision() {},
+    textCollisionDetails: group => {
+      const hit = group.find(node => Number(node.style.fontSize) >= 11 && Number(node.style.lineHeight) > safeRatio + 1e-6);
+      if (hit) probes.push(Number(hit.style.lineHeight));
+      return hit ? { source: hit } : null;
+    }
+  });
+  const reset = (dense = false) => {
+    nodes = [
+      { dataset: { equationDense: dense ? '1' : '0' }, style: {}, clientHeight: 100 },
+      { dataset: {}, style: {}, clientHeight: 100 }
+    ];
+    applyGroup(nodes, 10, 1.22);
+    probes.length = 0;
+  };
+  const options = { step: .5, lineStep: .04, maxFont: 11, collisionMinLineRatio: 1.1, avoidBlockOverlap: true };
+  reset();
+  continueFit(nodes, options);
+  assert(nodes.every(node => Number(node.style.fontSize) === 10.5), 'a collision below the readable floor must roll back the whole font-growth round');
+  assert(nodes.every(node => Number(node.style.lineHeight) === 1.22), 'failed growth must also restore each paragraph leading');
+  assert(probes.every(ratio => ratio >= 1.1));
+
+  safeRatio = 1.1;
+  reset();
+  continueFit(nodes, options);
+  assert(nodes.every(node => Number(node.style.fontSize) === 11), 'readable collision recovery must retain a uniform body font');
+  assert(nodes.every(node => Number(node.style.lineHeight) >= 1.1));
+
+  safeRatio = 1.3;
+  reset();
+  applyGroup(nodes, 10, 1.4);
+  continueFit(nodes, options);
+  assert(nodes.every(node => Number(node.style.fontSize) === 11), 'body growth may trade some leading for readable uniform text size');
+  assert(nodes.every(node => Number(node.style.lineHeight) >= 1.1 && Number(node.style.lineHeight) <= 1.3));
+
+  safeRatio = 1.04;
+  reset(true);
+  nodes.pop();
+  continueFit(nodes, options);
+  assert.equal(Number(nodes[0].style.fontSize), 11, 'short text between equations must retain the existing compact exception');
+  assert(Math.abs(Number(nodes[0].style.lineHeight) - 1.02) < 1e-6);
+}
+
 function testFinalBodyFontInheritanceCollisionRollback() {
   const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
   const helper = source.slice(source.indexOf('  function applyFinalBodyStyle('), source.indexOf('  function titleFrameFill('));
@@ -1944,9 +2489,16 @@ function testFinalBodyFontInheritanceCollisionRollback() {
     assert.equal(node.style.textAlign, 'justify');
     assert.deepEqual(probedRatios, [1.2, 1.175, 1.15]);
   }
-  safeLineRatio = 1.02; incomingSafeLineRatio = null;
+  safeLineRatio = 1.1; incomingSafeLineRatio = null;
   inherit();
-  assert.equal(node.style.lineHeight, '1.02', 'try the body safety floor before abandoning inheritance');
+  assert.equal(node.style.lineHeight, '1.1', 'try the readable body floor before abandoning inheritance');
+  safeLineRatio = 1.075;
+  Object.assign(node.style, { fontSize: '25.00px', lineHeight: '1.19', textAlign: 'left' });
+  probedRatios.length = 0;
+  inherit();
+  assert.equal(node.style.fontSize, '25.00px', 'abandon inheritance if fitting requires excessive line compression');
+  assert.equal(node.style.lineHeight, '1.19');
+  assert(probedRatios.every(ratio => ratio >= 1.1));
   safeLineRatio = null;
   for (const reason of ['outgoing', 'incoming', 'missing-baseline', 'mixed-baseline', 'protected', 'abstract', 'strict-source']) {
     Object.assign(node.style, { fontSize: '25.00px', lineHeight: '1.19', textAlign: 'left' });
@@ -1957,11 +2509,11 @@ function testFinalBodyFontInheritanceCollisionRollback() {
     assert.equal(node.style.fontSize, '25.00px', reason);
     assert.equal(node.style.lineHeight, '1.19');
     assert.equal(node.style.textAlign, 'left', 'collision rollback must restore all inherited styles');
-    assert(probedRatios.every(ratio => ratio >= 1.02), 'compression must not exceed the body safety floor');
+    assert(probedRatios.every(ratio => ratio >= 1.1), 'compression must not exceed the readable body floor');
   }
   const solve = source.slice(source.indexOf('  async function runLayoutFit('), source.indexOf('  function ensureLayoutFit('));
-  assert(solve.indexOf('      inheritFinalDualColumnBodyFont(pending);') > solve.indexOf('      applyLayoutBodyFont(pending);'));
-  assert(solve.indexOf('      inheritFinalDualColumnBodyFont(pending);') < solve.lastIndexOf('      saveLayoutFitSnapshot(active);'));
+  assert(solve.indexOf('      finalizeLayoutTypography(pending);') > solve.indexOf('      fitLayoutPages(pending);'));
+  assert(solve.indexOf('      finalizeLayoutTypography(pending);') < solve.lastIndexOf('      saveLayoutFitSnapshot(active);'));
 }
 
 function testInheritedBodyAlignmentSnapshot() {
@@ -1976,6 +2528,37 @@ function testInheritedBodyAlignmentSnapshot() {
   assert.equal(node.style.textAlign, '');
   assert.equal(restore([page], snapshot).size, 1);
   assert.deepEqual(node.style, snapshot.pages[0].styles[0]);
+  node.dataset.equationDense = '1';
+  node.style.setProperty = function (_name, value, priority = '') { this.lineHeight = value; this.priority = priority; };
+  snapshot.pages[0].styles[0] = { fontSize: '12px', lineHeight: '1.35', textAlign: 'justify', bodyLeadingBeforeRelease: '1.02' };
+  assert.equal(restore([page], snapshot).size, 1);
+  assert.equal(node.style.priority, 'important', 'restored equation text must retain its measured leading instead of falling back to compact CSS');
+  assert.equal(node.dataset.bodyLeadingBeforeRelease, '1.02', 'restored layouts must remember the automatic leading for a future refit');
+  const resetHelper = source.slice(source.indexOf('  function resetBodyLeadingRelease('), source.indexOf('  function releaseBodyLeading('));
+  vm.runInNewContext(`${resetHelper}\nresetBodyLeadingRelease(testPages)`, { testPages: [page] });
+  assert.equal(node.style.lineHeight, '1.02');
+  assert.equal(node.style.priority, '');
+  assert.equal(node.dataset.bodyLeadingBeforeRelease, undefined);
+}
+
+function testKeywordLineBreaks() {
+  const text = 'Keywords: Aluminum particle\nShock speed\nEquivalence ratio\nPulsating shock\nHomogeneous reaction\nHeterogeneous reaction';
+  const block = { type: 'text', lines: [{ spans: [{ type: 'text', content: text }] }] };
+  assert.equal(LayoutHelpers.plainBlockText(block), text, '单个 span 内的关键词换行必须保留到翻译输入');
+  assert.equal(LayoutHelpers.plainBlockText({ lines: [{ spans: [{ type: 'text', content: 'First<br />Second<br>Third' }] }] }), 'First\nSecond\nThird');
+  assert(LayoutHelpers.isKeywordListText(text));
+  assert(LayoutHelpers.isKeywordListText('Key words:\r\nWind\r\nLidar'));
+  assert(LayoutHelpers.isKeywordListText('关键词：\n风速\n雷达'));
+  assert(!LayoutHelpers.isKeywordListText('Keywords: Wind; lidar'));
+  assert(!LayoutHelpers.isKeywordListText('Normal prose wraps\nonto another source line.'));
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function renderLayoutTranslatedText('), source.indexOf('  function renderLayoutTocRows('));
+  const render = vm.runInNewContext(`${helper}\nrenderLayoutTranslatedText`, { Markdown: M, imageResolver: () => '' });
+  const translated = '关键词：铝颗粒\n激波速度\n当量比\n脉动激波\n均相反应\n非均相反应';
+  assert.equal((render(translated, true).match(/<br \/>/g) || []).length, 5);
+  assert(!render('正文的物理折行\n仍由栏宽决定').includes('<br'), '正文不按源 PDF 的物理行强制换行');
+  assert.equal(render('关键词：铝颗粒激波速度当量比', true), '关键词：铝颗粒激波速度当量比', '旧译文没有边界时不猜测切分');
+  assert(render('<script>alert(1)</script>\n激波', true).includes('&lt;script&gt;'), '保留换行仍须转义不可信 HTML');
 }
 
 function testLayoutDOIWrapBoundaries() {
@@ -1997,55 +2580,64 @@ function testLayoutDOIWrapBoundaries() {
   }
 }
 
-async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
-  const method = context.LitMTrans.Controller.prototype.createLayoutPDFAttachments.toString();
+async function testLayoutPDFAttachmentReplacementKeepsLatest() {
+  const method = context.LitMTrans.Controller.prototype.generateLayoutPDFAttachments.toString();
   const calls = [];
-  let oldIDs = [1, 2, 3], choice = 1, failImport = false, failTrash = false;
-  const titles = { 1: '简体中文-译文-paper', 2: '简体中文-译文对照版-paper', 3: '原始PDF' };
-  const create = vm.runInNewContext(`({ ${method} }).createLayoutPDFAttachments`, {
+  let oldIDs = [1, 2, 3, 4, 5], failImport = false, failTrash = false, failRegistry = false;
+  const titles = { 1: '用户改名后的译文', 2: '用户改名后的对照', 3: '原始PDF', 4: '简体中文-译文-paper', 5: '简体中文-译文-paper' };
+  const itemOverrides = {};
+  const originalRegistry = [
+    { parseRevisionID: 'current', targetLanguage: '简体中文', translationKey: 'key-1', comparisonKey: 'key-2' },
+    { parseRevisionID: 'old-paddle', targetLanguage: '简体中文', translationKey: 'key-5' }
+  ];
+  let registry = originalRegistry;
+  const create = vm.runInNewContext(`({ ${method} }).generateLayoutPDFAttachments`, {
     U: { extension: () => '.pdf', safeStem: value => value, normalizeLanguageName: value => value },
     PathUtils: { join: (...parts) => parts.join('/') },
+    LitMTrans: context.LitMTrans,
     Zotero: {
       getMainWindow: () => ({}),
       Items: {
-        get: id => ({ getField: () => titles[id] }),
+        get: id => ({ id, libraryID: 1, parentID: 10, isAttachment: () => true,
+          attachmentContentType: 'application/pdf', getField: () => titles[id], ...itemOverrides[id] }),
+        getByLibraryAndKey: (_libraryID, key) => {
+          const id = Number(key.replace('key-', ''));
+          return oldIDs.includes(id) ? { id, key } : null;
+        },
         trashTx: async ids => { if (failTrash) throw new Error('trash failed'); calls.push(`trash:${ids.join(',')}`); },
         erase: async ids => calls.push(`erase:${ids.join(',')}`)
       }
     },
-    Services: { prompt: {
-      BUTTON_POS_0: 1, BUTTON_POS_1: 256, BUTTON_TITLE_IS_STRING: 127, BUTTON_POS_1_DEFAULT: 16777216,
-      confirmEx: (_win, _title, message, flags, replace, preserve) => {
-        assert(message.includes('批注和笔记不会迁移'));
-        assert.equal(preserve, '保留原PDF');
-        assert.equal(flags & 16777216, 0, 'highlight the left replacement button');
-        calls.push('confirm'); return choice;
-      }
-    } }
+    Services: { prompt: { confirmEx: () => assert.fail('latest PDF replacement needs no confirmation') } }
   });
   const controller = {
-    attachmentContext: async () => ({ filePath: 'paper.pdf', title: 'paper', documentID: 'doc', parent: { isRegularItem: () => true, getAttachments: () => oldIDs } }),
+    generatedPDFHasUserContent: context.LitMTrans.Controller.prototype.generatedPDFHasUserContent,
+    attachmentContext: async () => ({ filePath: 'paper.pdf', title: 'paper', documentID: 'doc', attachment: { id: 3, libraryID: 1 }, parent: { id: 10, isRegularItem: () => true, getAttachments: () => oldIDs } }),
     getSettings: () => ({ targetLanguage: '简体中文' }),
-    storage: { temporaryDir: () => 'temp', ensureDir: async () => {}, remove: async () => calls.push('cleanup'), setDocumentMeta: async () => calls.push('meta') },
+    storage: { temporaryDir: () => 'temp', path: (...parts) => parts.join('/'),
+      getDocumentMeta: async () => ({ parseRevisionID: 'current', parseProvider: 'mineru', parseModel: 'vlm' }),
+      readJSON: async () => registry,
+      writeJSON: async (_path, value) => { if (failRegistry) throw new Error('registry failed'); registry = value; },
+      ensureDir: async () => {}, remove: async () => calls.push('cleanup'), setDocumentMeta: async () => calls.push('meta') },
     printWorkbenchPDF: async () => calls.push('print'),
     createLayoutComparisonPDF: async () => calls.push('comparison'),
     createGeneratedPDFAttachment: async (_context, _file, title) => {
       calls.push(`import:${title}`);
       if (failImport && title.includes('对照版')) throw new Error('import failed');
-      return { id: title.includes('对照版') ? 12 : 11 };
+      const id = title.includes('对照版') ? 12 : 11;
+      return { id, key: `key-${id}` };
     }
   };
   const run = () => create.call(controller, {}, { layoutIdentity: 'new' });
-  const kept = await run();
-  assert(kept.cancelled && kept.preservedExisting);
-  assert.deepEqual(calls, ['print', 'comparison', 'confirm', 'cleanup'], 'declining must leave old PDFs, annotations and publication metadata untouched');
-  calls.length = 0; choice = 0;
   const replaced = await run();
   assert.equal(replaced.translationAttachmentID, 11);
-  assert.deepEqual(calls.slice(-3), ['trash:1,2', 'meta', 'cleanup']);
-  assert(calls.indexOf('confirm') < calls.indexOf('import:简体中文-译文-paper'));
-  assert(calls.indexOf('import:简体中文-译文对照版-paper') < calls.indexOf('trash:1,2'), 'save both replacements before moving any old attachment');
+  assert.deepEqual(calls.slice(-3), ['trash:4,5,1,2', 'meta', 'cleanup']);
+  assert(calls.includes('import:简体中文-译文-paper'));
+  assert(calls.indexOf('import:简体中文-译文对照版-paper') < calls.indexOf('trash:4,5,1,2'), 'save both replacements before moving any old attachment');
   assert(!calls.includes('trash:3'), 'never touch the original PDF');
+  assert.equal(registry.length, 1, 'same-language PDFs from all parser revisions are replaced');
+  assert.equal(registry[0].translationKey, 'key-11');
+  registry = originalRegistry;
   calls.length = 0; failImport = true;
   await assert.rejects(run, /import failed/);
   assert(!calls.some(call => call.startsWith('trash:') || call === 'meta'), 'a failed replacement must preserve both old attachments');
@@ -2055,22 +2647,142 @@ async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
   await assert.rejects(run, /trash failed/);
   assert(calls.includes('erase:11,12'), 'erase only the new pair if moving the old pair fails');
   assert(!calls.includes('meta'));
+  assert.deepEqual(registry, originalRegistry);
+  calls.length = 0; failTrash = false; failRegistry = true;
+  await assert.rejects(run, /registry failed/);
+  assert(calls.includes('erase:11,12'));
+  assert(!calls.some(call => call.startsWith('trash:')), 'failed ownership publication must leave old PDFs untouched');
+  failRegistry = false;
   failTrash = false;
-  calls.length = 0; failImport = false; oldIDs = [3];
+  calls.length = 0; failImport = false; oldIDs = [3, 4, 6, 7, 8, 9, 10];
+  for (const id of [3, 7, 8, 9, 10]) titles[id] = titles[4];
+  titles[6] = `${titles[4]}（备份）`;
+  itemOverrides[7] = { attachmentContentType: 'text/plain' };
+  itemOverrides[8] = { parentID: 20 };
+  itemOverrides[9] = { libraryID: 2 };
+  itemOverrides[10] = { deleted: true };
   await run();
   assert(!calls.includes('confirm'), 'first generation needs no replacement prompt');
-  assert(!calls.some(call => call.startsWith('trash:')));
+  assert(calls.includes('trash:4'), 'replace exact-title legacy PDFs even without an ownership record');
+  assert.deepEqual(calls.filter(call => call.startsWith('trash:')), ['trash:4'], 'preserve source, similar titles, non-PDFs, other parents/libraries and trashed items');
+  calls.length = 0; oldIDs = [3];
+  await run();
+  assert(!calls.some(call => call.startsWith('trash:')), 'generation without any old PDF must not remove anything');
+  calls.length = 0;
+  oldIDs = [1, 2, 3, 4, 5];
+  titles[4] = '简体中文-译文对照版-paper';
+  registry = [{ parseRevisionID: 'current', targetLanguage: '简体中文', layoutIdentity: 'new', translationKey: 'key-1', comparisonKey: 'key-2' }];
+  const cached = await run();
+  assert(cached.cached);
+  assert.deepEqual(calls, ['trash:4,5', 'meta'], 'cached publication removes same-title legacy duplicates without printing or removing the current pair');
+  calls.length = 0;
+  await assert.rejects(create.call(controller, {}, { layoutIdentity: 'old', parseRevisionID: 'old-paddle' }), /解析结果已变化/);
+  assert.equal(calls.length, 0);
+  registry = originalRegistry;
+  calls.length = 0;
+  itemOverrides[4] = { getAnnotations: () => [{ id: 90 }] };
+  itemOverrides[5] = { getNotes: () => [91] };
+  await run();
+  assert.deepEqual(calls.filter(call => call.startsWith('trash:')), ['trash:1,2'], 'annotated PDFs and attached notes must survive a table display update');
+}
+
+async function testDocumentCleanupRemovesGeneratedPDFsAndFontOnly() {
+  const prototype = context.LitMTrans.Controller.prototype;
+  let registry = [{ translationKey: 'ZH', comparisonKey: 'COMPARE' }, { translationKey: 'EN', comparisonKey: 'ZH' }];
+  const items = new Map(['SOURCE', 'ZH', 'COMPARE', 'EN', 'UNRELATED'].map((key, index) => [key, {
+    id: index + 1, key, libraryID: 1, parentID: 10,
+    attachmentContentType: 'application/pdf', isAttachment: () => true, getField: () => key
+  }]));
+  const removed = [];
+  const parent = { id: 10, isRegularItem: () => true, getField: () => 'paper',
+    getAttachments: () => [...items.values()].filter(item => item.parentID === 10).map(item => item.id) };
+  const legacy = { id: 6, key: 'LEGACY', libraryID: 1, parentID: 10,
+    attachmentContentType: 'application/pdf', isAttachment: () => true,
+    getField: () => '简体中文-译文-paper' };
+  let failTrash = false;
+  const globals = {
+    Zotero: { Items: {
+      get: id => id === 10 ? parent : [...items.values()].find(item => item.id === id),
+      getByLibraryAndKey: (_library, key) => items.get(key),
+      trashTx: async ids => { if (failTrash) throw new Error('trash failed'); removed.push(...ids); }
+    } },
+    displayTitle: () => 'paper',
+    U: { safeStem: U.safeStem, setPref: (key, value) => { assert.equal(key, 'layoutReaderFonts'); savedFonts = JSON.parse(value); } }
+  };
+  const remove = vm.runInNewContext(`({ ${prototype.removeGeneratedPDFAttachments} }).removeGeneratedPDFAttachments`, globals);
+  const clear = vm.runInNewContext(`({ ${prototype.clearStorageData} }).clearStorageData`, globals);
+  let savedFonts = null, deletedCache = false, inCleanup = false;
+  const controller = {
+    operations: new Map(), tabs: new Map(),
+    removeCAJReaderAttachment: async () => ({ removed: false }),
+    getLayoutReaderFonts: () => ({ '1-SOURCE': 9, '1-OTHER': 12 }),
+    storage: {
+      path: (...parts) => parts.join('/'), readJSON: async () => registry,
+      parseDocumentID: () => ({ libraryID: 1, key: 'SOURCE' }),
+      clearDocumentSubcategory: async (_id, category, beforeRemove) => {
+        inCleanup = true;
+        try { if (beforeRemove) await beforeRemove(); deletedCache = true; return { cleared: true }; }
+        finally { inCleanup = false; }
+      }
+    },
+    removeGeneratedPDFAttachments: function (id) { assert(inCleanup); return remove.call(this, id); }
+  };
+  await clear.call(controller, { target: 'document', documentID: '1-SOURCE', category: 'all' });
+  assert.deepEqual(removed, [2, 3, 4], 'remove all registered languages once, preserving source and unregistered PDFs');
+  assert.deepEqual(savedFonts, { '1-OTHER': 12 }, 'reset only this document font');
+  assert(deletedCache);
+  removed.length = 0;
+  registry = [];
+  items.set('LEGACY', legacy);
+  items.set('LEGACY_COMPARE', { ...legacy, id: 7, key: 'LEGACY_COMPARE', getField: () => 'English-译文对照版-paper' });
+  items.set('SIMILAR', { ...legacy, id: 8, key: 'SIMILAR', getField: () => '简体中文-译文-paper（备份）' });
+  items.set('NON_PDF', { ...legacy, id: 9, key: 'NON_PDF', attachmentContentType: 'text/plain' });
+  items.get('SOURCE').getField = () => '简体中文-译文-paper';
+  await clear.call(controller, { target: 'document', documentID: '1-SOURCE', category: 'all' });
+  assert.deepEqual(removed, [6, 7], 'without a registry, remove only exact generated titles in all languages and preserve source, similar names and non-PDFs');
+  registry = [{ translationKey: 'LEGACY', comparisonKey: 'LEGACY_COMPARE' }];
+  removed.length = 0;
+  await clear.call(controller, { target: 'document', documentID: '1-SOURCE', category: 'all' });
+  assert.deepEqual(removed, [6, 7], 'registered and title-matched attachments must be removed only once');
+  removed.length = 0; savedFonts = null; deletedCache = false; failTrash = true;
+  await assert.rejects(clear.call(controller, { target: 'document', documentID: '1-SOURCE', category: 'all' }), /trash failed/);
+  assert(!deletedCache && !savedFonts, 'retain ownership records and font when attachment cleanup fails');
+  failTrash = false;
+  for (const key of ['SOURCE', 'UNRELATED']) {
+    if (key === 'UNRELATED') items.get(key).parentID = 20;
+    registry = [{ translationKey: key }];
+    await assert.rejects(clear.call(controller, { target: 'document', documentID: '1-SOURCE', category: 'all' }), /关联信息异常/);
+    assert.equal(removed.length, 0, 'never remove original or attachments belonging to another item');
+  }
+  await clear.call(controller, { target: 'document', documentID: '1-SOURCE', category: 'translation' });
+  assert.equal(savedFonts, null, 'partial cleanup must keep font and PDF attachments');
+  let callbacks = 0;
+  const missing = { documentDir: () => '/missing', exists: async () => false };
+  const clearMissing = context.LitMTrans.Storage.prototype.clearDocumentSubcategory;
+  await clearMissing.call(missing, '1-SOURCE', 'all', async () => callbacks++);
+  assert.equal(callbacks, 1, 'clear residual attachments even when a previous cleanup already removed the document directory');
+  await clearMissing.call(missing, '1-SOURCE', 'translation', async () => callbacks++);
+  assert.equal(callbacks, 1, 'partial cleanup must not trigger attachment removal');
 }
 
   return {
+    testDocumentCleanupRemovesGeneratedPDFsAndFontOnly,
+    testKeywordLineBreaks,
     testLayoutDOIWrapBoundaries,
-    testLayoutPDFAttachmentReplacementRequiresConfirmation,
+    testLayoutPDFAttachmentReplacementKeepsLatest,
     testInheritedBodyAlignmentSnapshot,
     testDualColumnBodyFontCandidateProtection,
     testOffsetSingleColumnBodyProfile,
     testOffsetBodyUnifiedFitPromotion,
     testOffsetBodyToolbarFont,
     testPublishedTranslationClearsWorkbenchFontOverride,
+    testLayoutFontMemoryFollowsRulesVersion,
+    testSingleLineTextInkAbstractRegionBoundary,
+    testManualBodyFontRemainsUnconstrained,
+    testBoundedBodyLeadingRelease,
+    testProseStartingLeadingBoundaries,
+    testPaddlePageFurnitureFrameCoordinates,
+    testBodyLeadingCollisionRollback,
     testFinalBodyFontInheritanceCollisionRollback,
     testFinalTextClearanceBoundaries,
     testAbstractRecognitionAndBodyProtection,
@@ -2088,6 +2800,8 @@ async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
     testDeepSeekFastLayoutStopsBeforeParallelWaveWhenProbeIsBelowThreshold,
     testStaleDeepSeekFastPreferenceDoesNotAffectGemini,
     testLayoutRetriesFailedTransportGroupOnce,
+    testLayoutRetriesMissingBlocksAfterRepairOnce,
+    testLayoutAcceptsNonemptyAnswersWithoutQualityRetries,
     testLayoutFullContextIgnoresChunkLimits,
     testLayoutTargetedRetryKeepsPrimaryPrefix,
     testLayoutFirstRetryContextPolicy,
@@ -2095,6 +2809,7 @@ async function testLayoutPDFAttachmentReplacementRequiresConfirmation() {
     testCompleteReferenceCorpus,
     testLayoutReaderIsAvailableBeforeParsing,
     testCompletedLayoutCreatesPDFItemAttachments,
+    testWebMachineRetranslationIncrementsPDFRevision,
     testLayoutBodyLeadingIsSlightlyRelaxed,
     testLayoutCapacityUsesTranslatedText,
     testLayoutCollisionGeometryUsesSourcePdfCoordinates,

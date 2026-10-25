@@ -154,6 +154,7 @@ function testPortableMinerUZipFallback() {
 async function testDeletedZoteroItemsClearDocumentCaches() {
   const storage = {
     documentsRoot: "/profile/litmtrans/documents",
+    async exists() { return false; },
     async list() { return ["/profile/litmtrans/documents/1-ATTACH", "/profile/litmtrans/documents/1-KEEP"]; },
     async readJSON(file, fallback) {
       const records = {

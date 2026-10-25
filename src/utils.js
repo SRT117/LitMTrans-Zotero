@@ -911,6 +911,12 @@
     SUPPORTED_INPUT_EXTENSIONS,
     DEFAULT_PROMPT_LIBRARY,
     DEFAULT_CHAT_ENGINE,
+    SYMBOL_DEFINITION_LINE_BREAK_RULE: {
+      en: "When the source already clearly lists symbols and their definitions as separate entries on separate lines, retain the existing line breaks between those entries. Physical line wraps within the same entry may be merged. Keep symbol definitions embedded in ordinary prose as continuous prose, and never convert them into a list merely because they define symbols. When the structure is uncertain, retain normal paragraph flow. Preserve every symbol and formula verbatim; do not invent list markers, headings, tables, or output fields.",
+      zh: "当原文已明确将符号及其释义作为独立条目逐行列出时，保留原文已有的条目间换行。同一条解释内部的物理折行可以合并。正文段落内对符号的解释保持连续正文，不得仅因出现符号释义就改成列表。结构不明确时保持正常段落行文。符号和公式原样保留，不新增列表标记、标题、表格或返回字段。"
+    },
+    // 仅在排版规则变化时递增，使旧规则下保存的手动字号失效。
+    LAYOUT_READER_FONT_RULES_VERSION: 5,
     MINERU_API_BASE: "https://mineru.net/api/v4",
     USER_AGENT: "LitMTrans/2.0.0",
     TRANSLATABLE_LAYOUT_TYPES: new Set([

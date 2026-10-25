@@ -223,12 +223,17 @@
         edgeDownloadConsent: (sourceLanguage, targetLanguage) => this.confirmEdgeModelDownload(sourceLanguage, targetLanguage)
       });
       this.mineru = new LitMTrans.MinerUService(this.storage, this.secrets);
-      this.translation = new LitMTrans.TranslationService(this.storage, this.llm, this.mineru, this.webMachine);
+      this.parser = new LitMTrans.DocumentParserService(this.storage, this.secrets, this.mineru);
+      this.translation = new LitMTrans.TranslationService(this.storage, this.llm, this.parser, this.webMachine);
       this.layout = new LitMTrans.LayoutTranslationService(this.storage, this.llm, this.webMachine);
-      this.chat = new LitMTrans.ChatService(this.storage, this.llm, this.translation, this.mineru);
+      if (LitMTrans.DeepSeekWeb?.PDFPageRenderer) {
+        this.layout.lineService = new LitMTrans.PaddleLineService(this.storage, this.parser.paddle,
+          new LitMTrans.DeepSeekWeb.PDFPageRenderer(this));
+      }
+      this.chat = new LitMTrans.ChatService(this.storage, this.llm, this.translation, this.parser);
       this.pipeline = new LitMTrans.DocumentPipeline({
         storage: this.storage,
-        mineru: this.mineru,
+        parser: this.parser,
         translation: this.translation,
         layout: this.layout,
         chat: this.chat,
@@ -339,15 +344,11 @@
     }
 
     mergeAnnouncements(incoming) {
-      if (!Array.isArray(incoming) || !incoming.length) return;
-      const history = this.getAnnouncementHistory();
+      if (!Array.isArray(incoming)) return;
       const map = new Map();
-      for (const item of history) {
-        if (item && item.id) map.set(item.id, item);
-      }
       for (const item of incoming) {
         if (item && item.id) {
-          map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+          map.set(item.id, item);
         }
       }
       const merged = [...map.values()];
@@ -370,7 +371,10 @@
     }
 
     getAnnouncementsForWorkbench() {
-      const history = this.getAnnouncementHistory();
+      const history = this.getAnnouncementHistory().filter(item => item && item.id && (
+        !LitMTrans.Updater?.isAnnouncementApplicable
+        || LitMTrans.Updater.isAnnouncementApplicable(item, this.version, new Set())
+      ));
       const dismissed = this.getDismissedAnnouncementIds();
       let pendingAlert = null;
       let unreadCount = 0;
@@ -406,7 +410,7 @@
     }
 
     async hasExistingUserState() {
-      if (this.secrets.getMinerUToken()) return true;
+      if (this.secrets.getMinerUToken() || this.secrets.getPaddleToken?.()) return true;
       const providers = Object.values(LitMTrans.Constants?.PROVIDERS || {});
       if (providers.some(provider => this.secrets.getLLMKey(provider.id))) return true;
 
@@ -428,6 +432,8 @@
         "deepseekWebCacheBytesInitialized",
         "dismissedAnnouncementIds",
         "lastUpdateCheckTime",
+        "paddleModelCatalogRevision",
+        "paddleOCRModelCatalogRevision",
         "nonMultimodalModelMarks",
         "promptLibraryInitialized",
         "siliconflowThinkingCapabilities",
@@ -553,7 +559,7 @@
 
         checking = true;
         try {
-          // 启动时始终获取公告；版本检查到期时复用同一次清单请求。
+          // 启动时始终同步公告与模型目录；版本检查到期时复用同一次清单请求。
           await this.checkForUpdates({ announcementsOnly: !updateDue });
         }
         catch (error) { this.log(`公告或更新检查失败：${error?.message || error}`); }
@@ -574,9 +580,10 @@
         if (runtime) this.emit(runtime, { type: "update-progress", ...p });
       }) : null;
       const result = announcementsOnly
-        ? { announcements: (await LitMTrans.Updater.fetchUpdateManifest()).announcements }
+        ? await LitMTrans.Updater.fetchUpdateManifest()
         : await LitMTrans.Updater.checkUpdate(this.version, progressHandler);
       if (this._cajShuttingDown) return result;
+      this.syncPaddleModel(result?.parserModels);
       if (!announcementsOnly) U.setPref("lastUpdateCheckTime", String(Date.now()));
       if (result && result.hasUpdate) {
         this.availableUpdate = result;
@@ -586,6 +593,23 @@
         this.mergeAnnouncements(result.announcements);
       }
       return result;
+    }
+
+    syncPaddleModel(catalog) {
+      const models = LitMTrans.Updater?.normalizeParserModels(catalog);
+      if (!models || !this.version) return false;
+      let changed = false;
+      for (const [role, pref, revision, fallback] of [
+        ["paddle", "paddleModel", "paddleModelCatalogRevision", "PaddleOCR-VL-1.6"],
+        ["paddleOCR", "paddleOCRModel", "paddleOCRModelCatalogRevision", "PP-OCRv6"]
+      ]) {
+        const entry = models[role];
+        if (!entry || LitMTrans.Updater.compareVersions(this.version, entry.minPluginVersion) < 0
+          || models.revision < Number(U.getPref(revision, 0))) continue;
+        if (U.getPref(pref, fallback) !== entry.model) { U.setPref(pref, entry.model); changed = true; }
+        U.setPref(revision, models.revision);
+      }
+      return changed;
     }
 
     async applyUpdate(payload = {}, onProgress = null, runtime = null) {
@@ -630,6 +654,7 @@
         try { Zotero.Reader.unregisterEventListener(type, handler); } catch (_) {}
       }
       this.readerHandlers = [];
+      for (const dispose of [...(this.readerComparisonBindings?.values() || [])]) dispose();
       if (this.itemPaneSectionID) {
         try { Zotero.ItemPaneManager.unregisterSection(this.itemPaneSectionID); } catch (_) {}
       }
@@ -1330,6 +1355,56 @@
     async runDeveloperDiagnostic(command) {
       const operation = String(command.operation || "");
       if (operation === "snapshot") return this.developerDiagnosticSnapshot();
+      if (operation === "paddle-lines-probe") {
+        const key = String(command.sourceAttachmentKey || "XMNRNTLL");
+        if (!/^[A-Z0-9]{8}$/.test(key)) throw new Error("附件key无效");
+        const documentID = `1-${key}`;
+        const paths = [["layout.json"], ["parsed-document.v1.json"], ["layout-translation", "translations.简体中文.json"], ["compiled-model.json"]];
+        const before = await Promise.all(paths.map(parts => this.storage.readText(this.storage.path(documentID, ...parts), "")));
+        const events = [], start = Date.now();
+        Services.scriptloader.loadSubScriptWithOptions(`${this.rootURI}src/paddle-lines.js`, { target: global, ignoreCache: true });
+        Services.scriptloader.loadSubScriptWithOptions(`${this.rootURI}src/deepseek-web/pdf-pages.js`, { target: global, ignoreCache: true });
+        this.layout.lineService = new LitMTrans.PaddleLineService(this.storage, this.parser.paddle,
+          new LitMTrans.DeepSeekWeb.PDFPageRenderer(this));
+        const input = await this.layout.loadLayout(documentID);
+        const checked = await this.layout.lineService.ensure(documentID, input, null, event => events.push(event));
+        if (!checked?.complete) throw new Error("行信息补充未完成");
+        const model = await this.layout.buildModel(documentID, null, null, null, null, event => {
+          if (event.type === "log" || event.type === "progress") events.push(event);
+        });
+        const elapsedMs = Date.now() - start;
+        const geometry = await this.storage.readJSON(this.storage.path(documentID, "line-geometry.v1.json"), null);
+        const after = await Promise.all(paths.map(parts => this.storage.readText(this.storage.path(documentID, ...parts), "")));
+        const cachedAt = Date.now();
+        await this.layout.buildModel(documentID);
+        const cachedMs = Date.now() - cachedAt;
+        let preview = null;
+        if (command.printPDF) {
+          const meta = await this.storage.getDocumentMeta(documentID);
+          const attachment = await Zotero.Items.getAsync(meta.itemID);
+          const tabID = await this.openWorkbench(attachment), runtime = this.tabs.get(tabID);
+          let page;
+          for (let attempt = 0; attempt < 200; attempt++) {
+            page = runtime.browser.contentWindow?.wrappedJSObject || runtime.browser.contentWindow;
+            if (runtime.bridgeInstalled && page?.__LitMTrans_DIAGNOSTIC_THEME_STATE__?.().ready) break;
+            await U.sleep(100);
+          }
+          page.__LitMTrans_DIAGNOSTIC_READER_MODE__("layout");
+          for (let attempt = 0; attempt < 200; attempt++) {
+            if (page.document.querySelector("#translation-layout .flow-para")
+              && !page.__LitMTrans_DIAGNOSTIC_THEME_STATE__().fitPending) break;
+            await U.sleep(100);
+          }
+          preview = await page.__LitMTrans_DIAGNOSTIC_EXPORT__("layout", "light");
+        }
+        return { documentID, elapsedMs, cachedMs, preview,
+          originalsPreserved: before.every((value, i) => value === after[i]), geometryComplete: geometry?.complete,
+          timings: geometry?.timings, events, pages: model.pages.map((page, i) => ({
+            page: page.index, sources: [...new Set(Object.values(geometry?.pages?.[i]?.blocks || {}).map(value => value.source))],
+            blocks: Object.fromEntries(Object.entries(geometry?.pages?.[i]?.blocks || {}).map(([id, value]) => [id, value.lines.length])),
+            indents: page.restoration.streams.flatMap(stream => stream.items.flatMap(item => item.paragraphs?.map(p => p.indent) || [item.indent || 0]))
+          })) };
+      }
       if (operation === "reader-theme-probe") return this.runReaderThemeProbe(command);
       if (operation === "reader-theme-fresh-probe") return this.runFreshReaderThemeProbe(command);
       if (operation === "multimodal-probe") return this.runMultimodalProbe(command);
@@ -1378,7 +1453,7 @@
           if (["images", "assets", "mineru-result"].includes(name)) await this.storage.copyTree(from, to);
           else await this.storage.copyFile(from, to);
         }
-        return this.pipeline.mineru.loadParsed(context.documentID);
+        return this.pipeline.parser.loadParsed(context.documentID);
       };
       this.pipeline.translateLayout = async (context, payload, emit) => {
         if (context.attachment.id !== attachment.id) throw new Error("离线复现不调用翻译服务");
@@ -3429,6 +3504,35 @@
       return new RegExp(`\\.${extension}$`, "i").test(path) ? path : `${path}.${extension}`;
     }
 
+    async saveTableHTML(runtime, payload) {
+      const directory = await this.selectDirectoryExportPath(runtime.window, "导出表格");
+      if (!directory) return { cancelled: true };
+      const base = U.safeStem(String(payload.name || "table"), 100);
+      let index = 0, paths;
+      do {
+        const stem = base + (index ? "-" + index : "");
+        paths = [PathUtils.join(directory, stem + "-original.html"), PathUtils.join(directory, stem + "-translation.html")];
+        index++;
+      } while ((await Promise.all(paths.map(path => this.storage.exists(path)))).some(Boolean));
+      await this.storage.writeText(paths[0], String(payload.originalHTML || ""));
+      await this.storage.writeText(paths[1], String(payload.translatedHTML || ""));
+      const opened = await this.openExportLocation(directory, true);
+      return { cancelled: false, paths, opened };
+    }
+
+    writeClipboardTable(payload) {
+      const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
+      transferable.init(null);
+      for (const [flavor, value] of [["text/html", payload.html], ["text/unicode", payload.text]]) {
+        const text = Cc["@mozilla.org/supports-string;1"].createInstance(Ci.nsISupportsString);
+        text.data = String(value || "");
+        transferable.addDataFlavor(flavor);
+        transferable.setTransferData(flavor, text);
+      }
+      Services.clipboard.setData(transferable, null, Services.clipboard.kGlobalClipboard);
+      return { copied: true };
+    }
+
     async saveImageData(runtime, payload) {
       const decoded = this.decodeImageDataURL(payload.dataURL, runtime.window);
       const path = await this.selectImageExportPath(runtime.window, payload.name, decoded.mimeType);
@@ -3645,102 +3749,91 @@
 
 
     async printWorkbenchPDF(runtime, payload = {}) {
-      const context = await this.attachmentContext(runtime.attachmentID);
-      const pane = payload.pane === "source" ? "source" : "translation";
-      const layout = Boolean(payload.layout);
-      const suffix = pane === "source" ? (layout ? "排版原文" : "原文") : (layout ? "排版译文" : "译文");
-      const defaultName = `${U.safeStem(context.title || context.attachment.attachmentFilename || "document", 90)}-${suffix}.pdf`;
-      const providedPath = String(payload.path || "");
-      const outPath = providedPath || await this.selectPDFExportPath(runtime.window, defaultName);
-      if (!outPath) return { cancelled: true };
-      if (await this.isOriginalAttachmentPath(context, outPath)) {
-        throw new Error("导出路径不能覆盖原始附件");
-      }
-      const browsingContext = runtime.browser?.browsingContext;
-      if (!browsingContext?.print) throw new Error("当前Zotero版本不支持浏览上下文PDF打印");
-
-      const service = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(Ci.nsIPrintSettingsService);
-      const settings = service.createNewPrintSettings();
-      settings.printerName = "Mozilla Save to PDF";
-      settings.outputDestination = Ci.nsIPrintSettings.kOutputDestinationFile;
-      settings.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF;
-      settings.toFileName = outPath;
-      settings.printSilent = true;
-      settings.printBGColors = true;
-      settings.printBGImages = true;
-      settings.printSelectionOnly = false;
-      settings.headerStrLeft = "";
-      settings.headerStrCenter = "";
-      settings.headerStrRight = "";
-      settings.footerStrLeft = "";
-      settings.footerStrCenter = "";
-      settings.footerStrRight = "";
-      const layoutPaper = payload.layout ? payload.layoutPaper : null;
-      const paperWidth = Number(layoutPaper?.width || 0);
-      const paperHeight = Number(layoutPaper?.height || 0);
-      if (paperWidth > 0 && paperHeight > 0) {
-        // The workbench supplies the paint-scaled sheet in CSS pixels. Using
-        // that exact physical size prevents the backend from falling back to
-        // its saved Letter paper (the source of right/bottom blank space).
-        // `paperWidth`/`paperHeight` are always expressed in inches by the
-        // native settings object.  Do not assign optional metadata such as
-        // `paperName`/`paperSizeUnit`: Zotero 9 exposes this object as a
-        // non-extensible WrappedNative and rejects unknown expandos.
-        settings.paperWidth = paperWidth / 96;
-        settings.paperHeight = paperHeight / 96;
-      }
-      await browsingContext.print(settings);
-
-      let lastSize = 0;
-      let stableChecks = 0;
-      for (let attempt = 0; attempt < 240; attempt++) {
-        const stat = await this.storage.stat(outPath);
-        if (stat && Number(stat.size || 0) > 1024) {
-          const size = Number(stat.size || 0);
-          // `browsingContext.print()` can resolve once the PDF writer has
-          // created its first bytes, while Gecko is still reading the DOM for
-          // later pages. Do not let the workbench remove its print-only DOM
-          // and styles until the file has stayed unchanged for a short window.
-          // Otherwise the first page is a layout snapshot and the remainder
-          // can unexpectedly become the live application chrome.
-          stableChecks = size === lastSize ? stableChecks + 1 : 0;
-          lastSize = size;
-          if (stableChecks < 12) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            continue;
-          }
-          const expectedPages = Math.max(0, Number(payload.expectedPages || 0));
-          if (layout && expectedPages) {
-            const bytes = global.Uint8Array.from(await this.storage.readBytes(outPath));
-            const printedPDF = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
-            // Firefox's silent print path can produce one empty continuation
-            // page after every fixed layout sheet. This is detectable without
-            // guessing from visual pixels: it doubles the requested page
-            // count exactly. Keep the first page from each pair, which is the
-            // page containing the frozen print root, and retain all PDF text,
-            // vectors, links and images by copying the original PDF pages.
-            if (printedPDF.getPageCount() === expectedPages * 2) {
-              const compactPDF = await PDFLib.PDFDocument.create();
-              const contentIndexes = Array.from({ length: expectedPages }, (_, index) => index * 2);
-              const contentPages = await compactPDF.copyPages(printedPDF, contentIndexes);
-              for (const page of contentPages) compactPDF.addPage(page);
-              await this.storage.writeBytes(outPath, await compactPDF.save());
-            }
-          }
-          if (expectedPages) {
-            const bytes = global.Uint8Array.from(await this.storage.readBytes(outPath));
-            const printedPDF = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
-            if (printedPDF.getPageCount() !== expectedPages) {
-              throw new Error(`排版PDF页数异常：预期 ${expectedPages} 页，实际 ${printedPDF.getPageCount()} 页`);
-            }
-          }
-          // 文件写入稳定后打开导出位置；后台生成附件不打开文件夹。
-          const opened = !providedPath && await this.openExportLocation(outPath);
-          return { cancelled: false, path: outPath, size, opened };
+      const release = this.storage?.beginActivity?.();
+      try {
+        const context = await this.attachmentContext(runtime.attachmentID);
+        const pane = payload.pane === "source" ? "source" : "translation";
+        const layout = Boolean(payload.layout);
+        const suffix = pane === "source" ? (layout ? "排版原文" : "原文") : (layout ? "排版译文" : "译文");
+        const defaultName = `${U.safeStem(context.title || context.attachment.attachmentFilename || "document", 90)}-${suffix}.pdf`;
+        const providedPath = String(payload.path || "");
+        const outPath = providedPath || await this.selectPDFExportPath(runtime.window, defaultName);
+        if (!outPath) return { cancelled: true };
+        if (await this.isOriginalAttachmentPath(context, outPath)) {
+          throw new Error("导出路径不能覆盖原始附件");
         }
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const browsingContext = runtime.browser?.browsingContext;
+        if (!browsingContext?.print) throw new Error("当前Zotero版本不支持浏览上下文PDF打印");
+
+        const service = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(Ci.nsIPrintSettingsService);
+        const settings = service.createNewPrintSettings();
+        settings.printerName = "Mozilla Save to PDF";
+        settings.outputDestination = Ci.nsIPrintSettings.kOutputDestinationFile;
+        settings.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF;
+        settings.toFileName = outPath;
+        settings.printSilent = true;
+        settings.printBGColors = true;
+        settings.printBGImages = true;
+        settings.printSelectionOnly = false;
+        settings.numCopies = 1;
+        settings.headerStrLeft = "";
+        settings.headerStrCenter = "";
+        settings.headerStrRight = "";
+        settings.footerStrLeft = "";
+        settings.footerStrCenter = "";
+        settings.footerStrRight = "";
+        const layoutPaper = payload.layout ? payload.layoutPaper : null;
+        const paperWidth = Number(layoutPaper?.width || 0);
+        const paperHeight = Number(layoutPaper?.height || 0);
+        if (paperWidth > 0 && paperHeight > 0) {
+          // The workbench supplies the paint-scaled sheet in CSS pixels. Using
+          // that exact physical size prevents the backend from falling back to
+          // its saved Letter paper (the source of right/bottom blank space).
+          // `paperWidth`/`paperHeight` are always expressed in inches by the
+          // native settings object.  Do not assign optional metadata such as
+          // `paperName`/`paperSizeUnit`: Zotero 9 exposes this object as a
+          // non-extensible WrappedNative and rejects unknown expandos.
+          settings.paperWidth = paperWidth / 96;
+          settings.paperHeight = paperHeight / 96;
+        }
+        await browsingContext.print(settings);
+
+        let lastSize = 0;
+        let stableChecks = 0;
+        for (let attempt = 0; attempt < 240; attempt++) {
+          const stat = await this.storage.stat(outPath);
+          if (stat && Number(stat.size || 0) > 1024) {
+            const size = Number(stat.size || 0);
+            // `browsingContext.print()` can resolve once the PDF writer has
+            // created its first bytes, while Gecko is still reading the DOM for
+            // later pages. Do not let the workbench remove its print-only DOM
+            // and styles until the file has stayed unchanged for a short window.
+            // Otherwise the first page is a layout snapshot and the remainder
+            // can unexpectedly become the live application chrome.
+            stableChecks = size === lastSize ? stableChecks + 1 : 0;
+            lastSize = size;
+            if (stableChecks < 12) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+              continue;
+            }
+            const expectedPages = Math.max(0, Number(payload.expectedPages || 0));
+            // 页数翻倍也可能包含完整的重复文档，不能据此隔页丢弃真实内容。
+            if (expectedPages) {
+              const bytes = global.Uint8Array.from(await this.storage.readBytes(outPath));
+              const printedPDF = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+              if (printedPDF.getPageCount() !== expectedPages) {
+                throw new Error(`排版PDF页数异常：预期 ${expectedPages} 页，实际 ${printedPDF.getPageCount()} 页`);
+              }
+            }
+            // 文件写入稳定后打开导出位置；后台生成附件不打开文件夹。
+            const opened = !providedPath && await this.openExportLocation(outPath);
+            return { cancelled: false, path: outPath, size, opened };
+          }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        throw new Error("PDF打印已结束，但没有生成有效文件");
       }
-      throw new Error("PDF打印已结束，但没有生成有效文件");
+      finally { release?.(); }
     }
 
     isGeneratedExportAttachment(item) {
@@ -3967,7 +4060,7 @@
     }
 
     async streamMarkdownForExport(documentID, pane) {
-      const parsed = await this.mineru.loadParsed(documentID);
+      const parsed = await this.parser.loadParsed(documentID);
       if (pane === "source") return String(parsed?.markdown || "");
       const loaded = await this.translation.load(documentID);
       const sourceFingerprint = parsed?.markdown ? U.hashString(parsed.markdown) : "";
@@ -4053,10 +4146,10 @@
 
     async exportCapabilities(runtime) {
       const context = await this.attachmentContext(runtime.attachmentID, false);
-      const [originalPDF, originalCAJ, parsed, translation, images] = await Promise.all([
+      const parsed = await this.parser.loadParsed(context.documentID);
+      const [originalPDF, originalCAJ, translation, images] = await Promise.all([
         this.exportAttachmentForKind(context, "pdf"),
         this.exportAttachmentForKind(context, "caj"),
-        this.mineru.loadParsed(context.documentID),
         this.translation.load(context.documentID),
         this.documentImageFiles(context.documentID)
       ]);
@@ -4077,48 +4170,56 @@
     }
 
     async exportLayoutComparisonPDF(runtime, payload = {}) {
-      const context = await this.attachmentContext(runtime.attachmentID);
-      const original = await this.exportAttachmentForKind(context, "pdf");
-      const sourcePath = original?.path || context.filePath;
-      if (!sourcePath || !await this.storage.exists(sourcePath)) throw new Error("当前文献没有可用于生成对照版的PDF原文");
-      const defaultName = `${U.safeStem(context.title || "document", 90)}-排版对照版.pdf`;
-      const outputPath = await this.selectPDFExportPath(runtime.window, defaultName);
-      if (!outputPath) return { cancelled: true };
-      if (await this.isOriginalAttachmentPath(context, outputPath)) throw new Error("导出路径不能覆盖原始附件");
-      const staging = this.storage.temporaryDir("compare");
-      const translationPath = PathUtils.join(staging, "translation.pdf");
+      const release = this.storage?.beginActivity?.();
       try {
-        await this.storage.ensureDir(staging);
-        await this.printWorkbenchPDF(runtime, {
-          pane: "translation",
-          layout: true,
-          path: translationPath,
-          expectedPages: payload.expectedPages,
-          layoutPaper: payload.layoutPaper
-        });
-        await this.createLayoutComparisonPDF(sourcePath, translationPath, outputPath);
-        const stat = await this.storage.stat(outputPath);
-        const opened = await this.openExportLocation(outputPath);
-        return { cancelled: false, path: outputPath, size: Number(stat?.size || 0), opened };
+        const context = await this.attachmentContext(runtime.attachmentID);
+        const original = await this.exportAttachmentForKind(context, "pdf");
+        const sourcePath = original?.path || context.filePath;
+        if (!sourcePath || !await this.storage.exists(sourcePath)) throw new Error("当前文献没有可用于生成对照版的PDF原文");
+        const defaultName = `${U.safeStem(context.title || "document", 90)}-排版对照版.pdf`;
+        const outputPath = await this.selectPDFExportPath(runtime.window, defaultName);
+        if (!outputPath) return { cancelled: true };
+        if (await this.isOriginalAttachmentPath(context, outputPath)) throw new Error("导出路径不能覆盖原始附件");
+        const staging = this.storage.temporaryDir("compare");
+        const translationPath = PathUtils.join(staging, "translation.pdf");
+        try {
+          await this.storage.ensureDir(staging);
+          await this.printWorkbenchPDF(runtime, {
+            pane: "translation",
+            layout: true,
+            path: translationPath,
+            expectedPages: payload.expectedPages,
+            layoutPaper: payload.layoutPaper
+          });
+          await this.createLayoutComparisonPDF(sourcePath, translationPath, outputPath);
+          const stat = await this.storage.stat(outputPath);
+          const opened = await this.openExportLocation(outputPath);
+          return { cancelled: false, path: outputPath, size: Number(stat?.size || 0), opened };
+        }
+        finally {
+          await this.storage.remove(staging, true);
+        }
       }
-      finally {
-        await this.storage.remove(staging, true);
-      }
+      finally { release?.(); }
     }
 
     async exportPDFPages(runtime, payload = {}, signal = null, emit = null) {
-      const context = await this.attachmentContext(runtime.attachmentID);
-      const outputDir = await this.selectDirectoryExportPath(runtime.window, "选择文献页面图导出文件夹");
-      if (!outputDir) return { cancelled: true };
-      const renderer = this.deepSeekWebProvider?.pageRenderer;
-      if (!renderer?.renderPagesToDirectory) throw new Error("当前环境没有可用的PDF页面渲染器");
-      const result = await renderer.renderPagesToDirectory(runtime, outputDir, {
-        stem: U.safeStem(context.title || PathUtils.filename(context.filePath) || "document", 90),
-        signal,
-        emit
-      });
-      const opened = await this.openExportLocation(outputDir, true);
-      return { cancelled: false, path: outputDir, ...result, opened };
+      const release = this.storage?.beginActivity?.();
+      try {
+        const context = await this.attachmentContext(runtime.attachmentID);
+        const outputDir = await this.selectDirectoryExportPath(runtime.window, "选择文献页面图导出文件夹");
+        if (!outputDir) return { cancelled: true };
+        const renderer = this.deepSeekWebProvider?.pageRenderer;
+        if (!renderer?.renderPagesToDirectory) throw new Error("当前环境没有可用的PDF页面渲染器");
+        const result = await renderer.renderPagesToDirectory(runtime, outputDir, {
+          stem: U.safeStem(context.title || PathUtils.filename(context.filePath) || "document", 90),
+          signal,
+          emit
+        });
+        const opened = await this.openExportLocation(outputDir, true);
+        return { cancelled: false, path: outputDir, ...result, opened };
+      }
+      finally { release?.(); }
     }
 
     async createGeneratedPDFAttachment(context, filePath, title) {
@@ -4131,6 +4232,45 @@
         title
       });
       return attachment;
+    }
+
+    async removeGeneratedPDFAttachments(documentID) {
+      const registry = await this.storage.readJSON(this.storage.path(documentID, "generated-pdfs.json"), []);
+      if (!Array.isArray(registry)) throw new Error("生成的 PDF 关联记录异常，已停止清理");
+      const keys = [...new Set(registry.flatMap(entry => [entry?.translationKey, entry?.comparisonKey]).filter(Boolean))];
+      const source = this.storage.parseDocumentID(documentID);
+      if (!source) throw new Error("无法确认原文献身份，已停止清理生成的 PDF");
+      const original = Zotero.Items.getByLibraryAndKey(source.libraryID, source.key);
+      const ids = [];
+      for (const key of keys) {
+        const item = Zotero.Items.getByLibraryAndKey(source.libraryID, key);
+        if (!item || item.deleted) continue;
+        // 仅信任生成记录，且禁止记录指向原文或其他条目的附件。
+        if (item.key === source.key || item.libraryID !== source.libraryID || !item.isAttachment()
+          || String(item.attachmentContentType || "").toLowerCase() !== "application/pdf"
+          || (original && (item.parentID || false) !== (original.parentID || false))) {
+          throw new Error("生成的 PDF 关联信息异常，已停止清理以避免误删附件");
+        }
+        ids.push(item.id);
+      }
+      // 旧版没有关联记录，按当前文献的完整生成标题识别各语言的残留 PDF。
+      const parent = original?.parentID ? Zotero.Items.get(original.parentID) : null;
+      if (parent?.isRegularItem?.()) {
+        const stem = U.safeStem(displayTitle(parent, original), 90);
+        const suffixes = [`-译文-${stem}`, `-译文对照版-${stem}`];
+        for (const id of parent.getAttachments()) {
+          const item = Zotero.Items.get(id);
+          if (!item || item.deleted || item.key === source.key || item.libraryID !== source.libraryID
+            || item.parentID !== parent.id || !item.isAttachment()
+            || String(item.attachmentContentType || "").toLowerCase() !== "application/pdf") continue;
+          const title = String(item.getField("title") || "");
+          if (suffixes.some(suffix => title.endsWith(suffix) && title.length > suffix.length
+            && U.safeStem(title.slice(0, -suffix.length), 32, "目标语言") === title.slice(0, -suffix.length))) ids.push(item.id);
+        }
+      }
+      const uniqueIDs = [...new Set(ids)];
+      if (uniqueIDs.length) await Zotero.Items.trashTx(uniqueIDs);
+      return uniqueIDs;
     }
 
     async createLayoutComparisonPDF(sourcePath, translationPath, outputPath) {
@@ -4155,18 +4295,16 @@
         const translatedPage = index < translation.getPageCount() ? await output.embedPage(translation.getPage(index)) : null;
         const candidates = [sourcePage, translatedPage].filter(Boolean);
         const height = Math.max(...candidates.map(page => page.height));
-        const halfWidth = Math.max(...candidates.map(page => page.width * height / page.height)) + margin * 2;
+        const halfWidth = Math.max(...candidates.map(page => page.width)) + margin * 2;
         const page = output.addPage([halfWidth * 2 + gutter, height + margin * 2]);
         const draw = (embedded, x) => {
           if (!embedded) return;
-          const scale = Math.min((halfWidth - margin * 2) / embedded.width, height / embedded.height);
-          const width = embedded.width * scale;
-          const drawnHeight = embedded.height * scale;
+          // 译文的统一打印纸张可能多出底部留白；两侧使用相同物理比例并顶对齐。
           page.drawPage(embedded, {
-            x: x + margin + (halfWidth - margin * 2 - width) / 2,
-            y: margin + (height - drawnHeight) / 2,
-            width,
-            height: drawnHeight
+            x: x + margin,
+            y: margin + height - embedded.height,
+            width: embedded.width,
+            height: embedded.height
           });
         };
         draw(sourcePage, 0);
@@ -4177,83 +4315,148 @@
     }
 
     async createLayoutPDFAttachments(runtime, payload = {}) {
-      const context = await this.attachmentContext(runtime.attachmentID);
-      if (U.extension(context.filePath) !== ".pdf") throw new Error("排版译文PDF附件仅支持PDF原文");
-      // The workbench only sends this command from its explicit completed
-      // publication path, after final layout fitting. Passing that immutable
-      // identity avoids re-reading a preference-dependent language path here.
-      const layoutPDFIdentity = String(payload.layoutIdentity || "");
-      if (!layoutPDFIdentity) throw new Error("缺少已完成排版译文的版本标识");
-      const stem = U.safeStem(context.title || context.attachment.attachmentFilename || "document", 90);
-      // The attachment title should identify the translation language, not
-      // its rendering mode.  Use the language carried by the completed
-      // translation so a settings change while the reader remains open does
-      // not mislabel an already translated document.
-      const targetLanguage = U.safeStem(
-        U.normalizeLanguageName(payload.targetLanguage || this.getSettings().targetLanguage, "简体中文"),
-        32,
-        "目标语言"
-      );
-      const translationTitle = `${targetLanguage}-译文-${stem}`;
-      const comparisonTitle = `${targetLanguage}-译文对照版-${stem}`;
-      const staging = this.storage.temporaryDir("layoutpdf");
-      const translationPath = PathUtils.join(staging, `${translationTitle}.pdf`);
-      const comparisonPath = PathUtils.join(staging, `${comparisonTitle}.pdf`);
+      this.layoutPDFTasks ||= new Map();
+      const key = Number(runtime.attachmentID);
+      const previous = this.layoutPDFTasks.get(key);
+      const task = (async () => {
+        if (previous) await previous.catch(() => {});
+        return this.generateLayoutPDFAttachments(runtime, payload);
+      })();
+      this.layoutPDFTasks.set(key, task);
+      try { return await task; }
+      finally { if (this.layoutPDFTasks.get(key) === task) this.layoutPDFTasks.delete(key); }
+    }
+
+    generatedPDFHasUserContent(item) {
+      return Boolean((item?.isFileAttachment?.() !== false && item?.getAnnotations?.().length) || item?.getNotes?.().length
+        || String(item?.getNote?.() || "").trim());
+    }
+
+    async generateLayoutPDFAttachments(runtime, payload = {}) {
+      const release = this.storage?.beginActivity?.();
       try {
-        await this.storage.ensureDir(staging);
-        await this.printWorkbenchPDF(runtime, {
-          pane: "translation",
-          layout: true,
-          path: translationPath,
-          expectedPages: payload.expectedPages,
-          layoutPaper: payload.layoutPaper
-        });
-        await this.createLayoutComparisonPDF(context.filePath, translationPath, comparisonPath);
+        const context = await this.attachmentContext(runtime.attachmentID);
+        if (U.extension(context.filePath) !== ".pdf") throw new Error("排版译文PDF附件仅支持PDF原文");
+        // The workbench only sends this command from its explicit completed
+        // publication path, after final layout fitting. Passing that immutable
+        // identity avoids re-reading a preference-dependent language path here.
+        const layoutPDFIdentity = String(payload.layoutIdentity || "");
+        if (!layoutPDFIdentity) throw new Error("缺少已完成排版译文的版本标识");
+        const documentMeta = await this.storage.getDocumentMeta(context.documentID);
+        const parseRevisionID = LitMTrans.ParserLineage.parseRevisionID(context.documentID, documentMeta);
+        if (payload.parseRevisionID && payload.parseRevisionID !== parseRevisionID) throw new Error("解析结果已变化，请刷新文献后重新导出");
+        const registryPath = this.storage.path(context.documentID, "generated-pdfs.json");
+        const savedRegistry = await this.storage.readJSON(registryPath, []);
+        const registry = Array.isArray(savedRegistry) ? savedRegistry : [];
+        const stem = U.safeStem(context.title || context.attachment.attachmentFilename || "document", 90);
+        // The attachment title should identify the translation language, not
+        // its rendering mode.  Use the language carried by the completed
+        // translation so a settings change while the reader remains open does
+        // not mislabel an already translated document.
+        const targetLanguage = U.safeStem(
+          U.normalizeLanguageName(payload.targetLanguage || this.getSettings().targetLanguage, "简体中文"),
+          32,
+          "目标语言"
+        );
+        const translationTitle = `${targetLanguage}-译文-${stem}`;
+        const comparisonTitle = `${targetLanguage}-译文对照版-${stem}`;
         const titles = new Set([translationTitle, comparisonTitle]);
-        const existingIDs = (context.parent?.isRegularItem?.() ? context.parent.getAttachments?.() || [] : [])
-          .filter(id => titles.has(Zotero.Items.get(id)?.getField?.("title")));
-        if (existingIDs.length) {
-          const prompt = Services.prompt;
-          const flags = prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING
-            + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING;
-          const choice = prompt.confirmEx(
-            runtime.window || runtime.browser?.ownerGlobal || Zotero.getMainWindow(),
-            "更新译文PDF附件",
-            "新译文PDF已生成，条目下已有同名PDF附件。\n\n替换会将旧附件移入回收站；旧PDF中的批注和笔记不会迁移到新PDF。若需要保留旧版笔记，请选择保留原PDF。",
-            flags, "替换旧PDF", "保留原PDF", null, null, {}
-          );
-          if (choice !== 0) return { cancelled: true, preservedExisting: true };
-          if (typeof Zotero.Items.trashTx !== "function") throw new Error("无法替换已有的排版PDF附件");
-        }
-        const createdIDs = [];
-        let translationAttachment, comparisonAttachment;
-        try {
-          translationAttachment = await this.createGeneratedPDFAttachment(context, translationPath, translationTitle);
-          createdIDs.push(translationAttachment.id);
-          comparisonAttachment = await this.createGeneratedPDFAttachment(context, comparisonPath, comparisonTitle);
-          createdIDs.push(comparisonAttachment.id);
-          // 两份新附件均保存成功后，以同一事务移走用户确认替换的旧附件。
-          if (existingIDs.length) await Zotero.Items.trashTx(existingIDs);
-        }
-        catch (error) {
-          // 仅清理本次未完成的新附件；由Zotero同时清理附件记录与存储文件。
-          if (createdIDs.length) {
-            try { await Zotero.Items.erase(createdIDs); }
-            catch (cleanupError) { throw new Error(`${error.message || error}；新附件清理失败：${cleanupError.message || cleanupError}`); }
+        const sameTitleIDs = (context.parent?.isRegularItem?.() ? context.parent.getAttachments?.() || [] : [])
+          .map(id => Zotero.Items.get(id))
+          .filter(item => item && !item.deleted && item.id !== context.attachment.id
+            && item.libraryID === context.attachment.libraryID && item.parentID === context.parent.id
+            && item.isAttachment?.() && String(item.attachmentContentType || "").toLowerCase() === "application/pdf"
+            && titles.has(item.getField("title")))
+          .map(item => item.id);
+        const candidates = new Set([
+          ...sameTitleIDs.map(id => Zotero.Items.get(id)),
+          ...registry.flatMap(entry => [entry.translationKey, entry.comparisonKey].filter(Boolean)
+            .map(key => Zotero.Items.getByLibraryAndKey(context.attachment.libraryID, key)))
+        ].filter(item => item && !item.deleted));
+        await Promise.all([...candidates].map(async item => {
+          await item.loadDataType?.("childItems");
+          await item.loadDataType?.("note");
+        }));
+        const force = Boolean(payload.force);
+        const existing = !force && registry.find(entry => entry.targetLanguage === targetLanguage
+          && entry.parseRevisionID === parseRevisionID && entry.layoutIdentity === layoutPDFIdentity);
+        if (existing) {
+          const translation = Zotero.Items.getByLibraryAndKey(context.attachment.libraryID, existing.translationKey);
+          const comparison = Zotero.Items.getByLibraryAndKey(context.attachment.libraryID, existing.comparisonKey);
+          if (translation && !translation.deleted && comparison && !comparison.deleted) {
+            const duplicateIDs = sameTitleIDs.filter(id => id !== translation.id && id !== comparison.id
+              && !this.generatedPDFHasUserContent(Zotero.Items.get(id)));
+            if (duplicateIDs.length) await Zotero.Items.trashTx(duplicateIDs);
+            await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false });
+            return { translationAttachmentID: translation.id, comparisonAttachmentID: comparison.id,
+              translationTitle, comparisonTitle, cached: true };
           }
-          throw error;
         }
-        await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity });
-        return {
-          translationAttachmentID: translationAttachment.id,
-          comparisonAttachmentID: comparisonAttachment.id,
-          translationTitle,
-          comparisonTitle
-        };
+        const staging = this.storage.temporaryDir("layoutpdf");
+        const translationPath = PathUtils.join(staging, `${translationTitle}.pdf`);
+        const comparisonPath = PathUtils.join(staging, `${comparisonTitle}.pdf`);
+        try {
+          await this.storage.ensureDir(staging);
+          await this.printWorkbenchPDF(runtime, {
+            pane: "translation",
+            layout: true,
+            path: translationPath,
+            expectedPages: payload.expectedPages,
+            layoutPaper: payload.layoutPaper
+          });
+          await this.createLayoutComparisonPDF(context.filePath, translationPath, comparisonPath);
+          const belongsToLanguage = entry => entry.targetLanguage === targetLanguage;
+          // 兼容没有归属记录的旧版附件；同名 PDF 与已登记附件在新结果保存后一起替换。
+          const existingIDs = [...new Set([...sameTitleIDs, ...registry.filter(belongsToLanguage).flatMap(entry =>
+            [entry.translationKey, entry.comparisonKey].filter(Boolean).map(key =>
+              Zotero.Items.getByLibraryAndKey(context.attachment.libraryID, key)
+            ).filter(item => item && !item.deleted).map(item => item.id)
+          )])].filter(id => id !== context.attachment.id && !this.generatedPDFHasUserContent(Zotero.Items.get(id)));
+          if (existingIDs.length && typeof Zotero.Items.trashTx !== "function") throw new Error("无法替换已有的排版PDF附件");
+          const createdIDs = [];
+          let registryWritten = false;
+          let translationAttachment, comparisonAttachment;
+          try {
+            translationAttachment = await this.createGeneratedPDFAttachment(context, translationPath, translationTitle);
+            createdIDs.push(translationAttachment.id);
+            comparisonAttachment = await this.createGeneratedPDFAttachment(context, comparisonPath, comparisonTitle);
+            createdIDs.push(comparisonAttachment.id);
+            await this.storage.writeJSON(registryPath, [
+              ...registry.filter(entry => !belongsToLanguage(entry) || [entry.translationKey, entry.comparisonKey].some(key =>
+                key && this.generatedPDFHasUserContent(Zotero.Items.getByLibraryAndKey(context.attachment.libraryID, key)))),
+              { parseRevisionID, targetLanguage, provider: documentMeta?.parseProvider || "mineru",
+                model: documentMeta?.parseModel || "vlm", layoutIdentity: layoutPDFIdentity,
+                translationKey: translationAttachment.key, comparisonKey: comparisonAttachment.key }
+            ]);
+            registryWritten = true;
+            // 两份新附件均保存成功后，以同一事务移走旧附件。
+            if (existingIDs.length) await Zotero.Items.trashTx(existingIDs);
+          }
+          catch (error) {
+            if (registryWritten) {
+              try { await this.storage.writeJSON(registryPath, registry); }
+              catch (restoreError) { this.log?.(`PDF归属记录恢复失败：${restoreError}`); }
+            }
+            // 仅清理本次未完成的新附件；由Zotero同时清理附件记录与存储文件。
+            if (createdIDs.length) {
+              try { await Zotero.Items.erase(createdIDs); }
+              catch (cleanupError) { throw new Error(`${error.message || error}；新附件清理失败：${cleanupError.message || cleanupError}`); }
+            }
+            throw error;
+          }
+          await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false });
+          return {
+            translationAttachmentID: translationAttachment.id,
+            comparisonAttachmentID: comparisonAttachment.id,
+            translationTitle,
+            comparisonTitle
+          };
+        }
+        finally {
+          await this.storage.remove(staging, true);
+        }
       }
-      finally {
-        await this.storage.remove(staging, true);
-      }
+      finally { release?.(); }
     }
 
     async openFromCurrentSelection(win) {
@@ -4375,6 +4578,7 @@
 
       register("renderToolbar", event => {
         const { reader, doc, append } = event;
+        this.ensureReaderComparisonDarkSupport(reader);
         // Zotero may ask an add-on to render the same Reader toolbar again
         // after a tab refresh or a development reload.  The callback is
         // append-only, so guard the document rather than creating a duplicate
@@ -4518,6 +4722,355 @@
           this.log(`createViewContextMenu error: ${error?.message || error}`);
         }
       });
+
+      const existingReaders = Array.isArray(Zotero.Reader?._readers) ? Zotero.Reader._readers : [];
+      for (const reader of existingReaders) {
+        this.ensureReaderComparisonDarkSupport(reader);
+      }
+    }
+
+    async isRegisteredComparisonAttachment(itemID) {
+      const item = Zotero.Items.get(itemID);
+      if (!item || item.deleted || !item.isAttachment?.()
+        || String(item.attachmentContentType || "").toLowerCase() !== "application/pdf") return false;
+      const parent = item.parentID ? Zotero.Items.get(item.parentID) : null;
+      const sources = parent?.getAttachments
+        ? parent.getAttachments().map(id => Zotero.Items.get(id))
+        : (await this.storage.list(this.storage.documentsRoot)).map(directory => {
+          const source = this.storage.parseDocumentID(PathUtils.filename(directory));
+          return source && source.libraryID === item.libraryID
+            ? Zotero.Items.getByLibraryAndKey(source.libraryID, source.key) : null;
+        });
+      for (const source of sources) {
+        if (!source || source.deleted || source.id === item.id || !source.isAttachment?.()
+          || source.libraryID !== item.libraryID || (source.parentID || false) !== (item.parentID || false)) continue;
+        const registry = await this.storage.readJSON(this.storage.path(this.storage.documentID(source), "generated-pdfs.json"), []);
+        if (Array.isArray(registry) && registry.some(entry => entry?.comparisonKey === item.key)) return true;
+      }
+      return false;
+    }
+
+    async ensureReaderComparisonDarkSupport(reader) {
+      if (!reader || this.isWorkbenchReader(reader) || this._cajShuttingDown) return;
+      this.readerComparisonBindings ||= new Map();
+      if (this.readerComparisonBindings.has(reader)) return;
+      const cleanups = [];
+      let disposed = false;
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        for (const cleanup of cleanups.splice(0).reverse()) {
+          try { cleanup(); } catch (_) {}
+        }
+        if (this.readerComparisonBindings.get(reader) === dispose) this.readerComparisonBindings.delete(reader);
+      };
+      this.readerComparisonBindings.set(reader, dispose);
+      try {
+        const itemID = this.readerItemID(reader);
+        if (!await this.isRegisteredComparisonAttachment(itemID)) { dispose(); return; }
+        await reader._waitForReader?.();
+        await reader._initPromise;
+        if (disposed || this._cajShuttingDown || this.readerItemID(reader) !== itemID) { dispose(); return; }
+        const active = () => !disposed && !this._cajShuttingDown && this.readerItemID(reader) === itemID;
+        const attached = new WeakSet();
+        const attachWindow = win => {
+          if (!win || attached.has(win) || !active()) return;
+          const cleanup = this.patchReaderViewerWindow(win, active);
+          if (cleanup) { attached.add(win); cleanups.push(cleanup); }
+        };
+        for (const view of [reader._internalReader?._primaryView, reader._internalReader?._secondaryView]) {
+          if (!view) continue;
+          attachWindow(view._iframeWindow);
+          if (view._iframe) {
+            const onLoad = () => attachWindow(view._iframe.contentWindow);
+            view._iframe.addEventListener("load", onLoad);
+            cleanups.push(() => view._iframe.removeEventListener("load", onLoad));
+          }
+        }
+        const outer = reader._iframeWindow;
+        if (outer?.addEventListener) {
+          outer.addEventListener("unload", dispose, { once: true });
+          cleanups.push(() => outer.removeEventListener("unload", dispose));
+        }
+      } catch (error) {
+        dispose();
+        this.log("对照PDF暗色适配已跳过：" + (error?.message || error));
+      }
+    }
+
+    patchReaderViewerWindow(win, active) {
+      win = win?.wrappedJSObject || win;
+      const app = win?.PDFViewerApplication;
+      const bus = app?.eventBus;
+      if (!bus?._on || !bus?._off || typeof active !== "function") return null;
+      let disposed = false;
+      const tasks = new Set();
+      const taskCleanups = new Set();
+      const onRender = event => {
+        event = Cu.waiveXrays(event);
+        // 仅接入完整页面的显示任务，不处理打印、缩略图和局部放大画布。
+        if (disposed || !active() || event.source?.pageView) return;
+        const task = event.source?.renderTask;
+        if (!task?._internalRenderTask || tasks.has(task)) return;
+        const original = task.onContinue;
+        const blenderCleanups = new Map();
+        const controller = this;
+        const wrapped = Cu.exportFunction(function(...args) {
+          try {
+            const blender = task._internalRenderTask?.gfx?.blender;
+            if (!disposed && active() && blender && !blenderCleanups.has(blender)) {
+              const cleanup = controller.patchReaderComparisonBlender(win, blender, () => !disposed && active(), task._internalRenderTask.gfx);
+              blenderCleanups.set(blender, cleanup);
+            }
+          } catch (error) { controller.log("对照PDF页面适配已跳过：" + (error?.message || error)); }
+          if (typeof original === "function") return original.call(this, ...args);
+          return args[0]();
+        }, win, { allowCrossOriginArguments: true });
+        const cleanup = () => {
+          if (task.onContinue === wrapped) task.onContinue = original;
+          for (const restore of blenderCleanups.values()) restore?.();
+          tasks.delete(task);
+          taskCleanups.delete(cleanup);
+        };
+        task.onContinue = wrapped;
+        tasks.add(task);
+        taskCleanups.add(cleanup);
+        const complete = Cu.exportFunction(cleanup, win, { allowCrossOriginArguments: true });
+        void task.promise.then(complete, complete);
+      };
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        bus._off("pagerender", renderListener);
+        win.removeEventListener?.("unload", dispose);
+        for (const cleanup of [...taskCleanups]) cleanup();
+      };
+      const renderListener = Cu.exportFunction(onRender, win, { allowCrossOriginArguments: true });
+      bus._on("pagerender", renderListener);
+      win.addEventListener?.("unload", dispose, { once: true });
+      for (const page of app.pdfViewer?._pages || []) onRender({ source: page });
+      // 已打开的对照附件只重绘一次；普通附件根本不会安装此监听。
+      if (win.theme?.background && (app.pdfViewer?._pages || []).some(page => page.canvas)) {
+        try {
+          for (const page of app.pdfViewer._pages) page.reset?.();
+          app.pdfViewer.update?.();
+        } catch (_) {}
+      }
+      return dispose;
+    }
+
+    patchReaderComparisonBlender(win, blender, active, graphics = null) {
+      const ctx = blender.ctx;
+      const formBeginID = win.pdfjsLib?.OPS?.paintFormXObjectBegin;
+      const formEndID = win.pdfjsLib?.OPS?.paintFormXObjectEnd;
+      const constructPathID = win.pdfjsLib?.OPS?.constructPath;
+      const fillID = win.pdfjsLib?.OPS?.fill;
+      if (!ctx || typeof blender.customDrawImage !== "function" || typeof blender.origDrawImage !== "function"
+        || typeof blender.deleteCachedImage !== "function"
+        || Object.prototype.hasOwnProperty.call(blender, "customDrawImage")) return null;
+      if (graphics && (typeof graphics.paintFormXObjectBegin !== "function" || typeof graphics.paintFormXObjectEnd !== "function"
+        || !Array.isArray(graphics.baseTransformStack)
+        || !Number.isInteger(formBeginID) || !Number.isInteger(formEndID)
+        || graphics[formBeginID] !== graphics.paintFormXObjectBegin || graphics[formEndID] !== graphics.paintFormXObjectEnd
+        || Object.prototype.hasOwnProperty.call(graphics, formBeginID) || Object.prototype.hasOwnProperty.call(graphics, formEndID)
+        || Object.prototype.hasOwnProperty.call(graphics, "paintFormXObjectBegin")
+        || Object.prototype.hasOwnProperty.call(graphics, "paintFormXObjectEnd"))) return null;
+      const original = blender.customDrawImage;
+      const parseColorRGB = str => {
+        if (!str || typeof str !== "string") return null;
+        if (str.startsWith("#")) {
+          const hex = str.slice(1);
+          const full = hex.length === 3 ? [...hex].map(c => c + c).join("") : hex;
+          return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16));
+        }
+        const match = str.match(/\d+/g);
+        return match && match.length >= 3 ? match.slice(0, 3).map(Number) : null;
+      };
+
+      const themeImage = (img, bgRGB, fgRGB, cacheKey, background) => {
+        if (img._litmtransPaperTheme && img._litmtransPaperThemeKey === cacheKey) return img._litmtransPaperTheme;
+        const w = img.naturalWidth || img.width || 0;
+        const h = img.naturalHeight || img.height || 0;
+        if (!(w > 0 && h > 0)) return img;
+        const off = win.document.createElement("canvas");
+        off.width = w;
+        off.height = h;
+        const offCtx = off.getContext("2d");
+        if (!offCtx) return img;
+        offCtx.drawImage(img, 0, 0);
+        const idata = offCtx.getImageData(0, 0, w, h);
+        const d = idata.data;
+        if (background) {
+          let lumSum = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3] !== 255) return img;
+            lumSum += 2126 * d[i] + 7152 * d[i + 1] + 722 * d[i + 2];
+          }
+          if (lumSum / (d.length >> 2) / 10000 < 150) return img;
+        }
+        for (let i = 0; i < d.length; i += 4) {
+          const min = Math.min(d[i], d[i + 1], d[i + 2]);
+          const max = Math.max(d[i], d[i + 1], d[i + 2]);
+          const coverage = 1 - min / 255;
+          const chroma = coverage ? (max - min) / (255 - min) : 0;
+          for (let channel = 0; channel < 3; channel++) {
+            const color = coverage ? (d[i + channel] - min) / (255 - min) : 0;
+            // 与工作台的白底融合一致，合成到主题纸色，避免透出PDF自带的白色底板。
+            const ink = 255 * color + (1 - chroma) * fgRGB[channel];
+            d[i + channel] = Math.round(ink * coverage + bgRGB[channel] * (1 - coverage));
+          }
+        }
+        offCtx.putImageData(idata, 0, 0);
+        try {
+          img._litmtransPaperTheme = off;
+          img._litmtransPaperThemeKey = cacheKey;
+        } catch (_) {}
+        return off;
+      };
+
+      const prepareImage = args => {
+        const bgRGB = parseColorRGB(win.theme?.background);
+        const fgRGB = parseColorRGB(win.theme?.foreground);
+        const pageW = blender.pageWidth, pageH = blender.pageHeight;
+        const tfm = ctx.getTransform();
+        if (!bgRGB?.every(Number.isFinite) || !fgRGB?.every(Number.isFinite)
+          || !(pageW > 0 && pageH > 0) || Math.abs(tfm.b) > .001 || Math.abs(tfm.c) > .001) return null;
+        let dx, dy, dw, dh;
+        if (args.length === 3) [dx, dy, dw, dh] = [args[1], args[2], args[0].naturalWidth || args[0].width, args[0].naturalHeight || args[0].height];
+        else if (args.length === 5) [dx, dy, dw, dh] = args.slice(1);
+        else if (args.length === 9 && args[1] === 0 && args[2] === 0
+          && args[3] === (args[0].naturalWidth || args[0].width)
+          && args[4] === (args[0].naturalHeight || args[0].height)) [dx, dy, dw, dh] = args.slice(5);
+        else return null;
+        const x = Math.min(tfm.a * dx + tfm.e, tfm.a * (dx + dw) + tfm.e);
+        const y = Math.min(tfm.d * dy + tfm.f, tfm.d * (dy + dh) + tfm.f);
+        const w = Math.abs(tfm.a * dw), h = Math.abs(tfm.d * dh);
+        if (!(w > 0 && h > 0) || ctx.globalAlpha !== 1 || ctx.globalCompositeOperation !== "source-over") return null;
+        if (graphics && !backgroundBounds) return null;
+        const background = x >= pageW * .50 && x <= pageW * .60 && y >= 0 && y <= pageH * .08
+          && w >= pageW * .30 && w < pageW * .50 && x + w >= pageW * .90 && x + w <= pageW * 1.01
+          && h >= pageH * .70 && y + h <= pageH * 1.01;
+        const box = backgroundBounds;
+        // 局部图片必须完全落在本页已确认的译文底图内，左侧原文和未知图像保留宿主处理。
+        if (!background && !(box && x >= box.x - 1 && y >= box.y - 1
+          && x + w <= box.x + box.w + 1 && y + h <= box.y + box.h + 1)) return null;
+        if (bgRGB.every(value => value === 255)) return null;
+        const cacheKey = [win.theme.background, win.theme.foreground, background].join(":");
+        const image = themeImage(args[0], bgRGB, fgRGB, cacheKey, background);
+        return image !== args[0] ? { image, x, y, w, h, background } : null;
+      };
+      let enabled = true;
+      let backgroundBounds = null;
+      let beginListener = null, endListener = null;
+      let pathListener = null;
+      if (graphics) {
+        const originalBegin = graphics.paintFormXObjectBegin;
+        const originalEnd = graphics.paintFormXObjectEnd;
+        beginListener = Cu.exportFunction(function(...args) {
+          const result = originalBegin.call(this, ...args);
+          if (!enabled || !active() || graphics.baseTransformStack.length !== 1) return result;
+          backgroundBounds = null;
+          const bbox = Cu.waiveXrays(args[args.length - 1]);
+          const t = ctx.getTransform(), pageW = blender.pageWidth, pageH = blender.pageHeight;
+          if (bbox?.length !== 4 || Math.abs(t.b) > .001 || Math.abs(t.c) > .001) return result;
+          const x = Math.min(t.a * bbox[0] + t.e, t.a * bbox[2] + t.e);
+          const y = Math.min(t.d * bbox[1] + t.f, t.d * bbox[3] + t.f);
+          const w = Math.abs(t.a * (bbox[2] - bbox[0])), h = Math.abs(t.d * (bbox[3] - bbox[1]));
+          // 生成器嵌入的顶层译文子页提供可信边界，兼容没有整页位图的旧附件。
+          if (x >= pageW * .50 && x <= pageW * .60 && y >= 0 && y <= pageH * .08
+            && w >= pageW * .30 && w < pageW * .50 && x + w >= pageW * .90 && x + w <= pageW * 1.01
+            && h >= pageH * .70 && y + h <= pageH * 1.01) backgroundBounds = { x, y, w, h };
+          return result;
+        }, win, { allowCrossOriginArguments: true });
+        endListener = Cu.exportFunction(function(...args) {
+          const result = originalEnd.call(this, ...args);
+          if (enabled && graphics.baseTransformStack.length === 0) backgroundBounds = null;
+          return result;
+        }, win, { allowCrossOriginArguments: true });
+        graphics[formBeginID] = beginListener;
+        graphics[formEndID] = endListener;
+        const originalPath = graphics[constructPathID];
+        if (Number.isInteger(constructPathID) && Number.isInteger(fillID)
+          && typeof originalPath === "function" && originalPath.length === 4
+          && originalPath === graphics.constructPath && typeof blender.origFillStyle === "function"
+          && !Object.prototype.hasOwnProperty.call(graphics, constructPathID)
+          && !Object.prototype.hasOwnProperty.call(graphics, "constructPath")) {
+          pathListener = Cu.exportFunction(function(...args) {
+            let paper = null;
+            try {
+              const bounds = Cu.waiveXrays(args[3]);
+              const box = backgroundBounds, current = graphics.current;
+              const source = parseColorRGB(current?.fillColor), displayed = parseColorRGB(ctx.fillStyle);
+              const bg = parseColorRGB(win.theme?.background);
+              if (enabled && active() && box && graphics.ctx === ctx && args[1] === fillID && bounds?.length === 4
+                && !current?.patternFill && current?.fillAlpha === 1 && graphics.pendingClip == null
+                && !blender.forceInversion && ctx.globalAlpha === 1 && ctx.globalCompositeOperation === "source-over"
+                && source?.every(value => value === 255) && displayed?.every(value => value === 255)
+                && bg?.every(Number.isFinite) && !bg.every(value => value === 255)) {
+                const t = ctx.getTransform();
+                if (Math.abs(t.b) < .001 && Math.abs(t.c) < .001) {
+                  const edges = [Math.min(t.a * bounds[0] + t.e, t.a * bounds[2] + t.e),
+                    Math.min(t.d * bounds[1] + t.f, t.d * bounds[3] + t.f),
+                    Math.max(t.a * bounds[0] + t.e, t.a * bounds[2] + t.e),
+                    Math.max(t.d * bounds[1] + t.f, t.d * bounds[3] + t.f)];
+                  const expected = [box.x, box.y, box.x + box.w, box.y + box.h];
+                  if (edges.every((value, index) => Math.abs(value - expected[index]) <= .75)) paper = win.theme.background;
+                }
+              }
+            } catch (_) {}
+            if (!paper) return originalPath.call(this, ...args);
+            const previousStyle = ctx.fillStyle;
+            // 仅纠正与译文子页四边重合的白色底板，沿用原路径绘制以保留裁剪和抗锯齿。
+            blender.origFillStyle(paper);
+            try { return originalPath.call(this, ...args); }
+            finally { blender.origFillStyle(previousStyle); }
+          }, win, { allowCrossOriginArguments: true });
+          graphics[constructPathID] = pathListener;
+        }
+      }
+      const wrapped = function(args) {
+        args = Cu.waiveXrays(args);
+        const fallback = () => original.call(this, args);
+        if (!enabled || !active() || blender.forceInversion || ctx !== blender.ctx || !args?.[0]) return fallback();
+        let prepared;
+        try { prepared = prepareImage(args); } catch (_) {}
+        if (!prepared) return fallback();
+        blender.hasBackgrounds = true;
+        blender.deleteCachedImage();
+        if (prepared.background) backgroundBounds = prepared;
+        return blender.origDrawImage(prepared.image, ...args.slice(1));
+      };
+      const drawListener = Cu.exportFunction(wrapped, win, { allowCrossOriginArguments: true });
+      blender.customDrawImage = drawListener;
+      let textListener = null;
+      const originalText = blender.getTextStyle;
+      if (typeof originalText === "function" && typeof blender.background?.deltaE === "function"
+        && Number.isFinite(blender.foreground?.lightness)
+        && !Object.prototype.hasOwnProperty.call(blender, "getTextStyle")) {
+        textListener = Cu.exportFunction(function(color, textBg, minContrast = 30) {
+          color = Cu.waiveXrays(color);
+          textBg = Cu.waiveXrays(textBg);
+          const result = originalText.call(this, color, textBg, minContrast);
+          if (!enabled || !active() || !backgroundBounds || !blender.dark) return result;
+          const t = ctx.getTransform();
+          const box = backgroundBounds;
+          if (t.e < box.x || t.e > box.x + box.w || t.f < box.y || t.f > box.y + box.h) return result;
+          // 沿用宿主的色差与对比阈值，只纠正已确认暗底上恢复出来的低对比文字。
+          if (blender.background.deltaE(textBg) <= 2.3 && Math.abs(result.lightness - textBg.lightness) < minContrast) {
+            return blender.foreground;
+          }
+          return result;
+        }, win, { allowCrossOriginArguments: true });
+        blender.getTextStyle = textListener;
+      }
+      return () => {
+        enabled = false;
+        if (blender.customDrawImage === drawListener) delete blender.customDrawImage;
+        if (textListener && blender.getTextStyle === textListener) delete blender.getTextStyle;
+        if (beginListener && graphics[formBeginID] === beginListener) delete graphics[formBeginID];
+        if (endListener && graphics[formEndID] === endListener) delete graphics[formEndID];
+        if (pathListener && graphics[constructPathID] === pathListener) delete graphics[constructPathID];
+      };
     }
 
     isWorkbenchReader(reader) {
@@ -4606,15 +5159,15 @@
               try {
                 const attachment = await this.resolveAttachment(item);
                 const documentID = this.storage.documentID(attachment);
-                const [parsed, stream, layout] = await Promise.all([
-                  this.mineru.loadParsed(documentID),
+                const parsed = await this.parser.loadParsed(documentID);
+                const [stream, layout] = await Promise.all([
                   this.translation.load(documentID),
                   this.layout.loadTranslations(documentID)
                 ]);
                 const states = [
                   parsed.markdown ? localize("已解析", "Parsed") : localize("未解析", "Not parsed"),
                   stream.markdown ? localize("有流式译文", "Streaming translation ready") : localize("无流式译文", "No streaming translation"),
-                  Object.keys(layout.translations || {}).length ? localize("有排版译文", "Layout translation ready") : localize("无排版译文", "No layout translation")
+                  (Object.keys(layout.translations || {}).length || layout.meta?.translatedTables) ? localize("有排版译文", "Layout translation ready") : localize("无排版译文", "No layout translation")
                 ];
                 if (body._litmtransRenderToken !== renderToken || !status.isConnected) return;
                 status.textContent = states.join(" · ");
@@ -5051,12 +5604,17 @@
     assertOperationAvailable(runtime, key) {
       const map = this.activeOperationMap(runtime.tabID);
       const activeKeys = [...map.keys()].filter(active => active !== key);
+      for (const target of this.tabs?.values?.() || []) {
+        if (target !== runtime && Number(target.attachmentID) === Number(runtime.attachmentID)) {
+          activeKeys.push(...this.activeOperationMap(target.tabID).keys());
+        }
+      }
       const exclusive = new Set(["parse", "document"]);
       let conflict = "";
       if (exclusive.has(key)) conflict = activeKeys[0] || "";
       else if (key === "chat") conflict = activeKeys.find(active => exclusive.has(active)) || "";
-      else if (["translate", "layout"].includes(key)) {
-        conflict = activeKeys.find(active => exclusive.has(active) || ["translate", "layout"].includes(active)) || "";
+      else if (["translate", "layout", "manual-translation"].includes(key)) {
+        conflict = activeKeys.find(active => exclusive.has(active) || ["translate", "layout", "manual-translation"].includes(active)) || "";
       }
       if (conflict) throw new Error("另一项任务正在进行，请等待完成或先停止当前任务");
     }
@@ -5107,13 +5665,17 @@
     }
 
     async withOperation(runtime, key, task) {
-      const controller = this.beginOperation(runtime, key);
+      const release = this.storage?.beginActivity?.();
+      let controller;
+      try { controller = this.beginOperation(runtime, key); }
+      catch (error) { release?.(); throw error; }
       const operationTask = (async () => {
         try {
           return await task(controller.signal, event => this.emit(runtime, event));
         }
         finally {
           this.finishOperation(runtime, key, controller);
+          release?.();
         }
       })();
       if (this.operations.get(runtime.tabID)?.get(key) === controller) {
@@ -5160,7 +5722,11 @@
 
     async stateForAttachment(attachmentID, prepareCAJ = true) {
       const context = await this.attachmentContext(attachmentID, prepareCAJ);
-      const snapshot = await this.pipeline.snapshot(context);
+      const snapshot = await this.pipeline.snapshot(context, event => {
+        for (const runtime of this.tabs.values()) {
+          if (Number(runtime.attachmentID) === Number(attachmentID)) this.emit(runtime, event);
+        }
+      });
       const contentType = U.extension(context.filePath) === ".pdf" ? "application/pdf" : String(context.attachment.attachmentContentType || "").toLowerCase();
       const documentMeta = snapshot?.parsed?.meta || await this.storage.getDocumentMeta(context.documentID);
       const readerMode = documentMeta?.readerMode === "stream" ? "stream" : "layout";
@@ -5180,7 +5746,9 @@
           // value is kept alongside its translation artifacts, rather than in
           // the global preferences shared by every paper.
           readerMode,
-          layoutPDFIdentity: String(documentMeta?.layoutPDFIdentity || "")
+          layoutPDFIdentity: String(documentMeta?.layoutPDFIdentity || ""),
+          tablePDFPending: Boolean(documentMeta?.tablePDFPending),
+          layoutTableDisplay: documentMeta?.layoutTableDisplay
         },
         ...snapshot,
         settings: this.getSettings()
@@ -5259,6 +5827,34 @@
           viewer.currentScaleValue = "page-width";
           try { viewer.update?.(); } catch (_) {}
           return { available: true, scale: viewer.currentScale, scaleValue: viewer.currentScaleValue };
+        }
+
+        case "render-pdf-page-background": {
+          const pageNumber = Math.max(1, Math.trunc(Number(payload?.pageNumber || 1)));
+          const scale = Math.max(1, Math.min(4, Number(payload?.scale || 2)));
+          const renderer = this.deepSeekWebProvider?.pageRenderer
+            || this.layout?.lineService?.renderer
+            || (LitMTrans.DeepSeekWeb?.PDFPageRenderer ? (this._pdfPageRenderer ||= new LitMTrans.DeepSeekWeb.PDFPageRenderer(this)) : null);
+          if (!renderer || typeof renderer.renderPage !== "function") return { available: false };
+          try {
+            const displayTheme = payload?.displayTheme;
+            const themeKey = value => JSON.stringify([value?.background, value?.foreground, Boolean(value?.invertImages)]);
+            if (displayTheme && (themeKey(displayTheme) !== themeKey(this.pdfReaderTheme(runtime))
+              || !renderer.getPreviewIframeContext?.(runtime)?.cw?.theme)) return { available: false };
+            const rendered = await renderer.renderPage(runtime, pageNumber, { scale, nativeColors: !displayTheme, returnDataURL: true });
+            if (displayTheme && themeKey(displayTheme) !== themeKey(this.pdfReaderTheme(runtime))) return { available: false };
+            const dataURL = rendered?.dataURL || (rendered?.data ? `data:${rendered.mime || "image/png"};base64,${rendered.data}` : "");
+            if (!dataURL) return { available: false };
+            return {
+              available: true,
+              dataURL,
+              width: Number(rendered.width || 0),
+              height: Number(rendered.height || 0),
+              via: rendered.via || ""
+            };
+          } catch (_) {
+            return { available: false };
+          }
         }
 
         case "initialize-pdf-preview": {
@@ -5882,6 +6478,80 @@
             return this.pipeline.translateStream(context, { ...payload, engine, aiMode: isWeb ? "web" : payload.aiMode, runtime }, emit, signal);
           });
 
+        case "supplement-paddle-lines":
+          return this.withOperation(runtime, "layout-lines", async (signal, emit) => {
+            const context = await this.attachmentContext(attachmentID);
+            const meta = await this.storage.getDocumentMeta(context.documentID);
+            if (meta?.parseProvider !== "paddle") throw new Error("当前文献未使用Paddle解析");
+            const layout = await this.layout.loadLayout(context.documentID);
+            const result = await this.layout.lineService.ensure(context.documentID, layout, signal, emit, { forceOCR: true });
+            if (!result?.complete) throw new Error("文字识别未完成，请稍后重试");
+            return { state: await this.stateForAttachment(attachmentID) };
+          });
+
+        case "table-translation-status": {
+          const context = await this.attachmentContext(attachmentID);
+          const input = await this.layout.tableTranslationInput(context.documentID, { includeMarkdown: false });
+          const meta = await this.storage.getDocumentMeta(context.documentID);
+          const registry = await this.storage.readJSON(this.storage.path(context.documentID, "generated-pdfs.json"), []);
+          let hasPDF = (Array.isArray(registry) ? registry : []).some(entry =>
+            entry.targetLanguage === input.settings.targetLanguage && [entry.translationKey, entry.comparisonKey].some(key => {
+              const item = key && Zotero.Items.getByLibraryAndKey(context.attachment.libraryID, key);
+              return item && !item.deleted;
+            }));
+          if (!hasPDF && context.parent?.isRegularItem?.()) {
+            const stem = U.safeStem(context.title || context.attachment.attachmentFilename || "document", 90);
+            const language = U.safeStem(U.normalizeLanguageName(input.settings.targetLanguage, "简体中文"), 32, "目标语言");
+            const titles = new Set([`${language}-译文-${stem}`, `${language}-译文对照版-${stem}`]);
+            hasPDF = (context.parent.getAttachments?.() || []).some(id => {
+              const item = Zotero.Items.get(id);
+              return item && !item.deleted && item.id !== context.attachment.id && item.isAttachment?.()
+                && item.attachmentContentType === "application/pdf" && titles.has(item.getField("title"));
+            });
+          }
+          return { total: input.plan.tables.length, missing: input.missing.length, available: Object.keys(input.cached).length > 0,
+            hasPDF, previousDisplay: meta?.layoutTableDisplay, targetLanguage: input.settings.targetLanguage };
+        }
+
+        case "set-table-display": {
+          const context = await this.attachmentContext(attachmentID);
+          const enabled = Boolean(payload.enabled);
+          const meta = await this.storage.setDocumentMeta(context.documentID, {
+            layoutTableDisplay: enabled,
+            ...(payload.hasPDF === false ? { tablePDFPending: false }
+              : payload.changed ? { tablePDFPending: true } : {})
+          });
+          return { enabled, tablePDFPending: Boolean(meta.tablePDFPending) };
+        }
+
+        case "set-table-preference": {
+          const enabled = Boolean(payload.enabled);
+          U.setPref("translateTables", enabled);
+          for (const target of this.tabs.values()) {
+            if (target !== runtime) this.emit(target, { type: "table-preference", enabled });
+          }
+          return { enabled };
+        }
+
+        case "translate-tables": {
+          return this.withOperation(runtime, "layout", async (signal, emit) => {
+            const context = await this.attachmentContext(attachmentID);
+            const isWeb = webEngineSelected(payload) || U.getPref("translationProvider", "") === "deepseek_web";
+            const result = await this.layout.translateTablesOnly(context.documentID, {
+              ...payload, engine: isWeb ? "deepseek_web" : "api", aiMode: isWeb ? "web" : "api", runtime
+            }, event => { if (event.type !== "layout-raw-delta") emit(event); }, signal);
+            return { ...result, state: await this.stateForAttachment(attachmentID) };
+          });
+        }
+
+        case "manual-table-command": {
+          const context = await this.attachmentContext(attachmentID);
+          const input = await this.layout.tableTranslationInput(context.documentID, { manual: true });
+          if (!input.markdown.trim()) throw new Error("缺少文献全文，无法为表格翻译提供上下文");
+          return { fingerprint: input.fingerprint, targetLanguage: input.settings.targetLanguage,
+            command: `请将目标表格单元格翻译为${input.settings.targetLanguage}。全文仅供上下文参考，不输出正文译文。保留每个表格 id、单元格索引和保护标记，只返回 JSON：{\"translations\":[{\"id\":\"...\",\"cells\":[[0,\"译文\"]]}]}。\n\n全文 Markdown：\n${input.markdown}\n\nInput blocks JSON:\n${this.layout.formatRequestBlocks(input.missing)}` };
+        }
+
         case "translate-layout":
           return this.withOperation(runtime, "layout", async (signal, emit) => {
             const context = await this.attachmentContext(attachmentID);
@@ -6128,12 +6798,18 @@
           return this.markStartupNoticeSeen(payload.version);
         case "clipboard-read-text":
           return { text: this.readClipboardText() };
+        case "clipboard-write-table":
+          return this.writeClipboardTable(payload);
+        case "save-table-html":
+          return this.saveTableHTML(runtime, payload);
         case "clipboard-write-text":
           return this.writeClipboardText(payload.text);
         case "get-provider-api-key":
           return this.getProviderAPIKey(payload.provider);
         case "save-provider-api-key":
           return this.saveProviderAPIKey(payload.provider, payload.apiKey);
+        case "save-paddle-token":
+          return this.savePaddleToken(payload.token);
         case "save-mineru-token":
           return this.saveMinerUToken(payload.token);
         case "save-settings":
@@ -6305,13 +6981,13 @@
       }
     }
 
-    getSettings() {
-      const translation = this.llm.getSettings("translation");
-      // Keep the saved chat profile observable in both UI entry points. When
-      // sharing is enabled, runtime chat requests still resolve to translation.
-      const chat = this.llm.getStoredSettings("chat");
-      const chatUsesTranslationModel = !U.isWebMachineProvider(translation.provider)
-        && Boolean(U.getPref("chatUsesTranslationModel", true));
+    getLayoutReaderFonts() {
+      const rulesVersion = LitMTrans.Constants.LAYOUT_READER_FONT_RULES_VERSION;
+      if (Number(U.getPref("layoutReaderFontRulesVersion", 0)) !== rulesVersion) {
+        U.setPref("layoutReaderFonts", "{}");
+        U.setPref("layoutReaderFontRulesVersion", rulesVersion);
+        return {};
+      }
       let layoutReaderFonts = {};
       try {
         const raw = U.getPref("layoutReaderFonts", "{}");
@@ -6319,6 +6995,17 @@
       }
       catch (_) {}
       if (!layoutReaderFonts || typeof layoutReaderFonts !== "object" || Array.isArray(layoutReaderFonts)) layoutReaderFonts = {};
+      return layoutReaderFonts;
+    }
+
+    getSettings() {
+      const translation = this.llm.getSettings("translation");
+      // Keep the saved chat profile observable in both UI entry points. When
+      // sharing is enabled, runtime chat requests still resolve to translation.
+      const chat = this.llm.getStoredSettings("chat");
+      const chatUsesTranslationModel = !U.isWebMachineProvider(translation.provider)
+        && Boolean(U.getPref("chatUsesTranslationModel", true));
+      const layoutReaderFonts = this.getLayoutReaderFonts();
       return {
         ...translation,
         translationProvider: translation.provider,
@@ -6349,6 +7036,9 @@
         apiKey: this.secrets.getLLMKey(translation.provider),
         chatAPIKey: this.secrets.getLLMKey(chat.provider),
         mineruToken: this.secrets.getMinerUToken(),
+        paddleToken: this.secrets.getPaddleToken?.() || "",
+        parseProvider: U.getPref("parseProvider", "mineru"),
+        paddleModel: U.getPref("paddleModel", "PaddleOCR-VL-1.6"),
         cajDoubleClickAction: ["ask", "litmtrans"].includes(U.getPref("cajDoubleClickAction", "ask")) ? U.getPref("cajDoubleClickAction", "ask") : "default",
         showNativeReaderAskAI: Boolean(U.getPref("showNativeReaderAskAI", true)),
         autoUpdate: Boolean(U.getPref("autoUpdate", true)),
@@ -6469,6 +7159,13 @@
       return { provider, hasAPIKey: Boolean(apiKey) };
     }
 
+    savePaddleToken(value) {
+      const token = String(value || "").trim();
+      if (token && !this.secrets.setPaddleToken(token)) throw new Error("Paddle访问令牌保存失败");
+      if (!token) this.secrets.removePaddleToken();
+      return { hasToken: Boolean(token) };
+    }
+
     saveMinerUToken(value) {
       const token = String(value || "").trim();
       if (token) this.secrets.setMinerUToken(token);
@@ -6583,6 +7280,15 @@
     }
 
     saveSettings(values = {}) {
+      if (Object.prototype.hasOwnProperty.call(values, "parseProvider")) {
+        if (!["mineru", "paddle"].includes(values.parseProvider)) throw new Error("不支持所选文献解析服务");
+        U.setPref("parseProvider", values.parseProvider);
+      }
+      if (Object.prototype.hasOwnProperty.call(values, "paddleModel")) {
+        const model = String(values.paddleModel || "").trim();
+        if (!model || /[\r\n]/.test(model)) throw new Error("Paddle模型名称无效");
+        U.setPref("paddleModel", model);
+      }
       const requestedTranslationProvider = values?.translationProvider
         ?? values?.provider
         ?? this.llm.getSettings("translation").provider;
@@ -6647,6 +7353,7 @@
           if (id && Number.isFinite(font) && font > 0) fonts[id] = font;
         }
         U.setPref("layoutReaderFonts", JSON.stringify(fonts));
+        U.setPref("layoutReaderFontRulesVersion", LitMTrans.Constants.LAYOUT_READER_FONT_RULES_VERSION);
       }
       const translationValues = {
         ...values,
@@ -6785,6 +7492,7 @@
           translation: "translation",
           cajSource: "caj-source",
           mineruResult: "mineru-result",
+          parserHistory: "parser-history",
           chat: "chat",
           deepseekWeb: "deepseek-web",
           diagrams: "diagrams",
@@ -6895,7 +7603,13 @@
             this.emit(runtime, { type: "caj-cache-cleared" });
           }
         }
-        const clearResult = await this.storage.clearDocumentSubcategory(docID, subcategory);
+        const clearResult = await this.storage.clearDocumentSubcategory(docID, subcategory,
+          subcategory === "all" ? () => this.removeGeneratedPDFAttachments(docID) : null);
+        if (subcategory === "all") {
+          const fonts = this.getLayoutReaderFonts();
+          delete fonts[docID];
+          U.setPref("layoutReaderFonts", JSON.stringify(fonts));
+        }
         if (subcategory === "cajSource" && clearResult.cleared) {
           await this.storage.setDocumentMeta(docID, {
             isCAJ: true,

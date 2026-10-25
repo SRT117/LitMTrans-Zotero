@@ -124,7 +124,7 @@
   }
 
   function fastLayoutKind(record) {
-    if (record?.type === "text" || record?.type === "ref_text") return "body";
+    if (["text", "ref_text", "table_cells"].includes(record?.type)) return "body";
     if (["table_caption", "chart_caption", "image_caption", "image_footnote"].includes(record?.type)) return "caption";
     if (record?.type === "table_footnote") return "table-note";
     return record?.type || "unknown";
@@ -156,8 +156,8 @@
   function acceptedModelText(value, sanitizeUnsafe = false, allowSanitized = false) {
     const raw = String(value || "");
     if (!hasUnsafeControlCharacters(raw)) return raw;
-    if (allowSanitized) return sanitizeModelText(raw);
-    return null;
+    // 仅清理不可渲染的控制字符，不因格式问题拒收整块译文。
+    return sanitizeModelText(raw);
   }
 
   function validBBox(value) {
@@ -205,6 +205,11 @@
     const logicalLineCount = layoutLogicalLines(lines)
       .filter(line => String(line || "").trim()).length;
     return Math.max(1, parserLineCount, logicalLineCount);
+  }
+
+  function isKeywordListText(text) {
+    const lines = String(text || "").replace(/\r\n?/g, "\n").trim().split("\n").filter(line => line.trim());
+    return lines.length >= 2 && /^(?:key\s*words?|关键词|关键字)\s*[:：]/i.test(lines[0]);
   }
 
   const TOC_ENTRY_RE = /^\s*(\d+(?:\.\d+)*\.?)\s+(.+?)\s*(?:\.{2,}|…{2,}|·{2,}|-{3,})\s*(\d+|[ivxlcdm]+)\s*$/i;
@@ -329,7 +334,8 @@
       .filter(Boolean)
       .join(isSymbolGlossaryBlock(block) ? "\n\n" : "\n");
     const preserved = html.replace(/<\/?(?:sup|sub)\b[^>]*>/gi, match => match);
-    return sanitizeModelText(preserved.replace(/<(?!\/?(?:sup|sub)\b)[^>]+>/gi, "").trim());
+    return sanitizeModelText(preserved.replace(/<br\s*\/?\s*>/gi, "\n")
+      .replace(/<(?!\/?(?:sup|sub)\b)[^>]+>/gi, "").trim());
   }
 
   function restoreSymbolGlossaryRowBreaks(record, translatedText) {
@@ -482,7 +488,7 @@
   }
 
   const RETRY_REASON_DESCRIPTIONS = {
-    missing: "The block ID was missing in the previous JSON response.",
+    missing: "No nonempty translation was received for this block ID.",
     "unsafe-characters": "The previous output contained forbidden JSON control characters or unescaped TeX backslash artifacts.",
     untranslated: "The block text appeared untranslated.",
     overexpanded: "The translation text over-expanded far beyond layout boundaries.",
@@ -506,42 +512,11 @@
   }
 
   function classifyRetryRecords(records, translations, targetLanguage, enableUntranslatedCheck = false) {
-    const reasonsByID = new Map();
-    const add = (record, reason) => {
-      if (!record) return;
-      if (!reasonsByID.has(record.id)) reasonsByID.set(record.id, new Set());
-      reasonsByID.get(record.id).add(reason);
-    };
-    for (const record of records) {
-      // The model must return every requested ID. This is an objective
-      // protocol failure, unlike guessing whether an otherwise valid answer
-      // was translated from its character mix.
-      if (!translations[record.id]) add(record, "missing");
-      if (hasUnsafeControlCharacters(translations[record.id])) add(record, "unsafe-characters");
-      if (enableUntranslatedCheck && looksUntranslated(record, translations[record.id], targetLanguage)) {
-        add(record, "untranslated");
-      }
-      if (looksOverexpanded(record, translations[record.id], targetLanguage)) add(record, "overexpanded");
-    }
-    for (let index = 1; index < records.length; index++) {
-      const previous = records[index - 1];
-      const current = records[index];
-      const previousText = normalizeCompareText(translations[previous.id]);
-      const currentText = normalizeCompareText(translations[current.id]);
-      if (
-        previousText.length >= 80
-        && previousText === currentText
-        && normalizeCompareText(previous.text) !== normalizeCompareText(current.text)
-      ) add(previous, "duplicate");
-    }
-    for (const record of records) {
-      if (!translations[record.id]) continue;
-      if (M.mathMissingFormulaRetryIssue(record.text, translations[record.id])) add(record, "formula-structure");
-    }
+    // 是否缺块只取决于对应 ID 有无非空内容，不推断模型译文的对错。
     return records
-      .filter(record => reasonsByID.has(record.id))
+      .filter(record => record.type !== "table_cells" && !String(translations[record.id] ?? "").trim())
       .map(record => {
-        const reasons = [...reasonsByID.get(record.id)];
+        const reasons = ["missing"];
         return {
           record,
           reasons,
@@ -1097,7 +1072,7 @@
       for (const block of Array.isArray(page.preproc_blocks) ? page.preproc_blocks : []) {
         if (String(block?.type || "").toLowerCase() !== "text") continue;
         const bbox = validBBox(block.bbox);
-        const sourceLines = Array.isArray(block.lines) ? block.lines.length : 0;
+        const sourceLines = Number(block._layout_original_line_count || (Array.isArray(block.lines) ? block.lines.length : 0));
         if (!bbox || sourceLines < SINGLE_COLUMN_MIN_SOURCE_LINES) continue;
         if (bboxWidth(bbox) / pageWidth < SINGLE_COLUMN_MIN_WIDTH_RATIO
           || bboxHeight(bbox) / pageHeight < SINGLE_COLUMN_MIN_HEIGHT_RATIO) continue;
@@ -1424,8 +1399,8 @@
       const bbox = validBBox(block.bbox);
       const record = recordByObject.get(block);
       const symbolGlossary = kind === "text" && isSymbolGlossaryBlock(block);
-      const html = layoutLinesToHTML(block.lines, !symbolGlossary);
       const text = String(record?.text || blockText(block) || "").trim();
+      const html = layoutLinesToHTML(block.lines, !symbolGlossary && !isKeywordListText(text));
       const tocRows = kind === "text" ? parseTocRows(block.lines) : null;
       if (!bbox || !html || mediaBoxes.some(box => bboxContainedOverlapRatio(bbox, box) >= .72)) return;
       output.push({
@@ -1440,7 +1415,7 @@
         originalLineCount: tocRows
           ? layoutLogicalLines(block.lines).length
           : Math.max(
-            Number(block._layout_original_line_count || 0),
+            Number(block._layout_original_line_count || block.parser?.estimatedLineCount || 0),
             layoutVisualLineCount(block.lines)
           ),
         debugLines: lineDebugData(block._layout_debug_lines || block._layout_original_lines || block.lines),
@@ -1462,7 +1437,7 @@
     };
     for (const block of Array.isArray(page.preproc_blocks) ? page.preproc_blocks : []) {
       const type = String(block?.type || "").toLowerCase();
-      if (type === "text" || type === "ref_text") add(block, type);
+      if ((type === "text" || type === "ref_text") && !(block.parser?.schema === "litmtrans-document-v1" && block.parser.semanticRole === "abstract")) add(block, type);
       else if (type === "list") {
         let added = false;
         for (const child of Array.isArray(block.blocks) ? block.blocks : []) {
@@ -1797,16 +1772,16 @@
         codeLanguage: kind === "code" ? String(block.guess_lang || block.guessLang || "text") : "",
         // The positioned renderer uses this metadata to include multi-line
         // absolute text in collision iteration.
-        lineCount: Math.max(1, Number(block._layout_original_line_count ?? (block.lines || []).length) || 1),
+        lineCount: Math.max(1, Number(block._layout_original_line_count ?? block.parser?.estimatedLineCount ?? (block.lines || []).length) || 1),
         // Measure the translated absolute text while retaining source text for
         // the source-pane rendering.
         fontSize: fixedLayoutFontSize(type)
           || estimateLayoutFontSize(type, bbox, String(record?.translatedText || text))
-          || inferFontSize(block, bbox, String(record?.translatedText || text), (block.lines || []).length),
+          || inferFontSize(block, bbox, String(record?.translatedText || text), block._layout_original_line_count || (block.lines || []).length),
         lineHeight: ["table_caption", "table_footnote", "chart_caption", "image_caption", "image_footnote"].includes(type)
           ? 1.2
           : (type === "text" ? 1.28 : 1.12),
-        debugLines: lineDebugData(block.lines)
+        debugLines: lineDebugData(block._layout_debug_lines || block.lines)
       });
     };
     const visit = block => {
@@ -1985,14 +1960,14 @@
   }
 
   function prepareRestoredPage(page, flatPage, modelPage, resolveAsset, context, singleColumnProfile = null) {
-    const ocrBoxes = collectModelOCRBoxes(modelPage, flatPage.width, flatPage.height);
+    const ocrBoxes = page._layoutLineBoxes || collectModelOCRBoxes(modelPage, flatPage.width, flatPage.height);
     const prepared = prepareFlowItems(page, flatPage.blocks, ocrBoxes);
     let items = promoteTextItemsToBody(prepared.items, flatPage.width, flatPage.height, context);
     items = promoteStableSingleColumnItems(items, flatPage.width, flatPage.height, singleColumnProfile);
     items = inheritStableSingleColumnShortItems(items, flatPage.width, flatPage.height, singleColumnProfile);
     const absoluteRaw = (page.preproc_blocks || []).filter(block => {
       const type = String(block?.type || "").toLowerCase();
-      if (["text", "ref_text"].includes(type)) return false;
+      if (["text", "ref_text"].includes(type)) return block.parser?.schema === "litmtrans-document-v1" && block.parser.semanticRole === "abstract";
       if (type === "list" && block._litmtransFlowList) return false;
       return true;
     });
@@ -2045,6 +2020,7 @@
         root,
         translations: PathUtils.join(root, `translations.${slug}.json`),
         formulaReplacements: PathUtils.join(root, `formula-replacements.${slug}.json`),
+        tables: PathUtils.join(root, `table-translations.${slug}.v1.json`),
         meta: PathUtils.join(root, `meta.${slug}.json`),
         guide: PathUtils.join(root, `guide.${slug}.md`)
       };
@@ -2061,8 +2037,15 @@
         payload = rawText ? JSON.parse(rawText) : null;
       }
       catch (_) {}
-      const pages = payload?.pdf_info;
+      let pages = payload?.pdf_info;
       if (!Array.isArray(pages)) throw new Error("当前文献解析结果缺少页面布局，请重新解析");
+      if (pages.some(page => (page.preproc_blocks || []).some(block => block.type === "table"
+        && (block.blocks || []).some(body => body.type === "table_body"
+          && !(body.lines || []).some(line => (line.spans || []).some(span => span.html)))))) {
+        const parsed = await this.storage.readJSON(this.storage.path(documentID, "parsed-document.v1.json"), null);
+        payload = LitMTrans.LayoutTables.restoreLegacyStructure(payload, parsed);
+        pages = payload.pdf_info;
+      }
       const modelPages = Array.isArray(modelPayload)
         ? modelPayload
         : (Array.isArray(modelPayload?.pages) ? modelPayload.pages : []);
@@ -2121,6 +2104,7 @@
 
       const visit = (block, depth = 0) => {
         if (!block || typeof block !== "object") return;
+        if (block.parser?.source?.provider === "paddle" && block.parser.source.label === "aside_text") return;
         const bbox = validBBox(block.bbox);
         const type = String(block.type || "unknown").toLowerCase();
         if (bbox) {
@@ -2149,16 +2133,17 @@
           // Text and caption blocks remain translatable when they contain
           // inline formulas. Only standalone equation blocks become formula
           // visuals; otherwise a prose block could be left untranslated.
-          const lines = Array.isArray(block.lines) ? block.lines.length : 1;
-          const translatable = kind !== "formula" && C.TRANSLATABLE_LAYOUT_TYPES.has(type) && Boolean(text);
+          const parserMetadata = block.parser?.schema === "litmtrans-document-v1" ? block.parser : null;
+          const lines = block._layout_original_line_count || parserMetadata?.estimatedLineCount || (Array.isArray(block.lines) ? block.lines.length : 1);
+          const translatable = kind !== "formula" && C.TRANSLATABLE_LAYOUT_TYPES.has(type) && parserMetadata?.translatable !== false && Boolean(text);
           if (translatable) translationSequence++;
-          const id = translatable
+          const id = parserMetadata?.id || (translatable
             ? `p${String(pageIndex + 1).padStart(3, "0")}_${depth ? "c" : "b"}${String(translationSequence).padStart(4, "0")}`
-            : `p${String(pageIndex + 1).padStart(3, "0")}_v${String(viewSequence).padStart(4, "0")}`;
-          const formulaItems = formulas.map(tex => {
+            : `p${String(pageIndex + 1).padStart(3, "0")}_v${String(viewSequence).padStart(4, "0")}`);
+          const formulaItems = formulas.map((tex, formulaIndex) => {
             formulaSequence++;
             return {
-              id: `p${String(pageIndex + 1).padStart(3, "0")}_f${String(formulaSequence).padStart(4, "0")}`,
+              id: parserMetadata ? `${id}-f${formulaIndex + 1}` : `p${String(pageIndex + 1).padStart(3, "0")}_f${String(formulaSequence).padStart(4, "0")}`,
               page: pageIndex + 1,
               type,
               tex
@@ -2176,7 +2161,7 @@
             imagePath,
             imageURL: imagePath ? resolveAsset(imagePath) : "",
             lineCount: Math.max(1, lines),
-            fontSize: inferFontSize(block, bbox, text, lines),
+            fontSize: parserMetadata ? (estimateLayoutFontSize(type, bbox, text) || inferFontSize(block, bbox, text, lines)) : inferFontSize(block, bbox, text, lines),
             depth,
             translatable,
             original: block
@@ -2185,14 +2170,43 @@
         for (const child of Array.isArray(block.blocks) ? block.blocks : []) visit(child, depth + 1);
       };
       for (const block of rawBlocks) visit(block, 0);
-      output.sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0] || a.id.localeCompare(b.id));
+      if (page?.parser_schema === "litmtrans-document-v1") output.sort((a, b) => a.original.parser.readingOrder - b.original.parser.readingOrder || a.id.localeCompare(b.id));
+      else output.sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0] || a.id.localeCompare(b.id));
       return { index: pageIndex + 1, width: pageSize[0], height: pageSize[1], blocks: output };
     }
 
     // A parsed layout revision is published atomically with layout.json and
     // asset-map.json. Translation metadata may intentionally describe an older
     // source after re-parsing, so it cannot validate this cache.
-    async buildModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null) {
+    async buildModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null, emit = null) {
+      const model = await this.buildBaseModel(documentID, translations, formulaReplacements, knownRevision, signal, emit);
+      if (!LitMTrans.LayoutTables) return model;
+      const paths = this.paths(documentID, knownRevision?.targetLanguage || this.llm.getSettings().targetLanguage);
+      const cache = await this.storage.readJSON(paths.tables, null);
+      return LitMTrans.LayoutTables.attach(model, cache);
+    }
+
+    async buildBaseModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null, emit = null) {
+      let layout = null;
+      let geometry = null;
+      if (this.lineService && (await this.storage.getDocumentMeta(documentID))?.parseProvider === "paddle") {
+        layout = await this.loadLayout(documentID);
+        try { geometry = await this.lineService.ensure(documentID, layout, signal, emit); }
+        catch (error) {
+          U.throwIfAborted(signal);
+          if (error.cancelled) throw error;
+          emit?.({ type: "log", message: "文字行位置暂不可用，已保留原排版" });
+        }
+      }
+      const geometryHash = geometry ? U.hashString(JSON.stringify([geometry.key, geometry.pages])) : "";
+      const lineDetection = geometry ? { ...geometry.documentText, missingPages: geometry.missingPages || [] } : null;
+      const asideIDs = new Set((layout?.pages || []).flatMap(page => (page.preproc_blocks || [])
+        .filter(block => block.parser?.source?.provider === "paddle" && block.parser.source.label === "aside_text")
+        .map(block => block.parser.id)));
+      if (asideIDs.size) {
+        for (const page of layout.pages) page.preproc_blocks = (page.preproc_blocks || []).filter(block => !asideIDs.has(block.parser?.id));
+      }
+      if (layout) LitMTrans.PaddleLineHelpers?.applyGeometry(layout.pages, geometry);
       const loaded = translations === null || formulaReplacements === null
         ? await this.loadTranslations(documentID)
         : null;
@@ -2206,7 +2220,8 @@
         typeof knownRevision === "object" ? knownRevision?.assetMapHash : ""
       );
       const compiledPath = this.storage.path(documentID, "compiled-model.json");
-      const upgradedCompiledPath = this.storage.path(documentID, "compiled-model.v13.json");
+      const upgradedCompiledPath = this.storage.path(documentID, geometry
+        ? "compiled-model.paddle-lines.v1.json" : "compiled-model.v13.json");
       let legacyCompiledModel = false;
       try {
         for (const path of [upgradedCompiledPath, compiledPath]) {
@@ -2215,19 +2230,22 @@
           if (
             cached &&
             cached.version === 13 &&
+            cached.keywordLineBreaksVersion === 1 &&
+            String(cached.geometryHash || "") === geometryHash &&
             cached.translationsHash === translationsHash &&
             currentFingerprint &&
             cached.sourceFingerprint === currentFingerprint &&
             knownAssetMapHash &&
             cached.assetMapHash === knownAssetMapHash &&
-            cached.model?.pages?.length
+            cached.model?.pages?.length &&
+            (!asideIDs.size || cached.asidePolicyVersion === 1)
           ) {
-            return cached.model;
+            return { ...cached.model, lineDetection };
           }
         }
       } catch (_) {}
 
-      const { pages, modelPages, rawText } = await this.loadLayout(documentID);
+      const { pages, modelPages, rawText } = layout || await this.loadLayout(documentID);
       U.throwIfAborted(signal);
       const sourceFingerprint = U.hashString(rawText || "");
       const assetMap = await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {});
@@ -2257,8 +2275,7 @@
           );
           return {
             ...block,
-            // A legacy cache may predate transport validation. Keep it
-            // renderable while classifyRetryRecords schedules a safe retry.
+            // 旧缓存仅在显示时清理控制字符，不触发重译或改写磁盘数据。
             translatedText: sanitizeModelText(translatedText),
             formulas: formulaItems.map(item => item.tex),
             formulaItems
@@ -2406,6 +2423,11 @@
       }
       const model = {
         documentID,
+        geometryHash,
+        lineDetection,
+        referenceNumbers: Object.fromEntries((geometry?.pages || []).flatMap(page => Object.entries(page.blocks || {})
+          .filter(([, value]) => Number.isInteger(value.referenceNumber) && value.referenceNumber > 0)
+          .map(([id, value]) => [id, value.referenceNumber]))),
         sourceFingerprint: U.hashString(rawText || ""),
         styles: {
           bodyText: { fontSize: bodyStyle[0], lineHeight: bodyStyle[1] },
@@ -2442,12 +2464,15 @@
       try {
         U.throwIfAborted(signal);
         const preserveCompiledModel = legacyCompiledModel || Boolean(await this.storage.exists?.(compiledPath));
-        await this.storage.writeJSON(preserveCompiledModel ? upgradedCompiledPath : compiledPath, {
+        await this.storage.writeJSON(geometry || preserveCompiledModel ? upgradedCompiledPath : compiledPath, {
           // 第 13 版在排版迭代前补回页眉页脚，旧缓存原样保留。
           version: 13,
+          keywordLineBreaksVersion: 1,
           sourceFingerprint,
           assetMapHash,
           translationsHash,
+          geometryHash,
+          asidePolicyVersion: 1,
           model
         });
       } catch (_) {}
@@ -2539,7 +2564,9 @@
     }
 
     fastGroupRecords(records, fullMarkdownContext = "") {
-      const source = Array.isArray(records) ? records : [];
+      const input = Array.isArray(records) ? records : [];
+      const tables = input.filter(record => record.type === "table_cells");
+      const source = input.filter(record => record.type !== "table_cells");
       const sourceOrder = new Map(source.map((record, index) => [record.id, index]));
       const positions = markdownRecordPositions(source, fullMarkdownContext);
       // MinerU's visual block order can interleave columns.  When a block can
@@ -2625,6 +2652,13 @@
         auxiliaryChars += size;
       }
       if (auxiliary.length) groups.push(auxiliary);
+      for (const table of tables) {
+        const last = groups.at(-1);
+        const chars = (last || []).reduce((sum, record) => sum + String(record.text || "").length, 0);
+        const size = String(table.text || "").length;
+        if (last && (chars + size <= DEEPSEEK_FAST_LAYOUT_TARGET_CHARS || canUseSoftOverflow(chars, size))) last.push(table);
+        else groups.push([table]);
+      }
       return groups;
     }
 
@@ -2645,48 +2679,89 @@
         this.storage.readJSON(paths.formulaReplacements, {}),
         this.storage.readJSON(paths.meta, null)
       ]);
+      let changed = false;
+      for (const [id, text] of Object.entries(translations)) {
+        if (typeof text !== "string") continue;
+        const repaired = M.repairFullwidthMathSyntax(text);
+        if (repaired !== text) { translations[id] = repaired; changed = true; }
+      }
+      if (changed) await this.storage.writeTextAtomically(paths.translations, JSON.stringify(translations, null, 2));
       return { translations, formulaReplacements, meta };
+    }
+
+    async manualTranslationInput(documentID, settings = this.llm.getSettings()) {
+      const layout = await this.loadLayout(documentID);
+      const bodyRecords = await this.extractRecords(documentID, layout);
+      const tablePlan = this.tableRequestPlan(layout, bodyRecords, settings, false, U.hashString(layout.rawText || ""));
+      return { layout, bodyRecords, tablePlan, records: [...bodyRecords, ...tablePlan.records] };
+    }
+
+    manualRecordPayload(record) {
+      return record.type === "table_cells"
+        ? { id: record.id, page: record.page, type: record.type, cells: record.cells }
+        : { id: record.id, page: record.page, type: record.type, text: this.sanitizeManualText(record.text) };
+    }
+
+    formatRequestBlocks(blocks) {
+      if (!blocks.some(block => block.type === "table_cells")) return JSON.stringify({ blocks }, null, 2);
+      const rows = blocks.map(block => {
+        const json = block.type === "table_cells" ? JSON.stringify(block) : JSON.stringify(block, null, 2);
+        return json.split("\n").map(line => "    " + line).join("\n");
+      });
+      return '{\n  "blocks": [\n' + rows.join(",\n") + "\n  ]\n}";
+    }
+
+    manualTableInstruction(records) {
+      return records.some(record => record.type === "table_cells")
+        ? '末尾的 cells 按 [编号,译文] 返回，保留编号和 ⟦0⟧ 等标记：{"id":"原始id","cells":[[0,"译文"]]}。\n'
+        : "";
     }
 
     async importManualTranslation(documentID, responses, emit = null) {
       const settings = this.llm.getSettings();
-      const records = await this.extractRecords(documentID);
-      const translations = this.normalizeManualTranslations(records, responses);
-      if (!Object.keys(translations).length) {
+      const { layout, bodyRecords, tablePlan, records } = await this.manualTranslationInput(documentID, settings);
+      const received = this.normalizeManualTranslations(records, responses);
+      const translations = LitMTrans.LayoutTables.bodyTranslations(tablePlan, received);
+      if (!Object.keys(received).length) {
         throw new Error("未能读取排版译文。请确认回答包含带 id 和 text 的独立 JSON 记录，并放在 text 代码块中。");
       }
-      const missing = records.filter(record => !translations[record.id]);
+      const missing = bodyRecords.filter(record => !translations[record.id]);
       if (missing.length) throw new Error(`排版译文缺少 ${missing.length} 个文本块，请让AI返回全部 block id 后重试。`);
       const paths = this.paths(documentID, settings.targetLanguage);
-      const layout = await this.loadLayout(documentID);
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const meta = {
         // PDF attachment publication is deduplicated by this identity. Include
         // the complete block map so a later manual correction is published as
         // a new translation revision instead of being mistaken for the first
         // manual rendering of the same source document.
-        identity: U.hashString([layout.rawText || "", settings.targetLanguage, JSON.stringify(translations), "manual-layout-translation-v1"].join("\u241f")),
+        identity: U.hashString([layout.rawText || "", settings.targetLanguage, JSON.stringify(received), "manual-layout-translation-v2-tables"].join("\u241f")),
         sourceFingerprint,
         mode: "manual",
         complete: true,
-        totalBlocks: records.length,
+        totalBlocks: bodyRecords.length,
         translatedBlocks: Object.keys(translations).length,
         completedAt: new Date().toISOString()
       };
+      const tableCache = await this.saveTableTranslations(documentID, settings, layout, tablePlan, received, emit);
+      meta.translatedTables = tableCache?.tables.length || 0;
       await this.storage.writeJSON(paths.translations, translations);
       await this.storage.writeJSON(paths.formulaReplacements, {});
       await this.storage.writeJSON(paths.meta, meta);
-      const model = await this.buildModel(documentID, translations, {}, { sourceFingerprint });
-      emit?.({ type: "layout-translation", translations, model, complete: true, translatedBlocks: records.length, totalBlocks: records.length });
+      const model = await this.buildModel(documentID, translations, {}, { sourceFingerprint }, null, emit);
+      emit?.({ type: "layout-translation", translations, model, complete: true, translatedBlocks: bodyRecords.length, totalBlocks: bodyRecords.length });
       return { translations, model, meta };
     }
 
     normalizeManualTranslations(records, responses) {
-      const expected = new Set(records.map(record => record.id));
+      const expected = new Map(records.map(record => [record.id, record]));
       const translations = {};
       if (responses && !Array.isArray(responses) && typeof responses === "object") {
         for (const [id, text] of Object.entries(responses)) {
-          if (expected.has(id) && String(text || "").trim()) translations[id] = String(text).trim();
+          const record = expected.get(id);
+          if (record?.type === "table_cells") {
+            const value = LitMTrans.LayoutTables.responseCells(record, Array.isArray(text) ? { cells: text } : { text });
+            if (value) translations[id] = value;
+          } else if (record && String(text || "").trim()) translations[id] = String(text).trim();
         }
         return translations;
       }
@@ -2698,7 +2773,7 @@
     }
 
     async mergeManualTranslationResponse(documentID, existing, response) {
-      const records = await this.extractRecords(documentID);
+      const { records } = await this.manualTranslationInput(documentID);
       const translations = this.normalizeManualTranslations(records, existing);
       const raw = String(response || "").trim();
       if (!raw) throw new Error("请先粘贴AI的翻译结果");
@@ -2795,6 +2870,11 @@
             const id = String(row?.id || "");
             const record = expected.get(id);
             if (!record) continue;
+            if (record.type === "table_cells") {
+              const cells = LitMTrans.LayoutTables.responseCells(record, row);
+              if (cells) translations[id] = cells;
+              continue;
+            }
             const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe, Boolean(options.allowSanitized));
             if (rawText === null) continue;
             const translated = restoreSymbolGlossaryRowBreaks(
@@ -2813,10 +2893,17 @@
         throw extractError;
       }
 
-      const rows = Array.isArray(payload?.translations) ? payload.translations : [];
+      const rows = Array.isArray(payload?.translations) ? payload.translations
+        : Array.isArray(payload) ? payload
+        : payload?.id ? [payload] : [];
       for (const row of rows) {
         const id = String(row?.id || "");
         const record = expected.get(id);
+        if (record?.type === "table_cells") {
+          const cells = LitMTrans.LayoutTables.responseCells(record, row);
+          if (cells) translations[id] = cells;
+          continue;
+        }
         const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe, Boolean(options.allowSanitized));
         if (rawText === null) continue;
         const translated = restoreSymbolGlossaryRowBreaks(
@@ -2857,6 +2944,11 @@
           const id = String(row?.id || "");
           const record = expected.get(id);
           if (!record) continue;
+          if (record.type === "table_cells") {
+            const cells = LitMTrans.LayoutTables.responseCells(record, row);
+            if (cells) translations[id] = cells;
+            continue;
+          }
           const rawText = acceptedModelText(row?.text, true, true);
           if (rawText === null) continue;
           const translated = restoreSymbolGlossaryRowBreaks(
@@ -2874,7 +2966,9 @@
     }
 
     async translateGroup(group, guide, referenceContext, documentID, identity, settings, index, count, emit, signal) {
-      const source = group.map(record => ({ id: record.id, page: record.page, type: record.type, text: record.text }));
+      const source = group.map(record => record.type === "table_cells"
+        ? { id: record.id, page: record.page, type: record.type, cells: record.cells }
+        : { id: record.id, page: record.page, type: record.type, text: record.text });
       const system = "You are a professional academic paper translator and layout-aware scientific copy editor. Translate with field-aware terminology, preserve scientific facts exactly, respect visual bounding box boundaries, and keep layout block IDs stable. You must output strict JSON only, without Markdown fences.";
       const retryDetails = settings.retryDetails && typeof settings.retryDetails.get === "function"
         ? settings.retryDetails
@@ -2907,6 +3001,8 @@
         "7. Preserve author names, journal headers, page numbers, URLs, affiliations, and bibliographic tokens mostly unchanged unless natural translation is clearly needed.\n" +
         "8. Keep captions concise because they must fit the original layout boxes, but do not delete scientific meaning.\n" +
         "9. Preserve natural paragraph breaks inside a block with blank lines when the source clearly contains multiple paragraphs.\n" +
+        "9a. In a multiline Keywords/Key words block, keep each keyword on its own line in the same order. Preserve these semantic line breaks as JSON \\n escapes; never concatenate the keywords.\n" +
+        C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + " Encode these breaks as JSON \\n escapes within the existing text field.\n" +
         "10. Repair obvious OCR spacing or line-break defects silently; do not invent missing data.\n" +
         "11. Do not add notes, explanations, Markdown fences, or extra fields.\n" +
         (settings.transportRecovery
@@ -2919,7 +3015,10 @@
           ? "\nFull paper Markdown context follows. It is context only: do not translate, repeat, summarize, or return it. Use it to resolve continuations across pages or columns, but translate ONLY the target blocks supplied after this fixed context and never merge their output.\n===== BEGIN FULL PAPER MARKDOWN =====\n" +
             `${settings.fullMarkdownContext}\n===== END FULL PAPER MARKDOWN =====\n`
           : "") +
-        "\nInput blocks JSON:\n" + JSON.stringify({ blocks: requestRecords }, null, 2)
+        (settings.hasTableTargets
+          ? "Translate the cells at the end last. Return {\"id\":\"...\",\"cells\":[[0,\"translation\"]]}, preserving each cell index and marker such as ⟦0⟧.\n"
+          : "") +
+        "\nInput blocks JSON:\n" + this.formatRequestBlocks(requestRecords)
       );
       const retryPayload = retryDetails
         ? group.map(record => {
@@ -2947,8 +3046,8 @@
       const retryUser = retryDetails ? (
         retryFormatOnly
           ? "This is a surgical formula/JSON-format check. Do not explain your reasoning, retranslate, or polish prose. retry_reasons and retry_details are fallible program guesses, not factual conclusions; independently verify the source, current_translation, and math structure. If normalized math is already equivalent (whitespace, redundant braces, \\mathrm wrappers, or OCR list markers), or you cannot confirm a real error, return current_translation unchanged. Otherwise repair only the named missing/altered delimiter or math token and keep surrounding prose, citations, and identifiers unchanged. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]}; use normal JSON escaping.\n\n"
-          : `Review only the complete blocks listed below. Target language is ${settings.targetLanguage || "Simplified Chinese"}. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Independently decide the most accurate output from the source and current_translation; change a block only when you confirm a real problem, and return current_translation unchanged if you cannot confirm one. For retranslate, translate strictly within the visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n`
-      ) + JSON.stringify({ blocks_to_correct: retryPayload }, null, 2) : "";
+          : `Translate the missing blocks listed below into ${settings.targetLanguage || "Simplified Chinese"}. No nonempty translation has been received for these IDs. Return one nonempty translation for every listed ID. Translate strictly within each visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n`
+      ) + (retryFormatOnly ? "" : C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + "\n\n") + JSON.stringify({ blocks_to_correct: retryPayload }, null, 2) : "";
       const retryContext = retryDetails && Array.isArray(settings.retryContextGroup)
         ? settings.retryContextGroup.map(record => ({ id: record.id, page: record.page, type: record.type, text: record.text }))
         : null;
@@ -3059,7 +3158,7 @@
                 retryFormatOnly
                   ? "Surgical formula/JSON-format repair only. Do not explain reasoning, retranslate, or polish prose. Treat retry_details as a heuristic signal; if normalized math is equivalent (whitespace, redundant braces, \\mathrm wrappers, or OCR list markers), return current_translation unchanged. Otherwise fix only the named math delimiter/token and keep prose, citations, and identifiers unchanged. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]}.\n\n"
                   : `Review only these blocks (attempt ${attempt}/${maxAttempts}). Target language is ${settings.targetLanguage || "Simplified Chinese"}. retry_reasons and retry_details are heuristic signals, not factual conclusions; they can be false positives or false negatives. Change a block only when the source and current_translation show a real problem. Translate only the visible block, never complete, merge, or duplicate a neighbouring block. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n` +
-                JSON.stringify({ blocks_to_correct: retrySource }, null, 2)
+                C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + "\n\n" + JSON.stringify({ blocks_to_correct: retrySource }, null, 2)
               )
             }
           ];
@@ -3148,9 +3247,9 @@
           // During the document-wide first pass/recovery phase, preserve the
           // absence so the coordinator can classify it as genuinely missing.
           // Standalone group calls still receive the legacy safe fallback.
-          if (!settings.deferLayoutRetry) parsed.translations[record.id] = record.text;
+          if (!settings.deferLayoutRetry && record.type !== "table_cells") parsed.translations[record.id] = record.text;
         }
-        else parsed.translations[record.id] = repairEquationReferenceTranslation(
+        else if (record.type !== "table_cells") parsed.translations[record.id] = repairEquationReferenceTranslation(
           record.text,
           M.normalizeTranslatedInlineHTML(parsed.translations[record.id])
         );
@@ -3169,20 +3268,23 @@
         this.loadLayout(documentID),
         this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
       ]);
-      const records = await this.extractRecords(documentID, layout, assetMap);
+      const bodyRecords = await this.extractRecords(documentID, layout, assetMap);
+      const tablePlan = this.tableRequestPlan(layout, bodyRecords, settings, true);
+      const records = [...bodyRecords, ...tablePlan.records];
       if (!records.length) throw new Error("当前文档没有可翻译的正文。");
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const identity = U.hashString([
         "layout-web-machine-v3-image-footnote-fit",
         layout.rawText,
+        settings.translateTables === false ? "tables:off" : "tables:shared-v2",
         provider,
         sourceLanguage,
         settings.targetLanguage
       ].join("\u241f"));
       const current = await this.loadTranslations(documentID, settings.targetLanguage);
       if (!settings.force && current.meta?.identity === identity && current.meta?.complete) {
-        const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal);
-        emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true });
+        const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal, emit);
+        emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true, meta: current.meta });
         return { ...current, model, cached: true };
       }
       emit?.({
@@ -3223,6 +3325,7 @@
       });
       const normalizedTranslations = {};
       for (const record of records) {
+        if (tablePlan.ids.has(record.id)) continue;
         normalizedTranslations[record.id] = normalizeWebMachineRecord(
           record,
           translations[record.id] ?? record.text
@@ -3230,6 +3333,8 @@
       }
       Object.assign(translations, normalizedTranslations);
       const formulaReplacements = {};
+      const savedTables = await this.saveTableTranslations(documentID, settings, layout, tablePlan, translations, emit);
+      const bodyTranslations = LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations);
       const meta = {
         identity,
         sourceFingerprint,
@@ -3239,15 +3344,19 @@
         sourceLanguage,
         targetLanguage: settings.targetLanguage,
         translationMode: "web-machine",
-        totalBlocks: records.length,
-        translatedBlocks: Object.keys(translations).length,
-        completedAt: new Date().toISOString()
+        totalBlocks: bodyRecords.length,
+        translatedBlocks: Object.keys(bodyTranslations).length,
+        translatedTables: savedTables?.tables.length || 0,
+        completedAt: new Date().toISOString(),
+        ...(settings.force
+          ? { retranslationCount: Number(current.meta?.retranslationCount || 0) + 1 }
+          : (current.meta?.retranslationCount ? { retranslationCount: current.meta.retranslationCount } : {}))
       };
       if (settings.force && this.storage.temporaryDir) {
         const staging = this.storage.temporaryDir("layout-web-machine");
         const staged = { translations: PathUtils.join(staging, "translations.json"), formulaReplacements: PathUtils.join(staging, "formulas.json"), meta: PathUtils.join(staging, "meta.json") };
         try {
-          await this.storage.writeJSON(staged.translations, translations);
+          await this.storage.writeJSON(staged.translations, bodyTranslations);
           await this.storage.writeJSON(staged.formulaReplacements, formulaReplacements);
           await this.storage.writeJSON(staged.meta, meta);
           await this.storage.publishFilesAtomically([
@@ -3257,13 +3366,86 @@
           ]);
         } finally { await this.storage.remove(staging, true); }
       } else {
-        await this.storage.writeJSON(paths.translations, translations);
+        await this.storage.writeJSON(paths.translations, bodyTranslations);
         await this.storage.writeJSON(paths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(paths.meta, meta);
       }
-      const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint }, signal);
-      emit?.({ type: "layout-translation", translations, model, complete: true });
-      return { translations, formulaReplacements, model, meta, cached: false };
+      const model = await this.buildModel(documentID, bodyTranslations, formulaReplacements, { sourceFingerprint }, signal, emit);
+      emit?.({ type: "layout-translation", translations: bodyTranslations, model, complete: true, meta });
+      return { translations: bodyTranslations, formulaReplacements, model, meta, cached: false };
+    }
+
+    tableRequestPlan(layout, records, settings, machine = false, sourceTag = "") {
+      return LitMTrans.LayoutTables.requestPlan(layout, settings.translateTables !== false, machine, new Set(records.map(record => record.id)), sourceTag);
+    }
+
+    async saveTableTranslations(documentID, settings, layout, plan, translations, emit) {
+      const paths = this.paths(documentID, settings.targetLanguage);
+      if (!plan.tables.length) return;
+      const fingerprint = U.hashString(layout.rawText || "");
+      if (U.hashString(await this.storage.readText(this.storage.path(documentID, "layout.json"), "")) !== fingerprint) return;
+      const cache = LitMTrans.LayoutTables.cacheFromRecords(plan, translations, fingerprint, settings.targetLanguage);
+      const previous = await this.storage.readJSON(paths.tables, null);
+      if (previous?.sourceFingerprint === fingerprint && previous.targetLanguage === settings.targetLanguage) {
+        const completed = new Set(cache.tables.map(table => table.fingerprint));
+        cache.tables.push(...(previous.tables || []).filter(table => !completed.has(table.fingerprint)));
+      }
+      try { await this.storage.writeTextAtomically(paths.tables, JSON.stringify(cache)); return cache; }
+      catch (error) { emit?.({ type: "warning", message: `表格译文未能保存，正文译文不受影响：${error.message || error}` }); }
+    }
+
+    async tableTranslationInput(documentID, options = {}) {
+      const settings = { ...this.llm.getSettings(), ...options, translateTables: true };
+      const layout = await this.loadLayout(documentID);
+      const fingerprint = U.hashString(layout.rawText || "");
+      const machine = !options.manual && !this.llm.isWebEngineActive?.(settings) && U.isWebMachineProvider(settings.provider);
+      const plan = this.tableRequestPlan(layout, [], settings, machine, fingerprint);
+      const cache = await this.storage.readJSON(this.paths(documentID, settings.targetLanguage).tables, null);
+      const cached = cache?.targetLanguage === settings.targetLanguage
+        ? LitMTrans.LayoutTables.cachedRecords(plan, cache, fingerprint) : {};
+      const missing = plan.records.filter(record => !cached[record.id]);
+      const markdown = options.includeMarkdown === false ? "" : await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
+      return { settings, layout, fingerprint, plan, cached, missing, markdown };
+    }
+
+    async translateTablesOnly(documentID, options = {}, emit = null, signal = null) {
+      const input = await this.tableTranslationInput(documentID, options);
+      const { settings, layout, fingerprint, plan, cached, missing, markdown } = input;
+      if (options.expectedFingerprint && options.expectedFingerprint !== fingerprint) throw new Error("解析结果已变化，请重新生成表格翻译命令");
+      if (!missing.length) return { translatedTables: 0, cached: true };
+      if (!markdown.trim()) throw new Error("缺少文献全文，无法为表格翻译提供上下文");
+      let received;
+      if (options.responses) {
+        received = this.normalizeManualTranslations(plan.records, options.responses);
+        if (!Object.keys(received).length) throw new Error("未找到有效的表格译文，请检查回答内容");
+      } else if (plan.machine) {
+        received = await this.webMachine.translateRecords(missing, {
+          provider: settings.provider, targetLanguage: settings.targetLanguage,
+          sourceLanguage: settings.machineSourceLanguage || settings.sourceLanguage, signal,
+          log: message => emit?.({ type: "log", message })
+        });
+      } else {
+        if (this.llm.isWebEngineActive?.(settings)) {
+          Object.assign(settings, { provider: "deepseek_web", model: "deepseek-web", engine: "deepseek_web", aiMode: "web" });
+        } else {
+          const config = await this.llm.ensureConfiguredModel(this.llm.resolveConfig({ ...settings, purpose: "translation", engine: "api", aiMode: "api" }), signal);
+          Object.assign(settings, config, { engine: "api", aiMode: "api" });
+        }
+        const result = await this.translateGroup(missing, "", "", documentID, fingerprint, {
+          ...settings, hasTableTargets: true, fullMarkdownContext: markdown, deferLayoutRetry: true
+        }, 0, 1, emit, signal);
+        received = result.translations;
+      }
+      U.throwIfAborted(signal);
+      if (U.hashString(await this.storage.readText(this.storage.path(documentID, "layout.json"), "")) !== fingerprint) {
+        throw new Error("解析结果已变化，未应用本次表格译文");
+      }
+      const cache = await this.saveTableTranslations(documentID, settings, layout, plan, { ...cached, ...received }, emit);
+      if (!cache) throw new Error("表格译文未能保存，请重试");
+      const completed = LitMTrans.LayoutTables.cachedRecords(plan, cache, fingerprint);
+      const remaining = plan.records.filter(record => !completed[record.id]).length;
+      if (remaining) emit?.({ type: "warning", message: "部分表格未获得有效译文，已保留原图，可再次勾选补翻。" });
+      return { translatedTables: cache.tables.length, remaining, cached: false };
     }
 
     async translate(documentID, options = {}, emit = null, signal = null) {
@@ -3275,9 +3457,7 @@
       if (!isWeb && LitMTrans.WebMachineTranslation?.isWebMachineProvider(settings.provider)) {
         return this.translateWebMachine(documentID, settings, emit, signal);
       }
-      // Layout titles and body blocks that are clearly returned unchanged need
-      // one of the bounded recovery attempts. This remains a heuristic signal
-      // for the model, never a conclusive instruction to rewrite content.
+      // 保留旧设置参与缓存标识，避免策略调整使已有缓存失效；不再据此重译。
       settings.enableUntranslatedCheck = settings.enableUntranslatedCheck !== false;
       let resolvedModel;
       if (isWeb) {
@@ -3368,13 +3548,16 @@
         this.loadLayout(documentID),
         this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {})
       ]);
-      const records = await this.extractRecords(documentID, layout, assetMap);
+      const bodyRecords = await this.extractRecords(documentID, layout, assetMap);
+      const tablePlan = this.tableRequestPlan(layout, bodyRecords, settings, false);
+      const records = [...bodyRecords, ...tablePlan.records];
       if (!records.length) throw new Error("当前文档没有可翻译的正文。");
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const identity = U.hashString([
         // Change this token when translation inputs or validation rules change.
           "layout-translation-v9-image-footnote-fit",
         layout.rawText,
+        settings.translateTables === false ? "tables:off" : "tables:shared-v2",
         settings.provider,
         settings.baseURL,
         settings.model,
@@ -3392,16 +3575,20 @@
         settings.targetLanguage,
         identity
       );
+      settings.hasTableTargets = tablePlan.records.length > 0;
       const current = await this.loadTranslations(documentID, settings.targetLanguage);
+      const tableCache = await this.storage.readJSON(paths.tables, null);
+      const cachedTranslations = { ...current.translations,
+        ...LitMTrans.LayoutTables.cachedRecords(tablePlan, tableCache, sourceFingerprint) };
       if (!options.force && current.meta?.identity === identity && current.meta?.complete) {
         const cacheRetryRecords = recordsNeedingRetry(
           records,
-          current.translations,
+          cachedTranslations,
           settings.targetLanguage,
           settings.enableUntranslatedCheck
         );
         if (!cacheRetryRecords.length) {
-          const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal);
+          const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal, emit);
           emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true });
           return {
             translations: current.translations,
@@ -3448,7 +3635,7 @@
       }
       let translations = options.force
         ? {}
-        : (current.meta?.identity === identity ? { ...current.translations } : {});
+        : (current.meta?.identity === identity ? { ...cachedTranslations } : {});
       // Independent equations are never revised during text translation.
       // Inline TeX remains inside its complete text block instead.
       let formulaReplacements = {};
@@ -3459,7 +3646,7 @@
       const groups = fastMode
         ? this.fastGroupRecords(remaining, fullMarkdownContext)
         : this.groupRecords(remaining, layoutMaxChars, layoutMaxBlocks);
-      // Retry once at document scope after all first-pass groups have returned.
+      // 初译结束后集中补译；补译仍漏块时，仅对缺失块再尝试一次。
       settings.deferLayoutRetry = true;
       const allGroups = fastMode
         ? this.fastGroupRecords(records, fullMarkdownContext)
@@ -3510,7 +3697,7 @@
             formulaReplacements = { ...formulaReplacements, ...result.formulaReplacements };
           }
           completedGroupCount = completedResults.size;
-          await this.storage.writeJSON(activePaths.translations, translations);
+          await this.storage.writeJSON(activePaths.translations, LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations));
           await this.storage.writeJSON(activePaths.formulaReplacements, formulaReplacements);
           await this.storage.writeJSON(activePaths.meta, {
             identity,
@@ -3678,16 +3865,14 @@
         );
       }
 
-      const maxDocumentRetryPasses = 1;
-      const formatRetryAttempted = new Set();
-      const effectiveDocumentRetryPasses = fastMode ? 1 : maxDocumentRetryPasses;
-      for (let pass = 1; pass <= effectiveDocumentRetryPasses; pass++) {
+      const maxDocumentRetryPasses = 2;
+      for (let pass = 1; pass <= maxDocumentRetryPasses; pass++) {
         const documentRetryClassified = classifyRetryRecords(
           records,
           translations,
           settings.targetLanguage,
           settings.enableUntranslatedCheck
-        ).filter(item => fastMode || !isFormatOnlyRetryReasons(item.reasons) || !formatRetryAttempted.has(item.record.id));
+        );
         if (!documentRetryClassified.length) break;
 
         const documentRetryRecords = documentRetryClassified.map(item => item.record);
@@ -3696,22 +3881,15 @@
           details: item.details || retryDetailsForRecord(item.record, translations, item.reasons || []),
           currentTranslation: translations[item.record.id] || ""
         }]));
-        const formatOnly = record => {
-          const reasons = retryDetails.get(record.id)?.reasons || [];
-          return isFormatOnlyRetryReasons(reasons);
-        };
         // One document-level repair request avoids splitting a few fallible
         // checks into several model calls. Each entry includes its source and
         // current translation, so a wider original-group context is not needed.
         const retryJobs = [{ records: documentRetryRecords, context: null }];
-        if (!fastMode) for (const record of documentRetryRecords) {
-          if (formatOnly(record)) formatRetryAttempted.add(record.id);
-        }
         emit?.({
           type: "warning",
-          message: fastMode
-            ? `正在进行最后一轮定向校对，包含${documentRetryRecords.length}处待修正内容。`
-            : `正在进行第${pass}/${effectiveDocumentRetryPasses}轮自动校对，包含${documentRetryRecords.length}处待修正内容。`
+          message: pass > 1
+            ? `仍有${documentRetryRecords.length}个文本块缺少译文，正在最后补译一次。`
+            : `正在进行自动校对，包含${documentRetryRecords.length}处待修正内容。`
         });
         const retryBaseTranslations = { ...translations };
         const retryBaseFormulaReplacements = { ...formulaReplacements };
@@ -3729,7 +3907,7 @@
               translations = { ...translations, ...translated.translations };
               formulaReplacements = { ...formulaReplacements, ...translated.formulaReplacements };
             }
-            await this.storage.writeJSON(activePaths.translations, translations);
+            await this.storage.writeJSON(activePaths.translations, LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations));
             await this.storage.writeJSON(activePaths.formulaReplacements, formulaReplacements);
             await this.storage.writeJSON(activePaths.meta, {
               identity,
@@ -3823,9 +4001,11 @@
       if (fastMode) {
         emit?.({ type: "log", message: `DeepSeek 快速排版翻译完成，共处理 ${groups.length} 部分。` });
       }
-      for (const record of records) {
+      for (const record of bodyRecords) {
         if (!translations[record.id]) translations[record.id] = sanitizeModelText(record.text);
       }
+      const savedTables = await this.saveTableTranslations(documentID, settings, layout, tablePlan, translations, emit);
+      const bodyTranslations = LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations);
       const meta = {
         identity,
         sourceFingerprint,
@@ -3844,12 +4024,16 @@
             ...item
           }))
           : [],
-        totalBlocks: records.length,
-        translatedBlocks: Object.keys(translations).length,
-        completedAt: new Date().toISOString()
+        totalBlocks: bodyRecords.length,
+        translatedBlocks: Object.keys(bodyTranslations).length,
+        translatedTables: savedTables?.tables.length || 0,
+        completedAt: new Date().toISOString(),
+        ...(options.force
+          ? { retranslationCount: Number(current.meta?.retranslationCount || 0) + 1 }
+          : (current.meta?.retranslationCount ? { retranslationCount: current.meta.retranslationCount } : {}))
       };
       if (options.force) {
-        await this.storage.writeJSON(activePaths.translations, translations);
+        await this.storage.writeJSON(activePaths.translations, bodyTranslations);
         await this.storage.writeJSON(activePaths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(activePaths.meta, meta);
         try {
@@ -3867,13 +4051,13 @@
         }
       }
       else {
-        await this.storage.writeJSON(paths.translations, translations);
+        await this.storage.writeJSON(paths.translations, bodyTranslations);
         await this.storage.writeJSON(paths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(paths.meta, meta);
       }
-      const model = await this.buildModel(documentID, translations, formulaReplacements, { sourceFingerprint }, signal);
-      emit?.({ type: "layout-translation", translations, model, complete: true });
-      return { translations, formulaReplacements, model, meta, cached: false };
+      const model = await this.buildModel(documentID, bodyTranslations, formulaReplacements, { sourceFingerprint }, signal, emit);
+      emit?.({ type: "layout-translation", translations: bodyTranslations, model, complete: true, meta });
+      return { translations: bodyTranslations, formulaReplacements, model, meta, cached: false };
     }
   }
 
@@ -3891,6 +4075,7 @@
     symbolGlossaryParagraphs,
     layoutLogicalLines,
     layoutVisualLineCount,
+    isKeywordListText,
     parseTocRows,
     parseTocTextRows,
     codeTextFromBlock,

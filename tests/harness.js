@@ -207,8 +207,8 @@ function createTestContext() {
     btoa: value => Buffer.from(String(value), "binary").toString("base64"),
     PathUtils: {
       join: (...parts) => path.posix.join(...parts.map(part => String(part).replace(/\\/g, "/"))),
-      parent: value => path.posix.dirname(String(value)),
-      filename: value => path.posix.basename(String(value))
+      parent: value => path.posix.dirname(String(value).replace(/\\/g, "/")),
+      filename: value => path.posix.basename(String(value).replace(/\\/g, "/"))
     },
     Zotero: {
       locale: "zh-CN",
@@ -271,13 +271,15 @@ function createTestContext() {
     "src/mindmap-v2.js",
     "src/flowchart.js",
     "src/mineru.js",
+    "src/parser-model.js", "src/paddle-adapter.js", "src/paddle.js", "src/paddle-lines.js", "src/parser.js",
     "src/llm.js",
     "src/edge-local-translation.js",
     "src/web-machine-translation.js",
     "src/translation.js",
-    "src/layout.js",
+    "src/layout-tables.js", "src/layout.js",
     "src/chat.js",
     "src/pipeline.js",
+    "src/updater.js",
     "src/controller.js",
     "src/agent/contracts.js",
     "src/agent/capability-policy.js",

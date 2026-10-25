@@ -9,15 +9,24 @@
       title: "欢迎使用LitMTrans",
       paragraphs: Object.freeze([
         "LitMTrans是一个免费的开源项目；日常使用网页模式时，翻译和问答也免费。(取决于DeepSeek官方)",
-        "LitMTrans使用MinerU进行文献结构化解析，因此首次使用前需要自行配置MinerU令牌。目前该服务由MinerU官方免费提供，官方目前声称每天有1000页快速解析额度，超出后进入排队。",
+        "LitMTrans支持使用MinerU或PaddleOCR解析文献。首次使用前，请在设置中选择解析服务，并配置对应的访问令牌。",
         "程序内置DeepSeek网页模式，扫码登录后即可使用官方免费问答。若需要使用其他AI服务，可以切换到API模式；API模式需要自行配置API密钥，费用由用户自行承担，LitMTrans本身不收取任何费用。"
       ]),
       calloutTitle: "开始使用",
-      calloutText: "新用户只需先配置免费的MinerU令牌；默认网页模式无需配置API。"
+      calloutText: "先选择文献解析服务并配置访问令牌；默认网页模式无需配置AI服务的API密钥。"
     })
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.4": Object.freeze({
+      title: "LitMTrans 2.1.4",
+      entries: Object.freeze([
+        "新增PaddleOCR文献解析，可作为Mineru的备选项；",
+        "新增表格翻译功能，默认自动翻译表格；",
+        "优化排版的行间距与非译文图像元素的美观性；",
+        "一些BUG修复和兼容性处理。"
+      ])
+    }),
     "2.1.3": Object.freeze({
       title: "LitMTrans 2.1.3",
       entries: Object.freeze([

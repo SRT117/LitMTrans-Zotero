@@ -99,8 +99,9 @@ async function testEdgeLocalTranslationMigration() {
   "Zotero preferences must mirror the collapsed advanced-settings disclosure");
   assert(!workbenchLanguageMarkup.includes("必须设置")
     && !preferenceLanguageMarkup.includes("必须设置")
-    && workbenchLanguageMarkup.includes("请配置访问令牌，用于解析文献内容，是必要的设置内容"),
-  "settings surfaces must use the gentler MinerU token guidance without a required badge");
+    && workbenchLanguageMarkup.includes('id="setting-parse-provider"')
+    && preferenceLanguageMarkup.includes('id="litmtrans-pref-parse-provider"'),
+  "settings surfaces must expose the parser choice without a required badge");
   assert(workbenchLanguageMarkup.indexOf('id="setting-api-key"') < workbenchLanguageMarkup.indexOf('id="setting-base-url"')
     && preferenceLanguageMarkup.indexOf('id="litmtrans-pref-api-key"') < preferenceLanguageMarkup.indexOf('id="litmtrans-pref-base-url"'),
   "translation API keys must appear before API addresses in both settings surfaces");
@@ -408,9 +409,10 @@ async function testWebMachineTranslationKeepsConfiguredProvider() {
     stream.translateWebMachine = async (_documentID, _markdown, settings) => settings.provider;
     assert.equal(await stream.translate("doc", "Source text", options), provider);
 
-    const layout = new LayoutTranslationService(null, llm);
-    layout.translateWebMachine = async (_documentID, settings) => settings.provider;
-    assert.equal(await layout.translate("doc", options), provider);
+    const layout = new LayoutTranslationService(new MemoryStorage(), llm);
+    layout.translateWebMachine = async (_documentID, settings) => ({ provider: settings.provider });
+    layout.buildModel = async () => null;
+    assert.equal((await layout.translate("doc", options)).provider, provider);
   }
 }
 

@@ -339,6 +339,12 @@
       const started = Date.now();
       const timeoutMs = Number(options.timeoutSeconds || 1800) * 1000;
       let transientErrors = 0;
+      let pendingSince = null;
+      const pendingHint = () => {
+        pendingSince ??= Date.now();
+        return Date.now() - pendingSince >= 120000
+          ? "；等待时间较长，可在设置中将解析服务切换为 Paddle 后重试" : "";
+      };
       while (Date.now() - started < timeoutMs) {
         U.throwIfAborted(signal);
         try {
@@ -352,7 +358,7 @@
           let items = result?.data?.extract_result || result?.data?.extract_results || result?.data?.files || [];
           if (!Array.isArray(items)) items = items ? [items] : [];
           if (!items.length) {
-            emit?.({ type: "progress", phase: "mineru-poll", progress: 48, message: "等待MinerU返回解析结果" });
+            emit?.({ type: "progress", phase: "mineru-poll", progress: 48, message: `等待MinerU返回解析结果${pendingHint()}` });
             await U.sleep(Number(options.pollIntervalSeconds || 5) * 1000, signal);
             continue;
           }
@@ -360,6 +366,8 @@
           const state = String(item.state || item.status || "").toLowerCase();
           const zipURL = item.full_zip_url || item.zip_url || item.result_url;
           const progress = item.extract_progress;
+          const hint = state === "pending" ? pendingHint() : "";
+          if (state !== "pending") pendingSince = null;
           if (zipURL && (!state || ["done", "finished", "success"].includes(state))) return item;
           if (["failed", "fail", "error"].includes(state)) {
             const fatal = new Error(`文献解析失败：${item.err_msg || item.msg || "服务返回失败状态"}`);
@@ -373,11 +381,11 @@
               type: "progress",
               phase: "mineru-poll",
               progress: Math.min(88, 28 + Math.round(current * 60 / total)),
-              message: `MinerU解析中：${current}/${total} 页`
+              message: `MinerU解析中：${current}/${total} 页${hint}`
             });
           }
           else {
-            emit?.({ type: "progress", phase: "mineru-poll", progress: 58, message: `MinerU解析状态：${state || "处理中"}` });
+            emit?.({ type: "progress", phase: "mineru-poll", progress: 58, message: `MinerU解析状态：${state || "处理中"}${hint}` });
           }
         }
         catch (error) {
@@ -683,8 +691,17 @@
       if (U.extension(filePath) !== ".pdf") {
         return [{ filePath, start: 0, end: 0, pageCount: 0, temporary: false }];
       }
+      const uploadOriginalWithoutPageCount = () => {
+        emit?.({
+          type: "progress",
+          phase: "mineru-page-count-fallback",
+          progress: 4,
+          message: "无法读取PDF页数，继续尝试直接上传原文件"
+        });
+        return [{ filePath, start: 0, end: 0, pageCount: 0, temporary: false }];
+      };
       if (!global.PDFLib?.PDFDocument) {
-        throw new Error("PDF处理组件未就绪，请重启LitMTrans后重试");
+        return uploadOriginalWithoutPageCount();
       }
       const readBytes = await this.storage.readBytes(filePath);
       // Tests and privileged host compartments can hand us a typed array from
@@ -703,8 +720,8 @@
           updateMetadata: false
         });
       }
-      catch (error) {
-        throw new Error(`无法读取PDF页数；文件可能已损坏或需要打开密码：${error.message}`);
+      catch {
+        return uploadOriginalWithoutPageCount();
       }
       const pageCount = sourcePDF.getPageCount();
       if (pageCount <= MINERU_UPLOAD_PAGE_LIMIT) {
@@ -1086,6 +1103,11 @@
           "layout.json", "model.json", "content-list.json", "asset-map.json",
           "image-map.json", "mineru-task.json", "document.json", "layout-revision.json"
         ];
+        const sourceChanged = Boolean(existing) && (existing.sourceIdentity !== sourceIdentity || oldClean !== merged.markdown);
+        const layoutChanged = Boolean(existing) && oldLayout !== newLayout;
+        // 译文失效与新解析结果一起发布；旧数据由解析历史保留，不走用户清理入口。
+        if (sourceChanged) parseEntries.push("translation");
+        if (layoutChanged) parseEntries.push("layout-translation");
         const rollbackDir = PathUtils.join(dir, `.parse-rollback-${U.randomID("run").replace(/[^A-Za-z0-9_-]/g, "")}`);
         await this.storage.publishEntriesAtomically(
           parseEntries.map(name => ({
@@ -1094,11 +1116,6 @@
           })),
           rollbackDir
         );
-
-        const sourceChanged = Boolean(existing) && (existing.sourceIdentity !== sourceIdentity || oldClean !== merged.markdown);
-        const layoutChanged = Boolean(existing) && oldLayout !== newLayout;
-        if (sourceChanged) await this.storage.clearTranslation(documentID, "stream");
-        if (layoutChanged) await this.storage.clearTranslation(documentID, "layout");
 
         reportProgress({ type: "progress", phase: "done", progress: 100, message: "解析完成" });
         return this.loadParsed(documentID);

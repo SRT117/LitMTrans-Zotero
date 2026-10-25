@@ -239,6 +239,9 @@ var LitMTransControllerPreferences = {
       this.referencePaths = Array.isArray(settings.translationReferencePaths) ? [...settings.translationReferencePaths] : [];
       this.renderReferencePaths();
       this.$("mineru-token").value = settings.mineruToken || "";
+      this.$("paddle-token").value = settings.paddleToken || "";
+      this.$("parse-provider").value = settings.parseProvider || "mineru";
+      this.updateParserFields();
       this.$("mineru-model").value = "vlm";
       if (this.$("caj-double-click-action")) this.$("caj-double-click-action").value = settings.cajDoubleClickAction || "ask";
       this.$("show-native-reader-ask-ai").checked = settings.showNativeReaderAskAI !== false;
@@ -369,6 +372,12 @@ var LitMTransControllerPreferences = {
     button.textContent = hasInstruction ? "编辑翻译要求" : "添加自定义翻译指令";
   },
 
+  updateParserFields() {
+    const paddle = this.$("parse-provider").value === "paddle";
+    this.$("mineru-fields").hidden = paddle;
+    this.$("paddle-fields").hidden = !paddle;
+  },
+
   payload() {
     const translationProvider = this.$("provider").value;
     const chatProvider = this.$("chat-provider").value;
@@ -389,6 +398,7 @@ var LitMTransControllerPreferences = {
       chatProvider, chatBaseURL: this.$("chat-base-url").value.trim(), chatModel: this.$("chat-model").value.trim(),
       chatThinkingMode: this.$("chat-thinking-mode").value, chatReasoningEffort: this.$("chat-reasoning-effort").value,
       chatProviderProfiles: { ...(this.settings?.chatProviderProfiles || {}), [chatProvider]: { baseURL: this.$("chat-base-url").value.trim(), model: this.$("chat-model").value.trim(), thinkingMode: this.$("chat-thinking-mode").value, reasoningEffort: this.$("chat-reasoning-effort").value } },
+      parseProvider: this.$("parse-provider").value,
       mineruModel: "vlm", targetLanguage: this.$("target-language").value.trim(), machineSourceLanguage: this.$("machine-source-language").value.trim(), translationMode: this.$("translation-mode").value,
       translationReferencePaths: [...this.referencePaths], customTranslationInstruction: this.$("custom-translation-instruction").value.trim(),
       cajDoubleClickAction: this.$("caj-double-click-action") ? this.$("caj-double-click-action").value : "ask",
@@ -710,6 +720,8 @@ var LitMTransControllerPreferences = {
       this.scheduleAutoSave(50);
     });
     for (const [id, provider] of [["api-key", "provider"], ["chat-api-key", "chat-provider"]]) this.$(id).addEventListener("change", () => this.controller().saveProviderAPIKey(this.$(provider).value, this.$(id).value.trim()));
+    this.$("parse-provider").addEventListener("change", () => { this.updateParserFields(); this.scheduleAutoSave(50); });
+    this.$("paddle-token").addEventListener("change", () => this.controller().savePaddleToken(this.$("paddle-token").value.trim()));
     this.$("mineru-token").addEventListener("change", () => this.controller().saveMinerUToken(this.$("mineru-token").value.trim()));
     this.$("restore-key-points-prompt").addEventListener("click", () => {
       this.$("key-points-prompt").value = this.settings?.keyPointsDefaultPrompt || "";

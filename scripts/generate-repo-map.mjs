@@ -54,7 +54,7 @@ function extractSymbols(content) {
       }
       const methodMatch = trimmed.match(/^(?:static\s+)?(?:async\s+)?\*?([A-Za-z0-9_$]+)\s*\(([^)]*)\)(?::\s*[^;{]+)?\s*\{/);
       if (methodMatch && !['if', 'for', 'while', 'switch', 'catch'].includes(methodMatch[1])) {
-        classes.get(currentClass).methods.push(methodMatch[1]);
+        classes.get(currentClass).methods.push(`${methodMatch[1]}:${i + 1}`);
         continue;
       }
     }
@@ -62,14 +62,14 @@ function extractSymbols(content) {
     // Top-level / inner named functions (JS & TS)
     const funcMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(/);
     if (funcMatch) {
-      topFunctions.push(funcMatch[1]);
+      topFunctions.push(`${funcMatch[1]}:${i + 1}`);
       continue;
     }
 
     // Variable assigned functions
     const varFuncMatch = trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?(?:function|\([^)]*\)\s*=>|[a-zA-Z0-9_$]+\s*=>)/);
     if (varFuncMatch) {
-      topFunctions.push(varFuncMatch[1]);
+      topFunctions.push(`${varFuncMatch[1]}:${i + 1}`);
       continue;
     }
 
@@ -77,9 +77,9 @@ function extractSymbols(content) {
     const propFuncMatch = line.match(/^\s{2,4}(?:async\s+)?([A-Za-z0-9_$]+)\s*\([^)]*\)(?::\s*[^;{]+)?\s*\{\s*$/);
     if (propFuncMatch && !['if', 'for', 'while', 'switch', 'catch'].includes(propFuncMatch[1])) {
       if (currentClass) {
-        classes.get(currentClass).methods.push(propFuncMatch[1]);
+        classes.get(currentClass).methods.push(`${propFuncMatch[1]}:${i + 1}`);
       } else {
-        topFunctions.push(propFuncMatch[1]);
+        topFunctions.push(`${propFuncMatch[1]}:${i + 1}`);
       }
     }
   }

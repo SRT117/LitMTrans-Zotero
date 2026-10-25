@@ -25,7 +25,9 @@ function parseArgs(argv) {
     fixture: DEFAULT_FIXTURE,
     translationCache: "",
     pluginModel: "",
+    workbenchScript: "",
     pluginOnly: false,
+    bodyFontPt: 0,
     publishAfterInit: false,
     publishWhileHidden: false,
     pythonRoot: DEFAULT_PYTHON_ROOT,
@@ -42,7 +44,9 @@ function parseArgs(argv) {
     if (value === "--fixture") options.fixture = argv[++index];
     else if (value === "--translation-cache") options.translationCache = argv[++index];
     else if (value === "--plugin-model") options.pluginModel = argv[++index];
+    else if (value === "--workbench-script") options.workbenchScript = argv[++index];
     else if (value === "--plugin-only") options.pluginOnly = true;
+    else if (value === "--body-font-pt") options.bodyFontPt = Number(argv[++index]);
     else if (value === "--publish-after-init") options.publishAfterInit = true;
     else if (value === "--publish-while-hidden") {
       options.publishAfterInit = true;
@@ -57,14 +61,20 @@ function parseArgs(argv) {
     else if (value === "--profile-legacy-final-audit") options.profileLegacyFinalAudit = true;
     else if (value === "--no-pdf") options.noPDF = true;
     else if (value === "--help" || value === "-h") {
-      console.log("node scripts/layout-parity-test.mjs [--fixture DIR] [--translation-cache JSON] [--plugin-model JSON] [--plugin-only] [--publish-after-init|--publish-while-hidden] [--python-root DIR] [--output DIR] [--artifact-output DIR] [--keep-browser] [--skip-python-render] [--profile] [--profile-legacy-final-audit] [--no-pdf]");
+      console.log("node scripts/layout-parity-test.mjs [--fixture DIR] [--translation-cache JSON] [--plugin-model JSON] [--workbench-script FILE] [--plugin-only] [--body-font-pt PT] [--publish-after-init|--publish-while-hidden] [--python-root DIR] [--output DIR] [--artifact-output DIR] [--keep-browser] [--skip-python-render] [--profile] [--profile-legacy-final-audit] [--no-pdf]");
       process.exit(0);
     }
     else throw new Error(`Unknown argument: ${value}`);
   }
   options.fixture = path.resolve(options.fixture);
+  assert.ok(Number.isFinite(options.bodyFontPt) && options.bodyFontPt >= 0, 'Body font must be a nonnegative point size');
   if (options.translationCache) options.translationCache = path.resolve(options.translationCache);
   if (options.pluginModel) options.pluginModel = path.resolve(options.pluginModel);
+  if (options.workbenchScript) {
+    options.workbenchScript = path.relative(root, path.resolve(options.workbenchScript)).replaceAll('\\', '/');
+    assert.ok(!options.workbenchScript.startsWith('../') && !path.isAbsolute(options.workbenchScript), 'Workbench script must be inside the repository');
+    assert.ok(!options.profile, 'Choose a supplied workbench script or profiling, not both');
+  }
   options.pythonRoot = path.resolve(options.pythonRoot);
   options.output = path.resolve(options.output);
   options.artifactOutput = path.resolve(options.artifactOutput);
@@ -245,7 +255,7 @@ function pluginHostScript(model, translations, options) {
       layoutReadingMode: !options.publishWhileHidden,
       layoutDevelopmentMode: true,
       readerFontPt: 12,
-      layoutReaderFonts: {},
+      layoutReaderFonts: options.bodyFontPt > 0 ? { 'layout-parity-fixture': options.bodyFontPt } : {},
       syncScroll: true,
       streamSyncScroll: true,
       targetLanguage: "简体中文",
@@ -299,7 +309,8 @@ function pluginHostScript(model, translations, options) {
   window.__LAYOUT_PARITY_STATE__ = ${safeInlineJSON(state)};
   window.__LitMTrans_HOST_CALL__ = function(method, rawPayload, requestID) {
     let payload = null;
-    if (method === 'initialize' || method === 'refresh') payload = window.__LAYOUT_PARITY_STATE__;
+    if (method === 'bridge-handshake') payload = { ready: true };
+    else if (method === 'initialize' || method === 'refresh') payload = window.__LAYOUT_PARITY_STATE__;
     else if (method === 'viewport') payload = { width: innerWidth, height: innerHeight };
     else if (method === 'initialize-pdf-preview') payload = { available: false };
     else if (method === 'operation-state') payload = { operations: [] };
@@ -465,6 +476,7 @@ function writeProfiledPluginEngine(outputPath, options) {
 function writePluginHTML(outputPath, model, translations, options) {
   let html = fs.readFileSync(path.join(root, "src", "workbench.xhtml"), "utf8");
   html = html.replaceAll("chrome://litmtrans/content/", "/repo/");
+  if (options.workbenchScript) html = html.replace('src="/repo/src/workbench.js"', `src="/repo/${options.workbenchScript}"`);
   if (options.profile) html = html.replace('src="/repo/src/workbench.js"', 'src="/plugin-workbench.profile.js"');
   html = html.replace("</head>", `${pluginHostScript(model, translations, options)}\n</head>`);
   fs.writeFileSync(outputPath, html, "utf8");
@@ -715,7 +727,7 @@ async function captureEngine({ session, engine, url, navigation = "open", readyE
     ? `window.__layoutPerfCounters = {}; window.__mineruForcedPageMetrics = new Map([...document.querySelectorAll('.layout-page-wrap')].map((wrap, index) => [index, { renderedHeight: Number(wrap.dataset.pageHeight || 792) }])); window.__mineruRunLayoutFill?.();`
     : `localStorage.clear(); for (const wrap of document.querySelectorAll('.layout-page-wrap')) { const sourceWidth = Number(wrap.dataset.sourceWidth || 612); wrap.style.width = sourceWidth + 'px'; const layoutPage = wrap.querySelector('.layout-page'); for (const node of layoutPage?.querySelectorAll('.layout-flow-stream, .layout-block') || []) node.classList.add('layout-parity-source-scale'); layoutPage?._litmtransRefreshLayoutScale?.(false); layoutPage?.removeAttribute('data-layout-fit-key'); } return window.__mineruRunLayoutFill?.();`;
   const partialProbeCode = engine === "plugin"
-    ? `const partialProbe = await page.evaluate(async () => { const selector = '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]'; const fonts = () => [...new Set([...document.querySelectorAll(selector)].map(node => Number.parseFloat(getComputedStyle(node).fontSize || '0').toFixed(2)))]; const target = [...document.querySelectorAll('#translation-layout .layout-page')].find(page => page.querySelector(selector)); const node = target?.querySelector(selector); const before = fonts(); if (!target || !node) return { before, after: before, uniform: before.length <= 1, pageCount: document.querySelectorAll('#translation-layout .layout-page').length }; node.classList.add('layout-partial-refit-probe'); target.removeAttribute('data-layout-fit-key'); await window.__mineruRunLayoutFill?.(); const after = fonts(); node.classList.remove('layout-partial-refit-probe'); target.removeAttribute('data-layout-fit-key'); await window.__mineruRunLayoutFill?.(); return { before, after, uniform: after.length <= 1, pageCount: document.querySelectorAll('#translation-layout .layout-page').length }; });`
+    ? `const partialProbe = await page.evaluate(async () => { const selector = '.layout-flow-stream[data-style-kind="body_text"][data-flow-kind="text"]:not([data-body-inherited="1"])'; const fonts = () => [...new Set([...document.querySelectorAll(selector)].map(node => Number.parseFloat(getComputedStyle(node).fontSize || '0').toFixed(2)))]; const target = [...document.querySelectorAll('#translation-layout .layout-page')].find(page => page.querySelector(selector)); const node = target?.querySelector(selector); const styles = () => [...document.querySelectorAll('#translation-layout .layout-flow-stream')].map(node => [node.style.fontSize, node.style.lineHeight, node.style.getPropertyPriority('line-height'), node.dataset.bodyLeadingBeforeRelease || '']); const initialStyles = JSON.stringify(styles()); const before = fonts(); if (!target || !node) return { before, after: before, uniform: before.length <= 1, pageCount: document.querySelectorAll('#translation-layout .layout-page').length }; node.classList.add('layout-partial-refit-probe'); target.removeAttribute('data-layout-fit-key'); await window.__mineruRunLayoutFill?.(); const after = fonts(); const fullRefitIdentical = initialStyles === JSON.stringify(styles()); node.classList.remove('layout-partial-refit-probe'); target.removeAttribute('data-layout-fit-key'); await window.__mineruRunLayoutFill?.(); const beforeRestore = JSON.stringify(styles()); target.removeAttribute('data-layout-fit-key'); await window.__mineruRunLayoutFill?.(); return { before, after, fullRefitIdentical, snapshotRestoreIdentical: beforeRestore === JSON.stringify(styles()), releasedBlocks: document.querySelectorAll('#translation-layout [data-body-leading-before-release]').length, uniform: after.length <= 1, pageCount: document.querySelectorAll('#translation-layout .layout-page').length }; });`
     : `const partialProbe = null;`;
   const warmProbeCode = engine === "python"
     ? `const coldStyles = await page.evaluate(() => [...document.querySelectorAll('.layout-flow-stream, .layout-block')].map(node => ({ f: node.style.fontSize || '', l: node.style.lineHeight || '', o: node.dataset.originalLines || '' }))); await page.reload({ waitUntil: 'load' }); await page.waitForFunction(() => ${readyExpression}, null, { timeout: 120000 }); const warmProbe = await page.evaluate(cold => { const warm = [...document.querySelectorAll('.layout-flow-stream, .layout-block')].map(node => ({ f: node.style.fontSize || '', l: node.style.lineHeight || '', o: node.dataset.originalLines || '' })); return { cached: document.body.dataset.layoutFitCached === '1', ready: document.body.dataset.layoutFitState === 'ready', count: warm.length, identical: JSON.stringify(cold) === JSON.stringify(warm) }; }, coldStyles);`
@@ -729,6 +741,8 @@ async function captureEngine({ session, engine, url, navigation = "open", readyE
     trace.partialRefitProbe = extractMarkedJSON(output, '"layoutPartialRefitProbe":');
     assert.equal(trace.partialRefitProbe.uniform, true,
       `Partial page invalidation produced mixed body fonts: ${JSON.stringify(trace.partialRefitProbe)}`);
+    assert.notEqual(trace.partialRefitProbe.fullRefitIdentical, false, 'Full refitting changed the previously solved typography');
+    assert.notEqual(trace.partialRefitProbe.snapshotRestoreIdentical, false, 'Snapshot restoration changed body leading or its CSS priority');
   }
   if (engine === "python") {
     trace.cacheWarmProbe = extractMarkedJSON(output, '"layoutCacheWarmProbe":');

@@ -743,11 +743,11 @@ flowchart LR
   const NON_MULTIMODAL_MARK_TTL_MS = 2 * 24 * 60 * 60 * 1000;
 
   class ChatService {
-    constructor(storage, llm, translation, mineru = null) {
+    constructor(storage, llm, translation, parser = null) {
       this.storage = storage;
       this.llm = llm;
       this.translation = translation;
-      this.mineru = mineru;
+      this.parser = parser;
       this.documentImageCompressionCache = new Map();
       this.imageUnsupportedModels = new Map();
       try {
@@ -883,9 +883,11 @@ flowchart LR
         });
       }
       else if (C.SUPPORTED_INPUT_EXTENSIONS.has(extension)) {
-        if (!this.mineru?.parseExternalReference) throw new Error("当前运行环境不能解析附加文档");
+        if (!this.parser?.parseExternalReference) throw new Error("当前运行环境不能解析附加文档");
         const settings = this.llm.getSettings("chat");
-        const parsed = await this.mineru.parseExternalReference(filePath, root, {
+        const parsed = await this.parser.parseExternalReference(filePath, root, {
+          parseProvider: settings.parseProvider || "mineru",
+          parseModel: settings.paddleModel,
           modelVersion: settings.mineruModel || "vlm",
           isOCR: Boolean(settings.mineruOCR),
           enableFormula: settings.mineruFormula !== false,
@@ -900,7 +902,8 @@ flowchart LR
         throw new Error(`暂不支持作为对话附件的文档格式：${extension || "无扩展名"}`);
       }
       const markdownName = DIRECT_TEXT_EXTENSIONS.has(extension) ? "document.md" : "reference.md";
-      const rootRelativePath = ["chat", "documents", identity].join("/");
+      const documentDirName = PathUtils.filename(parseRoot) || identity;
+      const rootRelativePath = ["chat", "documents", documentDirName].join("/");
       const originalName = `original${extension || ""}`;
       const originalPath = PathUtils.join(parseRoot, originalName);
       if (!await this.storage.exists(originalPath)) await this.storage.copyFile(filePath, originalPath);

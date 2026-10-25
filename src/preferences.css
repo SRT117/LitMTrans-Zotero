@@ -111,9 +111,12 @@
 .litmtrans-pref-card-reading { --litmtrans-section: var(--litmtrans-reading); --litmtrans-section-soft: var(--litmtrans-reading-soft); }
 .litmtrans-pref-card-agent { --litmtrans-section: #3d7892; --litmtrans-section-soft: color-mix(in srgb, #3d7892 8%, var(--material-background, #fff)); grid-column: 1 / -1; grid-row: 4; }
 .litmtrans-pref-advanced { grid-column: 1 / -1; grid-row: 3; min-width: 0; border-top: 1px solid var(--material-border, #d7d7d7); }
-.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-model { grid-row: 1; }
-.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-advanced { grid-row: 2; }
-.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-agent { grid-row: 3; }
+.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-model,
+.litmtrans-pref-board:has(#litmtrans-pref-chat-engine-web:checked) .litmtrans-pref-card-model { grid-row: 1; }
+.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-advanced,
+.litmtrans-pref-board:has(#litmtrans-pref-chat-engine-web:checked) .litmtrans-pref-advanced { grid-row: 2; }
+.litmtrans-pref-board.litmtrans-shared-chat-model .litmtrans-pref-card-agent,
+.litmtrans-pref-board:has(#litmtrans-pref-chat-engine-web:checked) .litmtrans-pref-card-agent { grid-row: 3; }
 .litmtrans-pref-advanced > summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 9px; list-style: none; border: 1px solid var(--material-border, #d7d7d7); border-top: 0; background: color-mix(in srgb, var(--material-background, #fff) 92%, transparent); color: var(--fill-secondary, #555); cursor: pointer; user-select: none; }
 .litmtrans-pref-advanced > summary::-webkit-details-marker { display: none; }
 .litmtrans-pref-advanced > summary::before { content: ""; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid currentColor; transition: transform .16s ease; }
@@ -127,6 +130,10 @@
 .litmtrans-pref-card-heading > div { min-width: 0; }
 .litmtrans-pref-card-heading h2 { margin: 0; font-size: .98em; line-height: 1.25; }
 .litmtrans-pref-card-heading p { margin: 2px 0 0; color: var(--fill-secondary, #666); font-size: .76em; line-height: 1.4; }
+.litmtrans-parser-section-heading { align-items: baseline; flex-wrap: wrap; gap: 2px 10px; }
+.litmtrans-parser-section-heading h2 { flex: 0 0 auto; }
+.litmtrans-parser-section-heading p { min-width: 0; margin: 0; }
+.litmtrans-pref-board:has(#litmtrans-pref-chat-engine-web:checked) > :is(.litmtrans-pref-card-mineru, .litmtrans-pref-card-model) { align-self: stretch; }
 .litmtrans-pref-card-mark {
   flex: 0 0 auto;
   min-width: 34px;
@@ -327,3 +334,5 @@
 .litmtrans-pref-info-footer button { min-height: 30px; padding: 4px 12px; border: 1px solid var(--material-border, #d7d7d7); background: var(--material-background, #fff); color: inherit; font: inherit; cursor: pointer; }
 .litmtrans-pref-info-footer button:hover { background: color-mix(in srgb, var(--material-border, #d7d7d7) 35%, var(--material-background, #fff)); }
 .litmtrans-pref-info-footer button:focus-visible { outline: 2px solid var(--litmtrans-link); outline-offset: 2px; }
+
+.litmtrans-parser-provider-fields { min-width: 0; display: grid; gap: 7px; }

@@ -1002,6 +1002,10 @@ module.exports = function createSuite(env) {
     const documentID = "1-CLEAR";
     const attachment = { id: 7, key: "CLEAR", attachmentFilename: "paper.pdf" };
     storage.documentDir = id => storage.path(id);
+    storage.clearDocumentSubcategory = (...args) => env.Storage.prototype.clearDocumentSubcategory.apply(storage, args);
+    storage.dirStats = (...args) => env.Storage.prototype.dirStats.apply(storage, args);
+    storage.formatBytes = String;
+    storage.deepSeekWebPagesStatsAtDocumentDir = async () => ({ bytes: 0 });
     const attachmentPath = storage.path("attachments", "paper.pdf");
     await storage.writeBytes(attachmentPath, new Uint8Array([37, 80, 68, 70]));
     const controller = {
@@ -1021,8 +1025,25 @@ module.exports = function createSuite(env) {
     await storage.writeText(storage.path(documentID, "translation", "translation.zh.md"), "stream");
     await storage.writeJSON(storage.path(documentID, "translation", "translation.zh.json"), { complete: true });
     await storage.writeJSON(storage.path(documentID, "layout-translation", "translations.zh.json"), { complete: true });
+    const release = env.Storage.prototype.beginActivity.call(storage);
+    for (const kind of ["translation", "all"]) {
+      await assert.rejects(facade.clearDocumentCache(documentID, kind), /有任务正在运行/);
+    }
+    release();
+    const pending = storage.path(documentID, "parser-publication.json");
+    await storage.writeJSON(pending, { archive: "pending" });
+    for (const kind of ["translation", "all"]) {
+      await assert.rejects(facade.clearDocumentCache(documentID, kind), /正在解析或恢复/);
+    }
+    await storage.removeFile(pending);
+    const copyTree = storage.copyTree.bind(storage);
+    storage.copyTree = async () => { throw new Error("archive failed"); };
+    await assert.rejects(facade.clearDocumentCache(documentID, "translation"), /archive failed/);
+    assert.equal(await storage.readText(storage.path(documentID, "translation", "translation.zh.md")), "stream");
+    storage.copyTree = copyTree;
     const translation = await Agent.AgentFacade.prototype.clearDocumentCache.call(facade, documentID, "translation");
     assert.equal(translation.cleared, true);
+    assert.equal(await storage.readText(context.PathUtils.join(translation.archivePath, "translation", "translation.zh.md")), "stream");
     assert.equal(await storage.exists(storage.path(documentID, "translation")), false);
     assert.equal(await storage.exists(storage.path(documentID, "layout-translation")), false);
     assert.equal(latestStatus.streamTranslation, false);
@@ -1341,13 +1362,17 @@ module.exports = function createSuite(env) {
     facade.tasks = tasks;
     facade.literature = { resolveCandidate: async value => ({ candidateID: value }) };
     facade.acquisition = { runtime: { ensure: async () => ({ available: true, version: "1.17.0" }) }, acquirePapers: async () => ({ total: 1, results: [{ status: "available", attachment: { attachmentKey: "ATT" }, item: { key: "ITEM" } }] }) };
-    facade.processingRunner = () => async () => ({ parsed: true });
+    facade.processingRunner = (_kind, input) => async () => {
+      assert.equal(input.options.parseProvider, "paddle");
+      return { parsed: true };
+    };
     let required;
-    try { await facade.startAcquisitionBatch({ candidates: [{ candidateID: "paper" }], parse: true }); }
+    try { await facade.startAcquisitionBatch({ candidates: [{ candidateID: "paper" }], parse: true, parseProvider: "paddle" }); }
     catch (error) { required = error; }
+    assert.equal(required.details.plan.provider, "PaddleOCR");
     assert.equal(required.code, "EXTERNAL_SERVICE_APPROVAL_REQUIRED");
     const approval = await approvals.approve(required.details.approvalID, { approved: true, planHash: required.details.planHash });
-    const job = await facade.startAcquisitionBatch({ candidates: [{ candidateID: "paper" }], parse: true, approvalID: approval.approvalID, approved: true });
+    const job = await facade.startAcquisitionBatch({ candidates: [{ candidateID: "paper" }], parse: true, parseProvider: "paddle", approvalID: approval.approvalID, approved: true });
     for (let index = 0; index < 100 && !["completed", "failed", "cancelled"].includes(tasks.raw(job.id)?.status); index++) await new Promise(resolve => setTimeout(resolve, 5));
     const finished = tasks.raw(job.id);
     assert.equal(finished.status, "completed");
@@ -2148,6 +2173,64 @@ module.exports = function createSuite(env) {
     assert.equal(workspace.draftArtifacts.length, 0);
   }
 
+  function testParserVisibilityPreservesDefaultStatusAndPermissions() {
+    const facade = Object.create(Agent.AgentFacade.prototype);
+    const raw = { parseProvider: "mineru", hasMinerUToken: false, hasPaddleToken: true };
+    facade.controller = { getSettings: () => raw };
+    const permissions = { mode: "full", allowConfiguredServices: true };
+    facade.policy = { settings: () => permissions };
+    facade.acquisition = { institutionToolsAvailable: () => false };
+    const visible = () => facade.visibleTools().some(tool => tool.name === "litmtrans_start_parse");
+    assert.equal(Agent.Contracts.safeSettings(facade.controller).parserConfigured, false);
+    assert.equal(visible(), true);
+    assert.equal(facade.parserProfile({}).provider, "MinerU");
+    assert.equal(facade.parserProfile({ parseProvider: "paddle" }).provider, "PaddleOCR");
+    assert.equal(facade.parserProfile({ options: { parseProvider: "paddle" } }).provider, "PaddleOCR");
+    permissions.mode = "read"; assert.equal(visible(), false);
+    permissions.mode = "full"; permissions.allowConfiguredServices = false; assert.equal(visible(), false);
+    permissions.allowConfiguredServices = true;
+    raw.hasPaddleToken = false; assert.equal(visible(), false);
+    raw.hasMinerUToken = true; assert.equal(visible(), true);
+    raw.parseProvider = "paddle";
+    assert.equal(Agent.Contracts.safeSettings(facade.controller).parserConfigured, false);
+    assert.equal(visible(), true);
+    raw.mineruToken = "mineru-secret"; raw.paddleToken = "paddle-secret";
+    const serialized = JSON.stringify(Agent.Contracts.safeSettings(facade.controller));
+    assert(!serialized.includes("mineru-secret") && !serialized.includes("paddle-secret"));
+  }
+
+  async function testParseApprovalPinsProviderThroughBackgroundExecution() {
+    const storage = new MemoryStorage();
+    storage.beginActivity = () => env.Storage.prototype.beginActivity.call(storage);
+    storage.tempRoot = "/mem/tmp";
+    await storage.writeText("/mem/tmp/task.bin", "task input");
+    const facade = Object.create(Agent.AgentFacade.prototype);
+    let selected = "paddle", run, taskInput, resumed, started;
+    const ready = new Promise(resolve => { started = resolve; });
+    const wait = new Promise(resolve => { resumed = resolve; });
+    facade.controller = { storage, getSettings: () => ({ parseProvider: selected }), pipeline: { parse: async (_context, options) => {
+      assert.equal(options.parseProvider, "paddle"); started(); await wait;
+      assert.equal(await storage.readText("/mem/tmp/task.bin"), "task input");
+    } } };
+    facade.policy = { assert() {} };
+    facade.approvals = { ensure: async plan => {
+      assert.equal(plan.provider, "PaddleOCR"); selected = "mineru";
+      return { approved: true };
+    } };
+    facade.tasks = { start: (_kind, input, runner) => { taskInput = input; run = runner; return { id: "job" }; } };
+    facade.artifact = { resolve: async () => ({ context: { documentID: "1-A", parent: {}, attachment: {} } }), getManifest: async () => ({}) };
+    facade.corpus = { markStale() {} };
+    facade.literature = { updateDocumentStatus: async () => {} };
+    await facade.startProcessing("parse", { ref: "A" });
+    assert.equal(taskInput.options.parseProvider, "paddle");
+    const job = run({ emit() {}, signal: null });
+    await ready;
+    await assert.rejects(env.Storage.prototype.clearTempFiles.call(storage), /有任务正在运行/);
+    resumed(); await job;
+    assert.equal(storage._cacheActivities, 0);
+    assert.equal(facade.parserProfile({}).provider, "MinerU");
+  }
+
   return {
     testContractsAndPolicy,
     testProtocolHandshakeAndToolContract,
@@ -2207,6 +2290,8 @@ module.exports = function createSuite(env) {
     testTargetRuntimeVersionAndClientInfo,
     testUvMirrorFallbackWhenGitHubUnavailable,
     testPaperCardDeletionIdentityContract,
-    testReviewWorkspaceHonesty
+    testReviewWorkspaceHonesty,
+    testParserVisibilityPreservesDefaultStatusAndPermissions,
+    testParseApprovalPinsProviderThroughBackgroundExecution
   };
 };

@@ -43,6 +43,12 @@ interface LitMTransRuntime {
   LLMService?: any;
   WebMachineTranslationService?: any;
   MinerUService?: any;
+  DocumentParserService?: any;
+  PaddleService?: any;
+  PaddleInternals?: any;
+  PaddleAdapter?: any;
+  ParserModel?: any;
+  ParserLineage?: any;
   TranslationService?: any;
   ChatService?: any;
   DocumentPipeline?: any;

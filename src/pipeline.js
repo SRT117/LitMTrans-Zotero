@@ -3,6 +3,7 @@
 
   const LitMTrans = global.LitMTrans = global.LitMTrans || {};
   const U = LitMTrans.Utils;
+  const C = LitMTrans.Constants;
   const REASONING_LOG_SEGMENT_CHARS = 16 * 1024;
 
   /**
@@ -11,9 +12,9 @@
    * controller only resolves items and transports messages to the workbench.
    */
   class DocumentPipeline {
-    constructor({ storage, mineru, translation, layout, chat, getSettings }) {
+    constructor({ storage, parser, mineru, translation, layout, chat, getSettings }) {
       this.storage = storage;
-      this.mineru = mineru;
+      this.parser = parser || mineru;
       this.translation = translation;
       this.layout = layout;
       this.chat = chat;
@@ -21,7 +22,7 @@
       this._reasoningLogBuffers = new Map();
     }
 
-    async buildLayoutState(documentID, parsed, layoutTranslations) {
+    async buildLayoutState(documentID, parsed, layoutTranslations, emit = null) {
       if (!parsed?.hasLayout) {
         return {
           translations: {},
@@ -44,7 +45,7 @@
         const formulaReplacements = stale ? {} : (layoutTranslations?.formulaReplacements || {});
         // The atomically published revision, not translation metadata, proves
         // that compiled-model.json belongs to the current layout source.
-        const model = await this.layout.buildModel(documentID, translations, formulaReplacements, revision);
+        const model = await this.layout.buildModel(documentID, translations, formulaReplacements, revision, null, emit);
         let fitSnapshot = null;
         try {
           // Use the model fingerprint when translation metadata is stale.
@@ -61,7 +62,10 @@
               ? configuredBodyFont
               : 0
           ).toFixed(1);
-          const key = `${documentID}|${identity}|${bodyFont}`;
+          const rulesVersion = LitMTrans.Constants.LAYOUT_READER_FONT_RULES_VERSION;
+          const lineSuffix = model?.geometryHash ? `|lines:${model.geometryHash}` : "";
+          const tableSuffix = model?.tableTranslationHash ? `|tables:${model.tableTranslationHash}` : "";
+          const key = `${documentID}|${identity}|${bodyFont}|rules:${rulesVersion}${lineSuffix}${tableSuffix}`;
           const fitPath = PathUtils.join(this.storage.documentsRoot, documentID, "fit", `${U.hashString(key)}.json`);
           if (await this.storage.exists(fitPath)) {
             fitSnapshot = await this.storage.readJSON(fitPath, null);
@@ -136,9 +140,10 @@
       parsed.imageWidths = imageWidths;
     }
 
-    async snapshot(context) {
-      const [parsed, loadedStream, layoutTranslations, sessionsBefore] = await Promise.all([
-        this.mineru.loadParsed(context.documentID),
+    async snapshot(context, emit = null) {
+      // 先完成中断解析的恢复，再读取同一版本的译文与会话。
+      const parsed = await this.parser.loadParsed(context.documentID);
+      const [loadedStream, layoutTranslations, sessionsBefore] = await Promise.all([
         this.translation.load(context.documentID),
         this.layout.loadTranslations(context.documentID),
         this.chat.listSessions(context.documentID)
@@ -158,7 +163,7 @@
           }
         : { ...loadedStream, stale: false, error: "" };
       const [layout, session] = await Promise.all([
-        this.buildLayoutState(context.documentID, parsed, layoutTranslations),
+        this.buildLayoutState(context.documentID, parsed, layoutTranslations, emit),
         this.chat.loadSession(context.documentID, sessionsBefore[0]?.id || "")
       ]);
       this.attachImageWidths(parsed, layout.model);
@@ -168,7 +173,7 @@
       const canParse = LitMTrans.Constants.SUPPORTED_INPUT_EXTENSIONS.has(U.extension(context.filePath));
       const hasParsed = Boolean(parsed.markdown);
       const hasLayoutModel = Boolean(layout.model?.pages?.length);
-      const hasLayoutTranslation = Boolean(Object.keys(layout.translations || {}).length);
+      const hasLayoutTranslation = Boolean(Object.keys(layout.translations || {}).length || layout.model?.tableTranslationHash);
       // The Zotero PDF Reader is useful before MinerU has produced a layout
       // model.  Keep that reader capability separate from the parsed-layout
       // capability so a new attachment does not lose the layout reading mode.
@@ -193,10 +198,8 @@
 
     async parse(context, payload = {}, emit = null, signal = null) {
       const settings = this.getSettings();
-      const [beforeParsed, beforeTranslation] = await Promise.all([
-        this.mineru.loadParsed(context.documentID),
-        this.translation.load(context.documentID)
-      ]);
+      const beforeParsed = await this.parser.loadParsed(context.documentID);
+      const beforeTranslation = await this.translation.load(context.documentID);
       const previousFingerprint = beforeParsed.markdown ? U.hashString(beforeParsed.markdown) : "";
       const revisionCaptureRoot = this.storage.path(
         context.documentID,
@@ -216,8 +219,10 @@
           }
         }
 
-        const result = await this.mineru.parse(context.attachment, context.filePath, {
+        const result = await this.parser.parse(context.attachment, context.filePath, {
           force: Boolean(payload.force),
+          parseProvider: payload.parseProvider || settings.parseProvider || "mineru",
+          parseModel: payload.parseModel || settings.paddleModel,
           modelVersion: String(payload.modelVersion || settings.mineruModel || "vlm"),
           isOCR: payload.isOCR === undefined ? Boolean(settings.mineruOCR) : Boolean(payload.isOCR),
           enableTable: payload.enableTable === undefined ? Boolean(settings.mineruTable) : Boolean(payload.enableTable),
@@ -253,7 +258,7 @@
     }
 
     async translateStream(context, payload = {}, emit = null, signal = null) {
-      const parsed = await this.mineru.loadParsed(context.documentID);
+      const parsed = await this.parser.loadParsed(context.documentID);
       if (!String(parsed.markdown || "").trim()) {
         throw new Error("当前文档尚未完成解析");
       }
@@ -274,8 +279,8 @@
     }
 
     async translateLayout(context, payload = {}, emit = null, signal = null) {
-      const parsed = await this.mineru.loadParsed(context.documentID);
-      if (!parsed.hasLayout) throw new Error("当前MinerU结果没有可用的页面布局数据");
+      const parsed = await this.parser.loadParsed(context.documentID);
+      if (!parsed.hasLayout) throw new Error("当前解析结果没有可用的页面布局数据");
       const settings = this.getSettings();
       const loggedEmit = this.logTranslationEvent(context.documentID, "layout", this.layoutPublicationEmitter(context.documentID, emit));
       const probeMsg = `[探针2.5-流水线] translateLayout: engine=${payload.engine}, aiMode=${payload.aiMode}, hasRuntime=${Boolean(payload.runtime)}`;
@@ -298,6 +303,7 @@
         return this.layout.translate(context.documentID, {
           force: Boolean(payload.force),
           mode: String(payload.mode || settings.translationMode || "full_context"),
+          translateTables: payload.translateTables ?? settings.translateTables,
           // Character-mix retry is an opt-in compatibility mode.
           enableUntranslatedCheck: Boolean(payload.enableUntranslatedCheck),
           referenceContext: reference.corpus,
@@ -318,10 +324,10 @@
     async manualTranslationCommand(context, mode) {
       const settings = this.getSettings();
       if (mode === "layout") {
-        const parsed = await this.mineru.loadParsed(context.documentID);
-        if (!parsed.hasLayout) throw new Error("当前MinerU结果没有可用的页面布局数据");
-        const records = await this.layout.extractRecords(context.documentID);
-        const blocks = records.map(({ id, page, type, text }) => ({ id, page, type, text: this.layout.sanitizeManualText(text) }));
+        const parsed = await this.parser.loadParsed(context.documentID);
+        if (!parsed.hasLayout) throw new Error("当前解析结果没有可用的页面布局数据");
+        const { records } = await this.layout.manualTranslationInput(context.documentID, settings);
+        const blocks = records.map(record => this.layout.manualRecordPayload(record));
         return (
           `你是一位专业的学术论文翻译家与排版感知编辑。请将以下学术论文排版文本块翻译为 ${settings.targetLanguage}。\n\n` +
           "【排版物理机理与块边界要求】\n" +
@@ -339,22 +345,25 @@
           "【输出格式规范】\n" +
           "1. 行内公式、变量、引用序号、数值、单位必须原样保留 TeX 及定界符；TeX 反斜杠在 JSON 文本中必须转义为双反斜杠（例如 `\\\\frac`）。\n" +
           "2. 采用正式严谨的学术文风，使用规范专业术语。\n" +
+          "多行 Keywords/Key words/关键词列表必须按原顺序逐条保留换行，不得连写成一段。\n" +
+          C.SYMBOL_DEFINITION_LINE_BREAK_RULE.zh + "\n" +
           "3. 请只输出一个 `text` 代码块。代码块内使用 JSON Lines：每个输入块对应一条独立、合法的 JSON 记录，并单独占一行，形状严格如下：\n" +
           '{"id":"原始id","text":"该id对应的译文"}\n' +
           "不要添加外层对象、外层数组或 `translations` 字段。必须按输入顺序一次性输出全部记录，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
-          "输入文本块 JSON：\n" + JSON.stringify({ blocks }, null, 2)
+          this.layout.manualTableInstruction(records) +
+          "输入文本块 JSON：\n" + this.layout.formatRequestBlocks(blocks)
         );
       }
-      const parsed = await this.mineru.loadParsed(context.documentID);
+      const parsed = await this.parser.loadParsed(context.documentID);
       const markdown = String(parsed.markdown || "");
       if (!markdown.trim()) throw new Error("当前文档尚未完成解析");
       const marker = await this.translation.manualCompletionMarker(markdown);
-      return "请将以下学术论文的 Markdown 完整翻译为 " + settings.targetLanguage + "。保留标题、表格、链接、图片占位符、HTML 锚点、引用和所有公式的 TeX 与分隔符；可修复明显的 OCR、换行和 Markdown 排版错误，但不得增删或臆造内容。\n\n请只输出一个 `text` 代码块，代码块内只放完整译文 Markdown；不要解释，不要在代码块外输出任何内容。全文翻译完成后，必须在代码块内另起最后一行，原样输出结束标记 `" + marker + "`。结束标记不属于译文，不能翻译、改写或添加前后缀。如果无法在一次回答中完成，请不要输出结束标记；用户会让你继续翻译。\n\n===== BEGIN SOURCE MARKDOWN TO TRANSLATE =====\n" + markdown + "\n===== END SOURCE MARKDOWN TO TRANSLATE =====";
+      return "请将以下学术论文的 Markdown 完整翻译为 " + settings.targetLanguage + "。保留标题、表格、链接、图片占位符、HTML 锚点、引用和所有公式的 TeX 与分隔符；可修复明显的 OCR、换行和 Markdown 排版错误，但不得增删或臆造内容。\n" + C.SYMBOL_DEFINITION_LINE_BREAK_RULE.zh + "\n\n请只输出一个 `text` 代码块，代码块内只放完整译文 Markdown；不要解释，不要在代码块外输出任何内容。全文翻译完成后，必须在代码块内另起最后一行，原样输出结束标记 `" + marker + "`。结束标记不属于译文，不能翻译、改写或添加前后缀。如果无法在一次回答中完成，请不要输出结束标记；用户会让你继续翻译。\n\n===== BEGIN SOURCE MARKDOWN TO TRANSLATE =====\n" + markdown + "\n===== END SOURCE MARKDOWN TO TRANSLATE =====";
     }
 
     async importManualTranslation(context, mode, responses, emit = null) {
       if (mode === "layout") return this.layout.importManualTranslation(context.documentID, responses, this.layoutPublicationEmitter(context.documentID, emit));
-      const parsed = await this.mineru.loadParsed(context.documentID);
+      const parsed = await this.parser.loadParsed(context.documentID);
       if (!String(parsed.markdown || "").trim()) throw new Error("当前文档尚未完成解析");
       return this.translation.importManualTranslation(context.documentID, parsed.markdown, responses, emit);
     }
@@ -367,22 +376,26 @@
     async manualTranslationRecoveryCommand(context, mode, responses) {
       const settings = this.getSettings();
       if (mode !== "layout") {
-        const parsed = await this.mineru.loadParsed(context.documentID);
+        const parsed = await this.parser.loadParsed(context.documentID);
         const marker = await this.translation.manualCompletionMarker(String(parsed.markdown || ""));
         return "继续从上一段译文的准确中断位置翻译，不要重复已经翻译的内容。只输出一个 `text` 代码块，代码块内只放后续译文 Markdown。全文完成后，必须在代码块内另起最后一行原样输出结束标记 `" + marker + "`；未完成时不要输出该标记。";
       }
-      const records = await this.layout.extractRecords(context.documentID);
+      const { records } = await this.layout.manualTranslationInput(context.documentID, settings);
       const received = this.layout.normalizeManualTranslations(records, responses);
-      const missing = records.filter(record => !received[record.id]).map(({ id, page, type, text }) => ({ id, page, type, text }));
+      const missingRecords = records.filter(record => !received[record.id]);
+      const missing = missingRecords.map(record => this.layout.manualRecordPayload(record));
       return (
         `上一轮排版译文未能通过校验，仍缺少以下文本块。请一次性只翻译这些块，目标语言为 ${settings.targetLanguage}。\n\n` +
         "【核心约束】\n" +
         "1. 严格限定在各块自身可见范围内翻译，绝不得跨块提前补全句子、合并或挪移相邻块内容；每个 id 只返回其自身对应文本。\n" +
         "2. 严格保留每个原始 id，行内公式、变量、引用序号、数值和单位必须原样保留，TeX 反斜杠必须转义为双反斜杠。\n" +
+        "多行 Keywords/Key words/关键词列表必须按原顺序逐条保留换行，不得连写成一段。\n" +
+        C.SYMBOL_DEFINITION_LINE_BREAK_RULE.zh + "\n" +
         "3. 请只输出一个 `text` 代码块。代码块内使用 JSON Lines，每个缺失块对应一条独立 JSON 记录并单独占一行：\n" +
         '{"id":"原始id","text":"该id对应的译文"}\n' +
         "不要添加外层对象、外层数组或 `translations` 字段，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
-        "缺失文本块 JSON：\n" + JSON.stringify({ blocks: missing }, null, 2)
+        this.layout.manualTableInstruction(missingRecords) +
+        "缺失文本块 JSON：\n" + this.layout.formatRequestBlocks(missing)
       );
     }
 
@@ -503,6 +516,15 @@
       await this.storage.clearDocument(context.documentID);
       await this.storage.ensureDocument(context.attachment);
     }
+  }
+
+  for (const name of ["parse", "translateStream", "translateLayout", "importManualTranslation", "snapshot"]) {
+    const run = DocumentPipeline.prototype[name];
+    DocumentPipeline.prototype[name] = async function (...args) {
+      const release = this.storage.beginActivity?.();
+      try { return await run.apply(this, args); }
+      finally { release?.(); }
+    };
   }
 
   LitMTrans.DocumentPipeline = DocumentPipeline;

@@ -3,9 +3,9 @@
     "litmtrans@srt117.github.io": {
       "updates": [
         {
-          "version": "2.1.1",
-          "update_link": "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/v2.1.1/litmtrans-2.1.1.xpi",
-          "update_hash": "sha256:472092d168bbc14bd68c21998be279405f6af16ccc8597c2e7a0f0aa03c52e88",
+          "version": "2.1.4",
+          "update_link": "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/v2.1.4/litmtrans-2.1.4.xpi",
+          "update_hash": "sha256:363d8e2e28210519ebe8af3fdb074b8a7c581827781b906fefc7f7c399ae78d3",
           "applications": {
             "zotero": {
               "strict_min_version": "7.0",
@@ -16,5 +16,30 @@
       ]
     }
   },
-  "announcements": []
+  "announcements": [
+    {
+      "id": "mineru-service-incident-20261003",
+      "title": "MinerU解析短期故障提示",
+      "message": "当前MinerU的官方解析服务出现故障，预计修复时间不定，取决于官方修复安排，近期新文献的解析翻译功能或许不可用，但不影响侧栏与网页端Deepseek对话功能（右键原文添加功能连带失效，请使用右键“图形式添加”的功能将原文添加到AI侧栏以询问文献内容）",
+      "level": "alert",
+      "date": "2026-10-03",
+      "expireAt": "2026-10-04T16:08:49.680Z",
+      "cancelText": "我知道了"
+    }
+  ],
+  "parserModels": {
+    "revision": 2,
+    "paddle": {
+      "model": "PaddleOCR-VL-1.6",
+      "minPluginVersion": "2.1.3",
+      "apiProtocol": "aistudio-jobs-v2",
+      "resultSchema": "paddle-layout-blocks-v1"
+    },
+    "paddleOCR": {
+      "model": "PP-OCRv6",
+      "minPluginVersion": "2.1.3",
+      "apiProtocol": "aistudio-jobs-v2",
+      "resultSchema": "paddle-text-lines-v1"
+    }
+  }
 }

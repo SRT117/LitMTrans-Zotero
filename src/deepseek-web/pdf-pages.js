@@ -165,7 +165,7 @@
   }
 
   // 特权域自加载渲染：文档实例与画布同域（备选路径，见 renderAndCachePages）
-  async function renderSinglePageToCanvas(pdfDoc, pageNum, doc, scale) {
+  async function renderSinglePageToCanvas(pdfDoc, pageNum, doc, scale, options = {}) {
     const page = await pdfDoc.getPage(pageNum);
     const viewport = page.getViewport({ scale });
     const canvas = createCanvas(doc);
@@ -175,6 +175,8 @@
     if (!ctx) {
       throw new Error("无法获取 2D 画布上下文");
     }
+    // Zotero 的 Blender 会读取窗口主题；原始背景必须在画布级跳过调色。
+    if (options.nativeColors) ctx.skipBlender = true;
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: ctx, viewport }).promise;
@@ -365,9 +367,20 @@
       }
       for (const spec of candidates) {
         try {
+          // 主窗口拥有模块加载器与独立的内建原型，避免系统模块全局的冻结原型。
+          const win = Zotero.getMainWindow?.();
           const mod = spec.endsWith(".mjs")
-            ? ChromeUtils.importESModule(spec)
-            : ChromeUtils.import(spec);
+            ? Components.utils.waiveXrays(win.eval(`ChromeUtils.importESModule(${JSON.stringify(spec)}, { global: "current" })`))
+            : (() => {
+              // Zotero 7 的 UMD 包会改写内建原型，须在独立且可写的全局中加载。
+              const scope = new Components.utils.Sandbox(win, { sandboxPrototype: win, wantXrays: false });
+              for (const name of ["DOMMatrix", "ImageData", "Path2D", "ReadableStream", "URL", "TextDecoder", "TextEncoder", "AbortController"]) {
+                if (win[name]) scope[name] = win[name];
+              }
+              Services.scriptloader.loadSubScript(spec, scope);
+              Services.scriptloader.loadSubScript(spec.replace(/[^/]+$/, "pdf.worker.js"), scope);
+              return scope.pdfjsLib;
+            })();
           const lib = mod?.pdfjsLib || mod;
           if (typeof lib?.getDocument !== "function") {
             failures.push(`${spec} 无 getDocument 导出`);
@@ -394,29 +407,50 @@
         diagnostics.push("runtime 未提供 attachmentID，无法自加载 PDF");
         return null;
       }
+      if (runtime._selfPDFDocAttachmentID === attachmentID && runtime._selfPDFDocPromise) {
+        try {
+          const cached = await runtime._selfPDFDocPromise;
+          if (cached && cached.numPages > 0) return cached;
+        } catch (_) {}
+      }
       const lib = this.loadOwnPDFJS(diagnostics);
       if (!lib) return null;
-      try {
-        const item = await Zotero.Items.getAsync(attachmentID);
-        if (!item?.isAttachment()) {
-          diagnostics.push("附件条目无效");
+      const loadTask = (async () => {
+        try {
+          const item = await Zotero.Items.getAsync(attachmentID);
+          if (!item?.isAttachment()) {
+            diagnostics.push("附件条目无效");
+            return null;
+          }
+          const { filePath } = await this.controller.attachmentContext(attachmentID);
+          if (!filePath || !await IOUtils.exists(filePath)) {
+            diagnostics.push(`附件文件不存在: ${filePath || "null"}`);
+            return null;
+          }
+          const bytes = await IOUtils.read(filePath);
+          const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+          const doc = await lib.getDocument({
+            data: buffer,
+            disableFontFace: true,
+            standardFontDataUrl: "resource://zotero/reader/pdf/web/standard_fonts/",
+            cMapUrl: "resource://zotero/reader/pdf/web/cmaps/",
+            cMapPacked: true
+          }).promise;
+          if (doc && doc.numPages > 0) return doc;
+          diagnostics.push("自加载文档 numPages 无效");
+          return null;
+        } catch (err) {
+          diagnostics.push(`自加载渲染链异常: ${err?.message || err}`);
           return null;
         }
-        const { filePath } = await this.controller.attachmentContext(attachmentID);
-        if (!filePath || !await IOUtils.exists(filePath)) {
-          diagnostics.push(`附件文件不存在: ${filePath || "null"}`);
-          return null;
-        }
-        const bytes = await IOUtils.read(filePath);
-        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        const doc = await lib.getDocument({ data: buffer }).promise;
-        if (doc && doc.numPages > 0) return doc;
-        diagnostics.push("自加载文档 numPages 无效");
-        return null;
-      } catch (err) {
-        diagnostics.push(`自加载渲染链异常: ${err?.message || err}`);
-        return null;
+      })();
+      runtime._selfPDFDocAttachmentID = attachmentID;
+      runtime._selfPDFDocPromise = loadTask;
+      const result = await loadTask;
+      if (!result && runtime._selfPDFDocPromise === loadTask) {
+        runtime._selfPDFDocPromise = null;
       }
+      return result;
     }
 
     async runSubprocess(command, arguments_, timeout = 60000) {
@@ -682,6 +716,7 @@
             source.height = Math.round(viewport.height);
             const sourceContext = source.getContext("2d");
             if (!sourceContext) return JSON.stringify({ ok: false, error: "iframe 画布 2D 上下文不可用" });
+            if (${Boolean(options.nativeColors)}) sourceContext.skipBlender = true;
             sourceContext.fillStyle = "#ffffff";
             sourceContext.fillRect(0, 0, source.width, source.height);
             await page.render({ canvasContext: sourceContext, viewport }).promise;
@@ -721,7 +756,7 @@
       else {
           const win = runtime.window || runtime.browser?.ownerGlobal || Zotero.getMainWindow?.() || Services.wm.getMostRecentWindow("navigator:browser");
           const doc = win?.document || runtime.browser?.contentDocument || document;
-        const source = await renderSinglePageToCanvas(selfDoc, page, doc, scale);
+        const source = await renderSinglePageToCanvas(selfDoc, page, doc, scale, options);
         let output = source;
         if (payloadRect) {
           const normalized = payloadRect.every(value => value >= 0 && value <= 1);
@@ -744,6 +779,9 @@
         height = Number(output.height || 0);
         dataURL = output.toDataURL("image/png");
         source.width = 1; source.height = 1;
+      }
+      if (options.returnDataURL) {
+        return { page, totalPages: total, mime: "image/png", dataURL, width, height, scale, cropped: Boolean(payloadRect), via: iframeCtx ? "iframe" : "self" };
       }
       const bytes = dataURLToUint8Array(dataURL);
       return { page, totalPages: total, mime: "image/png", data: U.encodeBytesBase64(bytes), width, height, scale, cropped: Boolean(payloadRect), via: iframeCtx ? "iframe" : "self" };

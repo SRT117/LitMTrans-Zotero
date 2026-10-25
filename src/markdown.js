@@ -373,10 +373,10 @@
   }
 
   function normalizeTranslatedInlineHTML(text) {
-    return normalizeEscapedTeXDelimiters(String(text || ""))
+    return repairFullwidthMathSyntax(normalizeEscapedTeXDelimiters(String(text || ""))
       .replace(/&lt;(\/?)(sup|sub)&gt;/gi, "<$1$2>")
       .replace(/&amp;lt;(\/?)(sup|sub)&amp;gt;/gi, "<$1$2>")
-      .replace(/\r\n?/g, "\n");
+      .replace(/\r\n?/g, "\n"));
   }
 
   function sourceEquationReferenceNumbers(text) {
@@ -569,6 +569,44 @@
   // it never changes the output or when a page is shown.
   const renderTeXCache = new Map();
   const RENDER_TEX_CACHE_LIMIT = 4000;
+  function normalizeFullwidthTeXSyntax(value) {
+    const symbols = { "（": "(", "）": ")", "［": "[", "］": "]", "｛": "{", "｝": "}", "＼": "\\", "＾": "^", "＿": "_" };
+    return String(value).replace(/\\(?:text|mbox|textrm|textsf|texttt)\s*\{(?:[^{}]|\{[^{}]*\})*\}|[（）［］｛｝＼＾＿]/g,
+      token => symbols[token] || token);
+  }
+
+  function repairFullwidthMathSyntax(text) {
+    const value = String(text || "");
+    if (!global.katex?.renderToString || !/[（）［］｛｝＼＾＿]/.test(value)) return value;
+    // 代码原样保留；只检查带明确数学定界符的表达式，不猜测正文中的公式。
+    return value.replace(/(^[ \t]*`{3,}[^\n]*(?:\n|$)[\s\S]*?(?:^[ \t]*`{3,}[^\n]*$|(?![\s\S]))|^[ \t]*~{3,}[^\n]*(?:\n|$)[\s\S]*?(?:^[ \t]*~{3,}[^\n]*$|(?![\s\S]))|`+[^`\n]*`+)|\\[(（](?:(?!\\[(（])[\s\S])*?\\[)）]|\\[[［](?:(?!\\[[［])[\s\S])*?\\[\]］]|\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\s|\$)(?:\\.|[^$\n\\])+?(?<!\s|\\)\$(?!\$)/gm, (raw, code) => {
+      if (code || !/[（）［］｛｝＼＾＿]/.test(raw)) return raw;
+      let repaired = raw.replace(/^\\（/, "\\(").replace(/^\\［/, "\\[")
+        .replace(/\\）$/, "\\)").replace(/\\］$/, "\\]");
+      const display = repaired.startsWith("\\[") || repaired.startsWith("$$");
+      const width = repaired.startsWith("$") && !display ? 1 : 2;
+      const body = repaired.slice(width, -width);
+      const options = { displayMode: display, throwOnError: true, strict: "ignore", trust: false, output: "htmlAndMathml" };
+      let html;
+      try {
+        html = global.katex.renderToString(body.trim(), options);
+        if (repaired === raw) return raw;
+      }
+      catch (_) {
+        const normalized = normalizeFullwidthTeXSyntax(body);
+        if (normalized === body) return raw;
+        try { html = global.katex.renderToString(normalized.trim(), options); }
+        catch (_) { return raw; }
+        repaired = repaired.slice(0, width) + normalized + repaired.slice(-width);
+      }
+      // 同一上下文后续渲染复用校验生成的 HTML，不重复解析修复后的公式。
+      if (renderTeXCache.size >= RENDER_TEX_CACHE_LIMIT) renderTeXCache.delete(renderTeXCache.keys().next().value);
+      renderTeXCache.set(`0\u0000${repaired}`, html);
+      if (display) renderTeXCache.set(`1\u0000${repaired}`, html);
+      return repaired;
+    });
+  }
+
   function renderTeXUncached(source, display = false) {
     let raw = String(source || "").trim();
     if (raw.startsWith("\\[") && raw.endsWith("\\]")) {
@@ -593,13 +631,23 @@
     // a formula must never make a network request or depend on a web CDN.
     if (global.katex?.renderToString) {
       try {
-        return global.katex.renderToString(raw.trim(), {
+        const options = {
           displayMode: display,
           throwOnError: false,
           strict: "ignore",
           trust: false,
           output: "htmlAndMathml"
-        });
+        };
+        const original = global.katex.renderToString(raw.trim(), options);
+        if (/class="katex-error"/.test(original)) {
+          const repaired = normalizeFullwidthTeXSyntax(raw);
+          if (repaired !== raw) {
+            // 仅在原公式失败且替换后通过解析时使用修复结果，不写回缓存文件。
+            try { return global.katex.renderToString(repaired.trim(), { ...options, throwOnError: true }); }
+            catch (_) {}
+          }
+        }
+        return original;
       }
       catch (_) {}
     }
@@ -819,6 +867,7 @@
     const imageLoading = options.imageLoading === "eager" ? "eager" : "lazy";
 
     value = protectInline(value, /`([^`\n]+)`/g, raw => `<code>${U.escapeHTML(raw.slice(1, -1))}</code>`, placeholders);
+    value = repairFullwidthMathSyntax(value);
     value = protectInline(value, /\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$/g, raw => renderTeX(raw, true), placeholders);
     value = protectInline(value, /\\\([\s\S]*?\\\)|(?<!\\)\$(?!\s|\$)(?:\\.|[^$\n\\])+?(?<!\s|\\)\$(?!\$)/g, raw => renderTeX(raw, false), placeholders);
     value = protectInline(value, /<a\s+id=["'][A-Za-z0-9_.:\-]+["']\s*><\/a>|<br\s*\/?\s*>|<\/?(?:sup|sub|kbd|mark)>/gi, safeAllowedHTML, placeholders);
@@ -1004,8 +1053,21 @@
     return toXHTMLFragment(document.body?.innerHTML || String(html || ""));
   }
 
+  function unwrapCenteredHTML(markdown) {
+    const stack = [];
+    // Paddle 的居中包装只在显示时移除；代码、公式和磁盘缓存保持原样。
+    return String(markdown || "").replace(/(^[ \t]*`{3,}[^\n]*(?:\n|$)[\s\S]*?(?:^[ \t]*`{3,}[^\n]*$|(?![\s\S]))|^[ \t]*~{3,}[^\n]*(?:\n|$)[\s\S]*?(?:^[ \t]*~{3,}[^\n]*$|(?![\s\S]))|`+[^`\n]*`+|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\s|\$)(?:\\.|[^$\n\\])+?(?<!\s|\\)\$(?!\$))|<div\b[^>]*>|<\/div\s*>/gim, (raw, protectedText) => {
+      if (protectedText) return raw;
+      if (/^<\/div/i.test(raw)) return stack.pop() ? "" : raw;
+      const centered = /^<div\s+(?:style\s*=\s*(["'])\s*text-align\s*:\s*center\s*;?\s*\1|align\s*=\s*(["'])center\2)\s*>$/i.test(raw);
+      stack.push(centered);
+      return centered ? "" : raw;
+    });
+  }
+
   function renderMarkdown(markdown, options = {}) {
-    const prepared = repairTranslatedImagePlaceholders(repairFragmentedInlineMath(repairMalformedPipeTables(markdown)));
+    const source = options.parseProvider === "paddle" ? unwrapCenteredHTML(markdown) : markdown;
+    const prepared = repairTranslatedImagePlaceholders(repairFragmentedInlineMath(repairMalformedPipeTables(source)));
     const lines = U.cleanText(prepared).split("\n");
     const output = [];
     let i = 0;
@@ -1177,6 +1239,7 @@
     mathRetryIssue,
     mathMissingFormulaRetryIssue,
     normalizeTranslatedInlineHTML,
+    repairFullwidthMathSyntax,
     sourceEquationReferenceNumbers,
     repairEquationReferenceTranslation,
     renderTeX,

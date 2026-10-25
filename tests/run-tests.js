@@ -13,7 +13,12 @@ const suites = [
   { name: "07-mineru-storage", file: "./suites/07-mineru-storage" },
   { name: "08-ported-core", file: "./suites/08-ported-core" },
   { name: "09-contracts-ui", file: "./suites/09-contracts-ui" },
-  { name: "10-agent-mcp", file: "./suites/10-agent-mcp" }
+  { name: "10-agent-mcp", file: "./suites/10-agent-mcp" },
+  { name: "11-parser-paddle", file: "./suites/11-parser-paddle" },
+  { name: "12-paddle-lines", file: "./suites/12-paddle-lines" },
+  { name: "13-layout-tables", file: "./suites/13-layout-tables" },
+  { name: "14-layout-background", file: "./suites/14-layout-background" },
+  { name: "15-reader-comparison", file: "./suites/15-reader-comparison" }
 ];
 
 (async () => {

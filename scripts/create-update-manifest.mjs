@@ -154,6 +154,22 @@ if (!tag.trim()) throw new Error("--tag must not be empty");
 validateHttpUrl(downloadBase, "--download-base");
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const parserModels = JSON.parse(await readFile(path.resolve(root, optionalValue("parser-models") || "docs/parser-models.json"), "utf8"));
+const paddle = parserModels?.paddle;
+if (!Number.isSafeInteger(parserModels?.revision) || parserModels.revision < 1
+  || typeof paddle?.model !== "string" || paddle.model !== paddle.model.trim() || !/^PaddleOCR-VL(?:-[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$/.test(paddle.model)
+  || typeof paddle.minPluginVersion !== "string" || paddle.minPluginVersion !== paddle.minPluginVersion.trim() || !/^\d+(?:\.\d+)*$/.test(paddle.minPluginVersion)
+  || paddle.apiProtocol !== "aistudio-jobs-v2" || paddle.resultSchema !== "paddle-layout-blocks-v1") {
+  throw new Error("解析模型目录无效或与当前驱动不兼容，已阻断发布");
+}
+const paddleOCR = parserModels.paddleOCR;
+if (paddleOCR && (typeof paddleOCR.model !== "string" || paddleOCR.model !== paddleOCR.model.trim()
+  || !/^PP-OCRv[0-9][A-Za-z0-9._-]{0,63}$/.test(paddleOCR.model)
+  || typeof paddleOCR.minPluginVersion !== "string" || paddleOCR.minPluginVersion !== paddleOCR.minPluginVersion.trim()
+  || !/^\d+(?:\.\d+)*$/.test(paddleOCR.minPluginVersion)
+  || paddleOCR.apiProtocol !== "aistudio-jobs-v2" || paddleOCR.resultSchema !== "paddle-text-lines-v1")) {
+  throw new Error("文字OCR模型目录无效或与当前驱动不兼容，已阻断发布");
+}
 const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
 const zotero = manifest.applications?.zotero;
 if (!zotero?.id || !zotero.strict_min_version || !zotero.strict_max_version) {
@@ -210,7 +226,8 @@ const update = {
       }]
     }
   },
-  announcements
+  announcements,
+  parserModels
 };
 await writeFile(outputPath, `${JSON.stringify(update, null, 2)}\n`, "utf8");
 console.log(`Created ${outputPath} for ${zotero.id} ${manifest.version} with ${announcements.length} announcement(s).`);

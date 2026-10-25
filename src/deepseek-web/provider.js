@@ -500,7 +500,7 @@
           let markdown = String(options.markdown || runtime?.markdown || "").trim();
           if (!markdown && this.controller?.mineru) {
             try {
-              const parsed = await this.controller.mineru.loadParsed(documentID);
+              const parsed = await this.controller.parser.loadParsed(documentID);
               if (parsed?.markdown) markdown = String(parsed.markdown).trim();
             } catch (_) {}
           }

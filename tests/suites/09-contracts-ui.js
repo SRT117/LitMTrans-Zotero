@@ -301,8 +301,8 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(css.includes('.long-document-translation-body strong'), "the recommended chunked mode must be visually emphasized");
   assert(xhtml.includes('id="mineru-token-dialog"'), "missing MinerU credentials must have an in-workbench prompt");
   assert(xhtml.includes('data-external-url="https://mineru.net/apiManage/token"'), "the MinerU credential prompt must expose the token website link");
-  assert(workbench.includes('if (method === "parse" && !await ensureMinerUTokenForParse()) return null;'), "parse must request a missing MinerU token before starting the host operation");
-  assert(workbench.includes('await hostCall("save-mineru-token", { token });'), "the credential prompt must persist the token before continuing parsing");
+  assert(workbench.includes('if (method === "parse" && !await ensureParserTokenForParse()) return null;'), "parse must request a missing MinerU token before starting the host operation");
+  assert(workbench.includes('await hostCall(paddle ? "save-paddle-token" : "save-mineru-token", { token });'), "the credential prompt must persist the token before continuing parsing");
   assert(workbench.includes('hostCall("operation-state", {}, { timeout: 5000 })'));
   assert(workbench.includes('state.running.delete("chat")'), "terminal chat events must release a stale chat lock");
   assert(
@@ -320,7 +320,7 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   );
   assert(workbench.includes('function appendReasoningLog(event)'), "process log must render streamed translation reasoning");
   assert(
-    workbench.includes("state.data?.layout?.meta?.complete\n          && Object.keys(state.data?.layout?.translations || {}).length"),
+    workbench.includes("state.data?.layout?.meta?.complete\n          && (Object.keys(state.data?.layout?.translations || {}).length || state.data?.layout?.model?.tableTranslationHash)"),
     "a partial layout checkpoint must resume instead of being treated as a forced retranslation"
   );
   assert(xhtml.includes('id="formula-preview-dialog"'));
@@ -353,12 +353,12 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   assert(diagramViewer.includes("dialog.show();") && !diagramViewer.includes("dialog.showModal();"), "the diagram viewer must remain modeless so evidence jumps can be inspected in the reader");
   assert(diagramViewer.includes("function bindWindowDrag()") && diagramViewer.includes('header.setPointerCapture?.(event.pointerId)'), "the diagram viewer title bar must support bounded pointer dragging");
   assert(css.includes(".pending-image-name"), "the pending-image filename must remain visible in the composer");
-  assert(workbench.includes("function renderLayoutTranslatedText(text)"), "layout translations must have a dedicated inline-TeX rendering path");
+  assert(/function renderLayoutTranslatedText\(text[,)]/.test(workbench), "layout translations must have a dedicated inline-TeX rendering path");
   assert(workbench.includes("Markdown.normalizeEscapedTeXDelimiters(source)"), "persisted layout translations must normalize complete doubly escaped TeX before rendering");
   const blockRenderer = workbench.slice(workbench.indexOf('  function layoutBlockHTML('), workbench.indexOf('  function placeLayoutNode('));
   const partRenderer = workbench.slice(workbench.indexOf('  function layoutPartHTML('), workbench.indexOf('  function markLayoutCitationSupers('));
-  assert(/useTranslation\s*\? renderLayoutTranslatedText\(translated\)/.test(blockRenderer), "translated layout blocks must repair bare TeX before rendering");
-  assert(/useTranslation && translated\s*\? renderLayoutTranslatedText\(restoreLayoutDOIWraps\(translated, part.text\)\)/.test(partRenderer), "translated layout fragments must repair bare TeX after recovering DOI wraps");
+  assert(/useTranslation\s*\? renderLayoutTranslatedText\(translated[,)]/.test(blockRenderer), "translated layout blocks must repair bare TeX before rendering");
+  assert(/useTranslation && translated\s*\? renderLayoutTranslatedText\(restoreLayoutDOIWraps\(translated, part.text\)[,)]/.test(partRenderer), "translated layout fragments must repair bare TeX after recovering DOI wraps");
   assert(workbench.includes("function layoutTranslationPageState(page, useTranslation)"));
   assert(
     workbench.includes("const showAwaitingOverlay = Boolean(useTranslation && hasTranslatableBlocks && !hasPageTranslation);"),
@@ -405,7 +405,7 @@ function testWorkbenchStreamScrollUsesExclusiveImageTier() {
     "streaming Markdown replacement must invalidate cached image identities"
   );
   assert(
-    workbench.includes('{ syncAnchors: true, imageLoading: "eager" }'),
+    workbench.includes('{ syncAnchors: true, imageLoading: "eager", parseProvider }'),
     "both stream panes must load image geometry before it is used as the primary anchor tier"
   );
   assert(
@@ -1035,6 +1035,91 @@ async function testAnnouncementSystemContracts() {
   assert(manifestScript.includes("compareVersionBounds"), "manifest generation must validate announcement version bounds");
 }
 
+async function testPaddleModelCatalogSync() {
+  const values = new Map();
+  const catalog = (revision, model, extra = {}) => ({ revision, paddle: {
+    model, minPluginVersion: "2.1.3", apiProtocol: "aistudio-jobs-v2", resultSchema: "paddle-layout-blocks-v1", ...extra
+  } });
+  let catalogs = [catalog(2, "PaddleOCR-VL-1.7"), catalog(1, "PaddleOCR-VL-1.6"), catalog(99, "PaddleOCR-VL-9", { apiProtocol: "unknown" })];
+  let fail = false;
+  const sandbox = {
+    LitMTrans: {
+      Utils: { getPref: (key, fallback) => values.has(key) ? values.get(key) : fallback, setPref: (key, value) => values.set(key, value) },
+      DiagramCache: { TASK_TYPES: [], MAX_CHARS: 10000 }
+    },
+    fetch: async url => {
+      if (fail) throw new Error("离线");
+      const index = url.startsWith("https://gitee.com/") ? 0 : url.startsWith("https://github.com/") ? 1 : 2;
+      return { ok: true, json: async () => ({
+        addons: { "litmtrans@srt117.github.io": { updates: [{ version: index === 0 ? "2.1.1" : "2.2.0", update_hash: `sha256:${"a".repeat(64)}` }] } },
+        announcements: [], parserModels: catalogs[index]
+      }) };
+    }
+  };
+  vm.createContext(sandbox);
+  for (const file of ["updater.js", "controller.js", "parser.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(root, "src", file), "utf8"), sandbox);
+  }
+  const controller = Object.create(sandbox.LitMTrans.Controller.prototype);
+  controller.version = "2.1.3";
+  controller.tabs = new Map();
+  const parser = Object.create(sandbox.LitMTrans.DocumentParserService.prototype);
+  const runningOptions = parser.options({ parseProvider: "paddle" });
+  const result = await controller.checkForUpdates({ announcementsOnly: true });
+  assert.equal(result.version, "2.2.0", "plugin update selection must still use the newest plugin version");
+  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "model catalog must use its own revision across mirrors");
+  assert.equal(values.get("paddleModelCatalogRevision"), 2);
+  assert.equal(parser.options({ parseProvider: "paddle" }).parseModel, "PaddleOCR-VL-1.7", "new parsing tasks must use the synced model");
+  assert.equal(runningOptions.parseModel, "PaddleOCR-VL-1.6", "existing task options must remain fixed");
+  assert.equal(values.has("parseProvider"), false, "model sync must not switch the user's parser provider");
+
+  catalogs = [catalog(1, "PaddleOCR-VL-1.6"), null, null];
+  await controller.checkForUpdates();
+  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "stale mirrors must not roll back the model");
+  catalogs = [catalog(3, "PaddleOCR-VL-1.8", { minPluginVersion: "9.0.0" }), null, null];
+  await controller.checkForUpdates();
+  assert.equal(values.get("paddleModelCatalogRevision"), 2, "incompatible plugin requirements must not consume a revision");
+  for (const invalid of [catalog(3, ""), catalog(3, "PaddleOCR-VL-1.8\r\n"), catalog(3, "PaddleOCR-VL-1.8\n"), catalog(3, "PP-OCRv6"),
+    catalog(3, "PaddleOCR-VL-1.8", { resultSchema: "unknown" }), catalog(3, "PaddleOCR-VL-1.8", { minPluginVersion: "oops" })]) {
+    catalogs = [invalid, null, null];
+    await controller.checkForUpdates();
+    assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.7", "invalid or incompatible models must not change settings");
+  }
+  catalogs = [catalog(3, "PaddleOCR-VL-1.8"), null, null];
+  await controller.checkForUpdates();
+  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.8", "regular update checks must also propagate the catalog");
+  values.set("paddleModel", "accidentally-edited");
+  await controller.checkForUpdates({ announcementsOnly: true });
+  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.8", "same-revision catalog must restore an altered local model name");
+  fail = true;
+  await assert.rejects(() => controller.checkForUpdates(), /所有节点均不可达/);
+  assert.equal(values.get("paddleModel"), "PaddleOCR-VL-1.8", "offline checks must preserve the last valid model");
+}
+
+async function testPaddleModelCatalogPublication() {
+  const { spawnSync } = require("node:child_process");
+  const temporary = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "litmtrans-catalog-"));
+  try {
+    const xpi = path.join(temporary, "fixture.xpi");
+    const output = path.join(temporary, "update.json");
+    fs.writeFileSync(xpi, "manifest-generation-fixture");
+    const args = ["scripts/create-update-manifest.mjs", "--repository", "SRT117/LitMTrans-Zotero", "--tag", "v2.1.3", "--xpi", xpi, "--out", output];
+    const generated = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8" });
+    assert.equal(generated.status, 0, generated.stderr);
+    const expected = JSON.parse(fs.readFileSync(path.join(root, "docs/parser-models.json"), "utf8"));
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).parserModels, expected,
+      "release manifest generation must automatically include the maintained model catalog");
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "update.json"), "utf8")).parserModels, expected,
+      "root update manifest must match the published catalog source");
+    const invalid = path.join(temporary, "invalid.json");
+    fs.writeFileSync(invalid, JSON.stringify({ ...expected, revision: 0 }));
+    const rejected = spawnSync(process.execPath, [...args, "--parser-models", invalid], { cwd: root, encoding: "utf8" });
+    assert.notEqual(rejected.status, 0, "invalid catalog must block manifest generation");
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 async function testAnnouncementStartupScheduling() {
   const values = new Map();
   const timers = new Map();
@@ -1091,20 +1176,38 @@ async function testAnnouncementStartupScheduling() {
   await start();
   assert.equal(controller.getAnnouncementsForWorkbench().pendingAlert, null, "read announcements must stay read across startup fetches");
 
+  controller.mergeAnnouncements([
+    notice,
+    { ...notice, id: "expired-notice", expireAt: "2020-01-01T00:00:00Z" },
+    { ...notice, id: "old-version-notice", targetMaxVersion: "1.0.0" }
+  ]);
+  assert.deepEqual(Array.from(controller.getAnnouncementsForWorkbench().history, item => item.id), [notice.id],
+    "message center must hide expired and inapplicable cached announcements");
+  controller.mergeAnnouncements([{ ...notice, id: "replacement-notice" }]);
+  assert.deepEqual(Array.from(controller.getAnnouncementsForWorkbench().history, item => item.id), ["replacement-notice"],
+    "successful sync must remove withdrawn announcements");
+  controller.mergeAnnouncements([]);
+  assert.equal(controller.getAnnouncementsForWorkbench().history.length, 0, "empty remote list must clear cached announcements");
+  await start();
+  assert.equal(controller.getAnnouncementsForWorkbench().history[0].isDismissed, true,
+    "withdrawal and reappearance must preserve the read state for the same ID");
+
   values.set("autoUpdate", false);
   values.set("lastUpdateCheckTime", "0");
   await start();
-  assert.equal(fetches, 9, "disabling version updates must not suppress startup announcements");
+  assert.equal(fetches, 12, "disabling version updates must not suppress startup announcements");
   assert.equal(values.get("lastUpdateCheckTime"), "0");
   assert.equal(controller.availableUpdate, null);
   timers.get(controller.autoUpdateTimer).callback();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fetches, 9, "periodic version checks must respect the auto-update setting");
+  assert.equal(fetches, 12, "periodic version checks must respect the auto-update setting");
 
   values.set("autoUpdate", true);
   fail = true;
   await start();
   assert.equal(values.get("lastUpdateCheckTime"), "0", "failed automatic checks must not consume the daily interval");
+  assert.equal(controller.getAnnouncementsForWorkbench().history[0].id, notice.id,
+    "failed fetch must preserve the last successful announcement list");
   assert.equal(logs.length, 0, "failed checks must remain quiet outside debug mode");
   await assert.rejects(() => controller.checkForUpdates({ manual: true }), /所有节点均不可达/);
   assert.equal(values.get("lastUpdateCheckTime"), "0", "failed manual checks must not postpone automatic retries");
@@ -1266,6 +1369,8 @@ async function testSettingsAutoSaveIsolationAndFailure() {
     testDeepSeekWebDriverSessionActionAndRetryContracts,
     testAnnouncementSystemContracts,
     testAnnouncementStartupScheduling,
+    testPaddleModelCatalogSync,
+    testPaddleModelCatalogPublication,
     testSettingsAutoSaveIsolationAndFailure,
   };
 };

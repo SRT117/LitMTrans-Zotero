@@ -1,0 +1,15 @@
+{
+  "revision": 2,
+  "paddle": {
+    "model": "PaddleOCR-VL-1.6",
+    "minPluginVersion": "2.1.3",
+    "apiProtocol": "aistudio-jobs-v2",
+    "resultSchema": "paddle-layout-blocks-v1"
+  },
+  "paddleOCR": {
+    "model": "PP-OCRv6",
+    "minPluginVersion": "2.1.3",
+    "apiProtocol": "aistudio-jobs-v2",
+    "resultSchema": "paddle-text-lines-v1"
+  }
+}

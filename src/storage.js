@@ -8,9 +8,9 @@
   const PAGE_CACHE_ALERT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000; // 3 天
 
   function classifyDocumentRootFile(name) {
-    if (name === "document.json") return "metadata";
+    if (name === "document.json" || name === "generated-pdfs.json" || name === "parser-publication.json") return "metadata";
     if (name === "asset-map.json" || name === "image-map.json") return "images";
-    if (name === "mineru-task.json") return "mineruResult";
+    if (name === "mineru-task.json" || name === "paddle-task.json" || name === "paddle-line-task.json") return "mineruResult";
     if (name.endsWith(".json") || name.endsWith(".md")) return "model";
     return "other";
   }
@@ -27,6 +27,18 @@
       this.runtimeRoot = PathUtils.join(this.root, "runtime");
       this._resourceRegistered = false;
       this._appendQueues = new Map();
+    }
+
+    beginActivity() {
+      if (this._cacheCleanup) throw new Error("正在清理缓存，请稍后重试任务");
+      this._cacheActivities = (this._cacheActivities || 0) + 1;
+      return () => { this._cacheActivities--; };
+    }
+
+    async assertDocumentCleanupAllowed(itemOrID) {
+      if (await this.exists(PathUtils.join(this.documentDir(itemOrID), "parser-publication.json"))) {
+        throw new Error("文献正在解析或恢复，请完成后再清理缓存");
+      }
     }
 
     async init() {
@@ -151,6 +163,16 @@
 
     async writeJSON(path, value) {
       return this.writeText(path, JSON.stringify(value, null, 2));
+    }
+
+    async writeTextAtomically(path, text) {
+      const root = this.temporaryDir("repair");
+      const staged = PathUtils.join(root, "cache.txt");
+      try {
+        await this.writeText(staged, text);
+        await this.publishFilesAtomically([{ source: staged, destination: path }]);
+      }
+      finally { await this.remove(root, true); }
     }
 
     async removeFile(path) {
@@ -366,7 +388,9 @@
     temporaryDir(label = "run") {
       const safeLabel = String(label || "run").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 8) || "run";
       const suffix = U.randomID("").replace(/[^A-Za-z0-9]/g, "").slice(-10);
-      return PathUtils.join(this.tempRoot, `${safeLabel}-${suffix}`);
+      if (this._cacheCleanup) throw new Error("正在清理缓存，请稍后重试任务");
+      const path = PathUtils.join(this.tempRoot, `${safeLabel}-${suffix}`);
+      return path;
     }
 
     resourceURL(itemOrID, relativePath = "") {
@@ -409,6 +433,7 @@
     }
 
     async clearDocument(itemOrID) {
+      await Storage.prototype.assertDocumentCleanupAllowed.call(this, itemOrID);
       const pageStats = await this.deepSeekWebPagesStatsAtDocumentDir?.(this.documentDir(itemOrID)) || { bytes: 0 };
       await this.remove(this.documentDir(itemOrID), true);
       if (pageStats.bytes > 0) this.adjustDeepSeekWebPagesCacheBytes?.(-pageStats.bytes);
@@ -430,6 +455,7 @@
           .map(value => Number(value))
           .filter(Number.isFinite);
         if (!identities.some(id => deleted.has(id))) continue;
+        if (await this.exists(PathUtils.join(directory, "parser-publication.json"))) continue;
         const pageStats = await this.deepSeekWebPagesStatsAtDocumentDir?.(directory) || { bytes: 0 };
         await this.remove(directory, true);
         if (pageStats.bytes > 0) this.adjustDeepSeekWebPagesCacheBytes?.(-pageStats.bytes);
@@ -467,6 +493,7 @@
     }
 
     async clearTranslation(itemOrID, kind = "all") {
+      await Storage.prototype.assertDocumentCleanupAllowed.call(this, itemOrID);
       if (kind === "all" || kind === "stream") {
         await this.remove(this.path(itemOrID, "translation"), true);
         await this.ensureDir(this.path(itemOrID, "translation"));
@@ -637,7 +664,7 @@
               files: 0,
               label: "版面解析与模型",
               key: "model",
-              desc: "MinerU 识别的几何版面坐标、段落分栏流、阅读顺序以及编译渲染模型与全文。"
+              desc: "解析服务识别的几何版面坐标、段落分栏流、阅读顺序以及编译渲染模型与全文。"
             },
             translation: {
               bytes: 0,
@@ -656,9 +683,13 @@
             mineruResult: {
               bytes: 0,
               files: 0,
-              label: "原始解析包 (MinerU)",
+              label: "原始解析结果",
               key: "mineruResult",
-              desc: "MinerU 任务原始下载解压包（含原始 PDF 副本、分卷解析数据及解包产物）。"
+              desc: "解析服务返回的原始数据、下载解压包与原页资源。"
+            },
+            parserHistory: {
+              bytes: 0, files: 0, label: "历史解析与译文", key: "parserHistory",
+              desc: "重新解析前保存的历史正文、图表和译文；清理不影响当前版本及Zotero中的PDF附件。"
             },
             chat: {
               bytes: 0,
@@ -724,9 +755,12 @@
               } else if (name === "caj-source") {
                 categories.cajSource.bytes += subStats.bytes;
                 categories.cajSource.files += subStats.files;
-              } else if (name === "mineru-result") {
+              } else if (name === "mineru-result" || name === "parser-source") {
                 categories.mineruResult.bytes += subStats.bytes;
                 categories.mineruResult.files += subStats.files;
+              } else if (name === "parser-history") {
+                categories.parserHistory.bytes += subStats.bytes;
+                categories.parserHistory.files += subStats.files;
               } else if (name === "chat") {
                 categories.chat.bytes += subStats.bytes;
                 categories.chat.files += subStats.files;
@@ -881,7 +915,7 @@
           deepseekWebTotalBytes += categories.deepseekWeb.bytes;
           deepseekWebTotalFiles += categories.deepseekWeb.files;
 
-          if (isOrphan) {
+          if (isOrphan && !await this.exists(PathUtils.join(docDir, "parser-publication.json"))) {
             orphanedCount++;
             orphanedTotalBytes += docTotalBytes;
             orphanedDeepSeekWebBytes += categories.deepseekWeb.bytes;
@@ -1132,9 +1166,13 @@
       return { clearedBytes, clearedCount, clearedDocumentIDs, formatted: this.formatBytes(clearedBytes) };
     }
 
-    async clearDocumentSubcategory(documentID, subcategory) {
+    async clearDocumentSubcategory(documentID, subcategory, beforeRemove = null) {
       const docDir = this.documentDir(documentID);
-      if (!await this.exists(docDir)) return { cleared: false };
+      await Storage.prototype.assertDocumentCleanupAllowed.call(this, documentID);
+      if (!await this.exists(docDir)) {
+        if ((!subcategory || subcategory === "all") && beforeRemove) await beforeRemove();
+        return { cleared: false };
+      }
 
       const measure = async targets => {
         let bytes = 0;
@@ -1176,7 +1214,10 @@
       } else if (subcategory === "cajSource") {
         targets = [PathUtils.join(docDir, "caj-source")];
       } else if (subcategory === "mineruResult") {
-        targets = [PathUtils.join(docDir, "mineru-result"), PathUtils.join(docDir, "mineru-task.json")];
+        targets = [PathUtils.join(docDir, "mineru-result"), PathUtils.join(docDir, "mineru-task.json"), PathUtils.join(docDir, "parser-source"), PathUtils.join(docDir, "paddle-task.json"), PathUtils.join(docDir, "paddle-line-task.json")];
+      } else if (subcategory === "parserHistory") {
+        if (await this.exists(PathUtils.join(docDir, "parser-publication.json"))) throw new Error("文献正在解析或恢复，请完成后再清理历史");
+        targets = [PathUtils.join(docDir, "parser-history")];
       } else if (subcategory === "chat") {
         targets = [PathUtils.join(docDir, "chat")];
       } else if (subcategory === "deepseekWeb") {
@@ -1199,6 +1240,7 @@
       } else if (subcategory === "logs") {
         targets = [PathUtils.join(docDir, "logs"), PathUtils.join(docDir, "AI请求审计")];
       } else if (subcategory === "model" || subcategory === "other") {
+        if (subcategory === "other") targets.push(PathUtils.join(docDir, "reference-context", "parsed"));
         const entries = await this.list(docDir);
         for (const entry of entries) {
           const info = await this.stat(entry);
@@ -1213,6 +1255,7 @@
         ? await this.deepSeekWebPagesStatsAtDocumentDir(docDir)
         : null;
 
+      if (beforeRemove) await beforeRemove();
       if (!subcategory || subcategory === "all") {
         await this.remove(docDir, true);
       } else if (subcategory === "images") {
@@ -1221,12 +1264,20 @@
         await this.remove(PathUtils.join(docDir, "asset-map.json"), false);
         await this.remove(PathUtils.join(docDir, "image-map.json"), false);
       } else if (subcategory === "translation") {
-        await this.clearTranslation(documentID, "all");
+        await this.remove(PathUtils.join(docDir, "translation"), true);
+        await this.remove(PathUtils.join(docDir, "layout-translation"), true);
+        await this.ensureDir(PathUtils.join(docDir, "translation"));
+        await this.ensureDir(PathUtils.join(docDir, "layout-translation"));
       } else if (subcategory === "cajSource") {
         await this.remove(PathUtils.join(docDir, "caj-source"), true);
       } else if (subcategory === "mineruResult") {
         await this.remove(PathUtils.join(docDir, "mineru-result"), true);
         await this.remove(PathUtils.join(docDir, "mineru-task.json"), false);
+        await this.remove(PathUtils.join(docDir, "parser-source"), true);
+        await this.remove(PathUtils.join(docDir, "paddle-task.json"), false);
+        await this.remove(PathUtils.join(docDir, "paddle-line-task.json"), false);
+      } else if (subcategory === "parserHistory") {
+        await this.remove(PathUtils.join(docDir, "parser-history"), true);
       } else if (subcategory === "chat") {
         await this.remove(PathUtils.join(docDir, "chat"), true);
       } else if (subcategory === "deepseekWeb") {
@@ -1245,7 +1296,7 @@
         await this.remove(PathUtils.join(docDir, "AI请求审计"), true);
       } else if (subcategory === "model" || subcategory === "other") {
         for (const target of targets) {
-          if (PathUtils.filename(target) !== "document.json") await this.remove(target, false);
+          if (PathUtils.filename(target) !== "document.json") await this.remove(target, (await this.stat(target))?.type === "directory");
         }
       }
 
@@ -1343,6 +1394,20 @@
       const dismissedUntil = Number(U.getPref("deepseekWebCacheAlertDismissedUntil", 0)) || 0;
       return Date.now() > dismissedUntil;
     }
+  }
+
+  // 同步占用清理锁，避免检查后到删除前有新任务进入；所有入口共用此边界。
+  for (const name of ["clearDocument", "clearTranslation", "clearDocumentSubcategory", "clearTempFiles",
+    "clearDocumentsForDeletedItemIDs", "clearOrphanedDocuments", "clearEdgeLocalFiles", "clearRuntimeCache", "clearRuntime"]) {
+    const clear = Storage.prototype[name];
+    Storage.prototype[name] = async function (...args) {
+      if (this._cacheCleanup || this._cacheActivities) {
+        throw new Error("有任务正在运行或缓存正在清理，请完成后再清理缓存");
+      }
+      this._cacheCleanup = true;
+      try { return await clear.apply(this, args); }
+      finally { this._cacheCleanup = false; }
+    };
   }
 
   LitMTrans.Storage = Storage;

@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("snapshot", "reader-theme-probe", "reader-theme-fresh-probe", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
+    [ValidateSet("snapshot", "paddle-lines-probe", "reader-theme-probe", "reader-theme-fresh-probe", "multimodal-probe", "document-multimodal-probe", "document-streaming-probe", "chat-roundtrip-probe", "provider-cache-probe", "gemini-transport-probe", "edge-local-probe", "caj-probe", "caj-reader-probe", "caj-storage-probe")]
     [string]$Operation = "multimodal-probe",
     [ValidateSet("7", "8", "9", "10")]
     [string]$ZoteroMajor = "10",

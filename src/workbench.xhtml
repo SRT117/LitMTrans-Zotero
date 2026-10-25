@@ -10,6 +10,7 @@
   <script src="chrome://litmtrans/content/src/utils.js"></script>
   <script src="chrome://litmtrans/content/assets/vendor/katex/katex.min.js"></script>
   <script src="chrome://litmtrans/content/src/markdown.js"></script>
+  <script src="chrome://litmtrans/content/src/layout-tables.js"></script>
   <script src="chrome://litmtrans/content/src/layout.js"></script>
   <script src="chrome://litmtrans/content/src/mindmap.js"></script>
   <script src="chrome://litmtrans/content/src/mindmap-v2.js"></script>
@@ -95,6 +96,7 @@
           </div>
           <button id="clean-reader-ai-button" class="icon-button clean-only-control" type="button" title="显示对话侧栏" aria-label="显示对话侧栏">显示对话侧栏</button>
           <label class="compact-check"><input id="sync-scroll-check" type="checkbox" checked="checked" /> 同步滚动</label>
+          <label id="translate-tables-control" class="compact-check"><input id="translate-tables-check" type="checkbox" checked="checked" /> 翻译表格</label>
           <label id="reader-font-control" class="font-control">正文 <input id="reader-font-input" type="number" step="any" value="" placeholder="自动" title="留空时显示并使用自动排版得到的正文字号" /> pt</label>
           <div class="reader-ai-actions" role="group" aria-label="AI阅读视图">
             <button id="key-points-button" class="link-button" type="button" title="根据自定义要求提炼全文要点">要点提炼</button>
@@ -104,6 +106,7 @@
           </div>
           <div class="reader-pane-actions" role="group" aria-label="阅读栏操作">
             <button id="copy-source-markdown-button" class="link-button" type="button" title="复制清洗图片占位后的原文Markdown">复制原文Markdown</button>
+            <button id="supplement-ocr-button" class="link-button" type="button" hidden="hidden">补充文字识别</button>
             <button id="swap-panes-button" class="link-button" type="button" title="交换左右栏">交换左右</button>
           </div>
           <label id="debug-boxes-control" class="compact-check" hidden="hidden" title="显示公式与排版区块边界框（快捷键：Ctrl+Shift+D）"><input id="debug-boxes-check" type="checkbox" /> 调试框</label>
@@ -394,18 +397,22 @@
       </header>
       <div class="settings-grid">
         <section class="settings-section mineru-settings-section settings-card-mineru">
-          <div class="settings-section-heading">
-            <div>
-              <h3>Mineru 文献解析</h3>
+          <div class="settings-section-heading parser-section-heading">
+              <h3>文献解析</h3>
               <p>请配置访问令牌，用于解析文献内容，是必要的设置内容。</p>
-            </div>
           </div>
           <div class="mineru-settings-fields">
+            <label><span>解析服务</span><select id="setting-parse-provider"><option value="mineru">MinerU</option><option value="paddle">PaddleOCR</option></select></label>
+            <div id="setting-mineru-fields" class="parser-provider-fields">
             <label>
               <span class="mineru-token-label-line"><span>MinerU访问令牌</span><a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">获取访问令牌（官方免费）</a></span>
               <input id="setting-mineru-token" type="password" autocomplete="off" placeholder="未配置" />
             </label>
             <input id="setting-mineru-model" type="hidden" value="vlm" />
+            </div>
+            <div id="setting-paddle-fields" class="parser-provider-fields" hidden="hidden">
+              <label><span class="mineru-token-label-line"><span>Paddle访问令牌</span><a href="https://aistudio.baidu.com/account/accessToken" data-external-url="https://aistudio.baidu.com/account/accessToken">获取访问令牌（官方免费）</a></span><input id="setting-paddle-token" type="password" autocomplete="off" placeholder="未配置" /></label>
+            </div>
           </div>
         </section>
 
@@ -702,9 +709,18 @@
     </div>
   </dialog>
 
+  <dialog id="table-decision-dialog" class="modal" aria-labelledby="table-decision-title">
+    <div class="modal-card compact">
+      <header class="modal-header"><h2 id="table-decision-title">翻译表格</h2></header>
+      <p id="table-decision-message"></p>
+      <footer class="modal-footer"><span class="modal-spacer"></span><button id="table-decision-no" class="button" type="button">否</button><button id="table-decision-yes" class="button primary" type="button">是</button><button id="table-decision-manual" class="button" type="button" hidden="hidden">手动翻译</button></footer>
+    </div>
+  </dialog>
+
   <dialog id="image-preview-dialog" class="image-preview-dialog" aria-label="图片预览">
     <div class="image-preview-stage">
       <img id="image-preview-image" alt="对话图片预览" draggable="false" />
+      <div id="table-preview-content" hidden="hidden"><div id="table-preview-body"></div></div>
     </div>
     <div class="image-preview-toolbar" role="toolbar" aria-label="图片操作">
       <button id="image-preview-zoom-out" class="button" type="button" title="缩小">−</button>
@@ -715,6 +731,8 @@
       <button id="image-preview-reuse" class="button" type="button">在对话中提问</button>
       <button id="image-preview-copy" class="button" type="button">复制图片</button>
       <button id="image-preview-save" class="button" type="button">另存为</button>
+      <button id="table-preview-copy" class="button" type="button" hidden="hidden">复制表格</button>
+      <button id="table-preview-save-html" class="button" type="button" hidden="hidden">导出HTML</button>
       <button id="image-preview-close" class="button button-primary" type="button">关闭</button>
     </div>
   </dialog>

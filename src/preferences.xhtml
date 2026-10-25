@@ -11,15 +11,21 @@
 
     <html:main class="litmtrans-pref-board">
         <html:section class="litmtrans-pref-card litmtrans-pref-card-mineru">
-          <html:div class="litmtrans-pref-card-heading">
-            <html:div><html:h2>Mineru 文献解析</html:h2><html:p>请配置访问令牌，用于解析文献内容，是必要的设置内容。</html:p></html:div>
+          <html:div class="litmtrans-pref-card-heading litmtrans-parser-section-heading">
+            <html:h2>文献解析</html:h2><html:p>请配置访问令牌，用于解析文献内容，是必要的设置内容。</html:p>
           </html:div>
           <html:div class="litmtrans-pref-form-stack">
+            <html:label><html:span>解析服务</html:span><html:select id="litmtrans-pref-parse-provider"><html:option value="mineru">MinerU</html:option><html:option value="paddle">PaddleOCR</html:option></html:select></html:label>
+            <html:div id="litmtrans-pref-mineru-fields" class="litmtrans-parser-provider-fields">
             <html:label>
               <html:span class="litmtrans-mineru-token-label-line"><html:span>MinerU访问令牌</html:span><html:a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">获取访问令牌（官方免费）</html:a></html:span>
               <html:input id="litmtrans-pref-mineru-token" type="password" autocomplete="off" placeholder="未配置"/>
             </html:label>
             <html:input id="litmtrans-pref-mineru-model" type="hidden" value="vlm"/>
+            </html:div>
+            <html:div id="litmtrans-pref-paddle-fields" class="litmtrans-parser-provider-fields" hidden="hidden">
+              <html:label><html:span class="litmtrans-mineru-token-label-line"><html:span>Paddle访问令牌</html:span><html:a href="https://aistudio.baidu.com/account/accessToken" data-external-url="https://aistudio.baidu.com/account/accessToken">获取访问令牌（官方免费）</html:a></html:span><html:input id="litmtrans-pref-paddle-token" type="password" autocomplete="off" placeholder="未配置"/></html:label>
+            </html:div>
           </html:div>
         </html:section>
 

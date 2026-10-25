@@ -800,6 +800,7 @@
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,
         machineSourceLanguage: U.normalizeLanguageName(U.getPref("machineSourceLanguage", "英文"), "英文"),
         translationMode: String(U.getPref("translationMode", "full_context") || "full_context"),
+        translateTables: Boolean(U.getPref("translateTables", true)),
         deepseekFastLayoutTranslation: Boolean(U.getPref("deepseekFastLayoutTranslation", true)),
         translationReferencePaths: readStringArrayPref("translationReferencePaths"),
         customTranslationInstruction: String(U.getPref("customTranslationInstruction", "") || "").trim(),
@@ -808,6 +809,8 @@
         chunkChars: INTERNAL_TRANSLATION_DEFAULTS.chunkChars,
         layoutChunkChars: INTERNAL_TRANSLATION_DEFAULTS.layoutChunkChars,
         layoutChunkBlocks: INTERNAL_TRANSLATION_DEFAULTS.layoutChunkBlocks,
+        parseProvider: U.getPref("parseProvider", "mineru"),
+        paddleModel: U.getPref("paddleModel", "PaddleOCR-VL-1.6"),
         mineruModel: "vlm",
         mineruOCR: Boolean(U.getPref("mineruOCR", false)),
         mineruTable: Boolean(U.getPref("mineruTable", true)),
@@ -876,6 +879,7 @@
         sourceLanguage: INTERNAL_TRANSLATION_DEFAULTS.sourceLanguage,
         machineSourceLanguage: U.normalizeLanguageName(values.machineSourceLanguage ?? current.machineSourceLanguage, "英文"),
         translationMode: String(values.translationMode ?? current.translationMode),
+        translateTables: Boolean(values.translateTables ?? current.translateTables ?? true),
         deepseekFastLayoutTranslation: Boolean(
           values.deepseekFastLayoutTranslation ?? current.deepseekFastLayoutTranslation
         ),

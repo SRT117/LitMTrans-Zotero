@@ -234,10 +234,10 @@
         },
         instructions: [
           "LitMTrans 允许正常的读取、解析、翻译、标签、Note、Annotation、Collection 整理、导出和研究记录自主执行。",
-          "支持学术文献发现与全文 PDF 下载：用 litmtrans_literature_search 查找候选，再用 litmtrans_acquire_papers 获取、验证并添加 PDF 到 Zotero；也可用 litmtrans_literature_import 获取全文（acquireFullText=false 时只导入元数据）。获取到有效 PDF 后可用 parse=true 启动 MinerU 解析，之后可继续翻译。全文能否获取取决于开放来源和机构权限，解析与翻译取决于相应服务配置。",
+          "支持学术文献发现与全文 PDF 下载：用 litmtrans_literature_search 查找候选，再用 litmtrans_acquire_papers 获取、验证并添加 PDF 到 Zotero；也可用 litmtrans_literature_import 获取全文（acquireFullText=false 时只导入元数据）。获取到有效 PDF 后可用 parse=true 启动当前配置的文献解析，之后可继续翻译。全文能否获取取决于开放来源和机构权限，解析与翻译取决于相应服务配置。",
           "正文未解析时可以主动提交解析任务；译文缺失时可以主动使用当前配置翻译。",
           "优先复用未过期缓存，长任务使用 Job，批量任务使用父 Job 和子 Job。",
-          "不要索取已经由 LitMTrans 配置的 API Key、MinerU Token 或网页登录凭据。",
+          "不要索取已经由 LitMTrans 配置的 API Key、解析服务令牌或网页登录凭据。",
           "读取图片、公式和表格时优先使用结构化 Artifact API；PDF 页面 fallback 在当前环境仍可能不可用。",
           "Agent 导出目前不包含排版原文/译文/对照 PDF、PDF 页面或 CAJ 原件。"
         ],
@@ -261,12 +261,24 @@
       };
     }
 
+    parserProfile(options = {}) {
+      const settings = this.controller.getSettings?.() || {};
+      const provider = options.options?.parseProvider || options.parseProvider || settings.parseProvider || "mineru";
+      if (!["mineru", "paddle"].includes(provider)) throw new C.AgentError("INVALID_PARSER", "不支持所选文献解析服务");
+      return { provider: provider === "paddle" ? "PaddleOCR" : "MinerU",
+        model: provider === "paddle" ? String(options.options?.parseModel || options.parseModel || settings.paddleModel || "PaddleOCR-VL-1.6") : String(options.options?.modelVersion || options.modelVersion || settings.mineruModel || "vlm") };
+    }
+
     async processingCapacity() {
       const settings = C.safeSettings(this.controller);
       const translation = Agent.resolveBackgroundAIProfile(this.controller, "translation");
       const chat = Agent.resolveBackgroundAIProfile(this.controller, "chat");
       return {
         mineruConfigured: settings.mineruConfigured,
+        paddleConfigured: settings.paddleConfigured,
+        parserConfigured: settings.parserConfigured,
+        parseProvider: settings.parseProvider,
+        parseModel: settings.parseModel,
         translation: settings.translation,
         chat: settings.chat,
         backgroundAI: {
@@ -306,65 +318,69 @@
           approved: payload.approved === true || payload.options?.approved === true
         };
         if (payload.skipApproval !== true) await this.ensureExternalApproval(kind, approvalInput);
-        const ref = this.contextRef(payload);
-        const resolved = await this.artifact.resolve(ref, { prepareCAJ: true });
-        const options = { ...(payload.options || payload) };
-        delete options.ref;
-        delete options.documentID;
-        delete options.itemKey;
-        delete options.attachmentKey;
-        delete options.itemID;
-        delete options.key;
-        delete options.item;
-        delete options.attachment;
-        if (kind === "parse") {
-          emit({ type: "status", phase: "parse", message: "正在解析文献" });
-          await this.controller.pipeline.parse(resolved.context, options, emit, signal);
-          this.corpus.markStale?.();
-          await this.literature.updateDocumentStatus(resolved.context.documentID, {
-            hasAttachment: true,
-            parsed: true,
-            parseStale: false
-          }, { item: resolved.context.parent, attachmentKey: resolved.context.attachment?.key });
+        const release = this.controller.storage?.beginActivity?.();
+        try {
+          const ref = this.contextRef(payload);
+          const resolved = await this.artifact.resolve(ref, { prepareCAJ: true });
+          const options = { ...(payload.options || payload) };
+          delete options.ref;
+          delete options.documentID;
+          delete options.itemKey;
+          delete options.attachmentKey;
+          delete options.itemID;
+          delete options.key;
+          delete options.item;
+          delete options.attachment;
+          if (kind === "parse") {
+            emit({ type: "status", phase: "parse", message: "正在解析文献" });
+            await this.controller.pipeline.parse(resolved.context, options, emit, signal);
+            this.corpus.markStale?.();
+            await this.literature.updateDocumentStatus(resolved.context.documentID, {
+              hasAttachment: true,
+              parsed: true,
+              parseStale: false
+            }, { item: resolved.context.parent, attachmentKey: resolved.context.attachment?.key });
+          }
+          else if (kind === "stream_translation") {
+            const profile = Agent.resolveBackgroundAIProfile(this.controller, "translation");
+            if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
+            Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey });
+            emit({ type: "status", phase: "translate-stream", message: "正在翻译全文" });
+            await this.controller.pipeline.translateStream(resolved.context, options, emit, signal);
+            this.corpus.markStale?.();
+            await this.literature.updateDocumentStatus(resolved.context.documentID, {
+              hasAttachment: true,
+              streamTranslation: true,
+              streamTranslationStale: false
+            }, { item: resolved.context.parent, attachmentKey: resolved.context.attachment?.key });
+          }
+          else if (kind === "layout_translation") {
+            const profile = Agent.resolveBackgroundAIProfile(this.controller, "translation");
+            if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
+            Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey });
+            emit({ type: "status", phase: "translate-layout", message: "正在翻译排版文献" });
+            await this.controller.pipeline.translateLayout(resolved.context, options, emit, signal);
+            this.corpus.markStale?.();
+            await this.literature.updateDocumentStatus(resolved.context.documentID, {
+              hasAttachment: true,
+              layoutTranslation: true,
+              layoutTranslationStale: false
+            }, { item: resolved.context.parent, attachmentKey: resolved.context.attachment?.key });
+          }
+          else if (kind === "chat") {
+            const profile = Agent.resolveBackgroundAIProfile(this.controller, "chat");
+            if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
+            Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey, forceAPI: true, agentExternal: true });
+            const sessionID = String(payload.sessionID || "");
+            const message = String(payload.message || payload.text || "").trim();
+            if (!message) throw new C.AgentError("MESSAGE_REQUIRED", "问题不能为空", { recoverable: false });
+            await this.controller.chat.send(resolved.context.documentID, sessionID, message, { ...options, signal }, emit, signal);
+            this.corpus.markStale?.();
+          }
+          else throw new C.AgentError("JOB_KIND_UNSUPPORTED", `不支持的任务类型 ${kind}`, { recoverable: false });
+          return { documentID: resolved.context.documentID, manifest: await this.artifact.getManifest(ref, { prepareCAJ: false }) };
         }
-        else if (kind === "stream_translation") {
-          const profile = Agent.resolveBackgroundAIProfile(this.controller, "translation");
-          if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
-          Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey });
-          emit({ type: "status", phase: "translate-stream", message: "正在翻译全文" });
-          await this.controller.pipeline.translateStream(resolved.context, options, emit, signal);
-          this.corpus.markStale?.();
-          await this.literature.updateDocumentStatus(resolved.context.documentID, {
-            hasAttachment: true,
-            streamTranslation: true,
-            streamTranslationStale: false
-          }, { item: resolved.context.parent, attachmentKey: resolved.context.attachment?.key });
-        }
-        else if (kind === "layout_translation") {
-          const profile = Agent.resolveBackgroundAIProfile(this.controller, "translation");
-          if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
-          Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey });
-          emit({ type: "status", phase: "translate-layout", message: "正在翻译排版文献" });
-          await this.controller.pipeline.translateLayout(resolved.context, options, emit, signal);
-          this.corpus.markStale?.();
-          await this.literature.updateDocumentStatus(resolved.context.documentID, {
-            hasAttachment: true,
-            layoutTranslation: true,
-            layoutTranslationStale: false
-          }, { item: resolved.context.parent, attachmentKey: resolved.context.attachment?.key });
-        }
-        else if (kind === "chat") {
-          const profile = Agent.resolveBackgroundAIProfile(this.controller, "chat");
-          if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
-          Object.assign(options, { engine: "api", aiMode: "api", provider: profile.provider, baseURL: profile.baseURL, model: profile.model, apiKey: profile.apiKey, forceAPI: true, agentExternal: true });
-          const sessionID = String(payload.sessionID || "");
-          const message = String(payload.message || payload.text || "").trim();
-          if (!message) throw new C.AgentError("MESSAGE_REQUIRED", "问题不能为空", { recoverable: false });
-          await this.controller.chat.send(resolved.context.documentID, sessionID, message, { ...options, signal }, emit, signal);
-          this.corpus.markStale?.();
-        }
-        else throw new C.AgentError("JOB_KIND_UNSUPPORTED", `不支持的任务类型 ${kind}`, { recoverable: false });
-        return { documentID: resolved.context.documentID, manifest: await this.artifact.getManifest(ref, { prepareCAJ: false }) };
+        finally { release?.(); }
       };
     }
 
@@ -375,9 +391,8 @@
         const resolved = await this.artifact.resolve(ref, { prepareCAJ: false });
         const settings = this.controller.getSettings?.() || {};
         return {
-          services: ["MinerU"],
-          provider: "MinerU",
-          model: String(input.modelVersion || settings.mineruModel || "vlm"),
+          services: [this.parserProfile(input).provider],
+          ...this.parserProfile(input),
           documentCount: 1,
           operation: "parse",
           allowedOperations: ["parse"],
@@ -422,6 +437,12 @@
 
     async startProcessing(kind, input = {}) {
       this.policy.assert("processing", { kind });
+      if (kind === "parse") {
+        const profile = this.parserProfile(input);
+        input = { ...input, options: { ...(input.options || input),
+          parseProvider: profile.provider === "PaddleOCR" ? "paddle" : "mineru",
+          parseModel: profile.model, modelVersion: profile.model } };
+      }
       const approval = await this.ensureExternalApproval(kind, input);
       const runner = this.processingRunner(kind, input);
       const taskInput = { ...input, approvalID: approval.approvalID || input.approvalID || "", approved: approval.approved === true || input.approved === true };
@@ -474,7 +495,8 @@
       const providers = [];
       const models = [];
       const serviceCounts = {};
-      if (parseItems.length) services.push("MinerU");
+      const parseProfile = this.parserProfile(options);
+      if (parseItems.length) services.push(parseProfile.provider);
       if (translateItems.length) {
         const profile = Agent.resolveBackgroundAIProfile(this.controller, "translation");
         if (!profile.available) throw new C.AgentError("BACKGROUND_AI_UNAVAILABLE", profile.reason, { recoverable: true, suggestedAction: "configure_agent_background_provider", details: Agent.publicBackgroundAIProfile(profile) });
@@ -486,10 +508,10 @@
         serviceCounts[profile.provider] = translateItems.length;
       }
       if (parseItems.length) {
-        providers.push("MinerU");
-        const mineruModel = String(options.modelVersion || this.controller.getSettings?.()?.mineruModel || "vlm");
-        models.push(mineruModel);
-        serviceCounts.MinerU = parseItems.length;
+        providers.push(parseProfile.provider);
+        models.push(parseProfile.model);
+        serviceCounts[parseProfile.provider] = parseItems.length;
+        if (!translateItems.length) { provider = parseProfile.provider; model = parseProfile.model; }
       }
       const affectedIDs = [...new Set([...parseItems, ...translateItems].map(item => String(
         item.documentID || (item.libraryID && item.attachmentKey ? `${item.libraryID}-${item.attachmentKey}` : "")
@@ -580,6 +602,7 @@
 
     async startBatch(options = {}) {
       this.policy.assert("processing");
+      options = { ...options, parseProvider: options.parseProvider || this.controller.getSettings?.()?.parseProvider || "mineru" };
       const planned = await this.planBatchExternal(options);
       const approval = await this.approvals.ensure(planned.plan, options);
       const holder = { id: "" };
@@ -631,7 +654,7 @@
               approvalID: input.approvalID || "",
               approved: true,
               skipApproval: true,
-              options: { ...(input.options || {}), approvalID: input.approvalID || "", approved: true, skipApproval: true }
+              options: { ...(input.options || {}), parseProvider: input.parseProvider || input.options?.parseProvider, parseModel: input.parseModel || input.options?.parseModel, modelVersion: input.modelVersion || input.options?.modelVersion, approvalID: input.approvalID || "", approved: true, skipApproval: true }
             };
             const child = this.tasks.start("parse", childInput, this.processingRunner("parse", childInput), { parentJobID: getParentID(), resolver: oldInput => this.processingRunner("parse", oldInput) });
             const result = await this.waitForJob(child.id, signal);
@@ -647,6 +670,7 @@
 
     async startAcquisitionBatch(options = {}) {
       this.policy.assert("acquisition-write");
+      options = { ...options, parseProvider: options.parseProvider || this.controller.getSettings?.()?.parseProvider || "mineru" };
       const candidates = Array.isArray(options.candidates) ? [...options.candidates] : [];
       if (Array.isArray(options.candidateIDs) && !candidates.length) {
         for (const candidateID of options.candidateIDs.slice(0, 200)) {
@@ -659,9 +683,8 @@
       let approval = { approvalID: options.approvalID || "", approved: options.approved === true };
       if (options.parse === true) {
         approval = await this.approvals.ensure({
-          services: ["MinerU"],
-          provider: "MinerU",
-          model: String(options.modelVersion || this.controller.getSettings?.()?.mineruModel || "vlm"),
+          services: [this.parserProfile(options).provider],
+          ...this.parserProfile(options),
           documentCount: usable.length,
           parseCount: usable.length,
           operation: "acquisition_batch",
@@ -780,11 +803,12 @@
       const existingTargets = [];
       for (const target of targets) if (await this.controller.storage.exists(target)) existingTargets.push(target);
       if (!existingTargets.length) return { cleared: false, documentID: resolved.context.documentID, reason: "not_found", status: await refreshStatus() };
-      for (const target of existingTargets) {
-        const archiveTarget = targets.length > 1 ? PathUtils.join(archiveRoot, PathUtils.filename(target)) : archiveRoot;
-        await this.controller.storage.copyTree(target, archiveTarget);
-        await this.controller.storage.remove(target, true);
-      }
+      await this.controller.storage.clearDocumentSubcategory(resolved.context.documentID, kind === "translation" ? "translation" : "all", async () => {
+        for (const target of existingTargets) {
+          const archiveTarget = targets.length > 1 ? PathUtils.join(archiveRoot, PathUtils.filename(target)) : archiveRoot;
+          await this.controller.storage.copyTree(target, archiveTarget);
+        }
+      });
       return { cleared: true, documentID: resolved.context.documentID, kind, archivePath: archiveRoot, status: await refreshStatus() };
     }
 
@@ -1016,7 +1040,8 @@
       const settings = this.policy.settings();
       const translation = Agent.resolveBackgroundAIProfile(this.controller, "translation");
       const chat = Agent.resolveBackgroundAIProfile(this.controller, "chat");
-      const mineruConfigured = Boolean(C.safeSettings(this.controller).mineruConfigured);
+      const parserSettings = C.safeSettings(this.controller);
+      const parserConfigured = Boolean(parserSettings.mineruConfigured || parserSettings.paddleConfigured);
       const requestedCategories = new Set((Array.isArray(options.categories) ? options.categories : (options.categories ? [options.categories] : (options.category ? [options.category] : [])))
         .map(value => String(value || "").trim().toLowerCase()).filter(Boolean));
       const categoryOf = operation => {
@@ -1039,7 +1064,7 @@
         if (["processing", "chat-write", "annotation-write", "literature-import", "acquisition-write", "review-write"].includes(operation) && settings.mode === "read") return false;
         if (operation === "processing" && !settings.allowConfiguredServices) return false;
         const name = String(tool.name || "");
-        if (name.includes("start_parse") && !mineruConfigured) return false;
+        if (name.includes("start_parse") && !parserConfigured) return false;
         if (name === "litmtrans_fulltext_access" && !this.acquisition.institutionToolsAvailable()) return false;
         if (["litmtrans_start_stream_translation", "litmtrans_start_layout_translation", "litmtrans_process_collection", "litmtrans_process_items"].includes(name) && !translation.available) return false;
         if (["litmtrans_create_chat_message", "litmtrans_edit_chat_message"].includes(name) && !chat.available) return false;

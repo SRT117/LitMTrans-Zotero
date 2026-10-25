@@ -188,10 +188,12 @@ LitMTrans没有内置账号体系，也没有遥测和广告模块。插件自�
 
 使用外部服务时，需要注意对应的数据流向：
 
-- MinerU解析会把待解析文档提交到用户配置的MinerU服务；
+- 文献解析会把待解析文档提交到用户选择的MinerU或PaddleOCR服务；PaddleOCR按需补充文字行信息时还会提交相关页面；
 - 模型翻译会把需要翻译的文本，以及用户配置的参考语料发送到所选模型服务；
 - 全文AI阅读会把解析后的论文正文发送给所选模型；启用视觉输入时还会发送论文图片；
 - Google/Bing等网络翻译会把待翻译文本发送到对应服务。
+
+DeepSeek官方网页模式会把发送的文献内容和问题提交到用户登录的网页会话。启动和检查更新时会请求更新、公告及解析模型配置，不附带文献内容或API密钥。
 
 API密钥保存在Zotero的凭据存储中。排版译文和对照PDF作为Zotero附件保存，可以继续使用Zotero的附件管理和同步能力。卸载插件时不会自动删除API密钥和生成数据；需要清理缓存时请参考[PRIVACY.md](PRIVACY.md)。
 
@@ -269,6 +271,7 @@ LitMTrans-Zotero 的实现离不开以下开源项目与工具的启发和支持
 - [LitMTrans (Desktop)](https://github.com/SRT117/LitMTrans)：LitMTrans 独立桌面端版本，为插件版提供了核心排版算法与架构基础；
 - [MinerU](https://github.com/opendatalab/MinerU)：高质量的文档视觉解析与结构化提取支持；
 - [PDFMathTranslate / pdf2zh](https://github.com/PDFMathTranslate/PDFMathTranslate) 与 [BabelDOC](https://github.com/funstory-ai/BabelDOC)：学术文献双语排版翻译的先驱工作与思路启发；
+- [RetainPDF](https://github.com/wxyhgk/retain-pdf)：从原文 PDF 中提取非文字元素并原样嵌入排版译文的思路，受到该项目的启发；
 - [caj2pdf-rs](https://github.com/duststarr/caj2pdf-rs)：优秀的 Rust/WASM CAJ 解析与转换实现，为本插件提供了本地离线 CAJ 文献支持；
 - [ScanSci](https://github.com/Rimagination/scansci-pdf)：多源学术文献下载与检索工具，为本插件的文献获取运行时提供了核心能力；
 - [zotero-mcp](https://github.com/cookjohn/zotero-mcp)：成熟的 Zotero MCP 服务实现，为本插件的智能体连接与写入协调提供了基础模块参考；

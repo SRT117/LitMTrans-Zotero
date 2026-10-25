@@ -203,6 +203,28 @@ function testMarkdown() {
   assert(!unsafe.includes("<script>"));
   assert(unsafe.includes("&lt;script&gt;"));
 
+  const renderPaddle = (text, options = {}) => M.renderMarkdown(text, { ...options, parseProvider: "paddle" });
+  const paddleFigure = '<div style="text-align: center;">\n\n![IMAGE_001](images/a.png)\n\n</div>\n\n<div style="text-align: center;">FIG. 3. Caption with $x+y$.</div>\n\nBody text.';
+  const paddleHTML = renderPaddle(M.injectSyncAnchors(paddleFigure), {
+    resolveImage: () => "resource://litmtrans-data/doc/images/a.png"
+  });
+  assert(!paddleHTML.includes("&lt;div") && !paddleHTML.includes("&lt;/div"), "Paddle centering wrappers must not appear as reader text");
+  assert(paddleHTML.includes("<img") && paddleHTML.includes("FIG. 3. Caption") && paddleHTML.includes("litmtrans-math-inline") && paddleHTML.includes("Body text."));
+  assert(paddleHTML.includes('id="doc-block-0005"'), "existing source block anchors must survive display adaptation");
+  const centerTag = '<div style="text-align: center;">';
+  assert(renderPaddle('```html\n' + centerTag + '\n</div>\n```').includes("&lt;div"), "fenced HTML examples must stay literal");
+  assert(renderPaddle('`' + centerTag + '`').includes("&lt;div"), "inline HTML examples must stay literal");
+  assert(renderPaddle('```html\n' + centerTag).includes("&lt;div"), "incomplete code fences must stay literal during streaming");
+  assert(!renderPaddle(centerTag + '\n\nCaption').includes("&lt;div"), "an unfinished centered block must render during streaming");
+  assert(renderPaddle('<div onclick="alert(1)">Text</div>').includes("&lt;div"), "other HTML must retain the existing escaping policy");
+  const nestedHTML = renderPaddle(centerTag + '\n<div class="unknown">Text</div>\n</div>');
+  assert(nestedHTML.includes('&lt;div class=') && nestedHTML.match(/&lt;\/div&gt;/g)?.length === 1, "unknown nested divs must retain their own closing tags");
+
+  const defaultHTML = M.renderMarkdown(paddleFigure);
+  assert(defaultHTML.includes('&lt;div style='), "default rendering must retain the original HTML escaping behavior");
+  assert.equal(M.renderMarkdown(paddleFigure, { parseProvider: "mineru" }), defaultHTML, "MinerU must bypass Paddle adaptation");
+  assert.equal(M.renderMarkdown(paddleFigure, { parseProvider: "unknown" }), defaultHTML, "unknown providers must bypass Paddle adaptation");
+
   const math = M.renderMarkdown("Equation \\(\\frac{a}{b}\\) remains.");
   assert(math.includes("litmtrans-frac"));
   const paddedDollarMath = M.renderMarkdown("At $R / R _ { 0 } = 6 , 1 0 $ the after flow dominates.");
@@ -297,9 +319,98 @@ function testShortTemporaryDirectory() {
   assert(temporary.length < 80, "MinerU temporary extraction path must remain short");
 }
 
+function testFullwidthMathRendering() {
+  const previous = context.katex;
+  context.katex = require("katex");
+  try {
+    const broken = "缩比不小于 \\(1/12\\））\\(^{62}\\)";
+    const correct = "缩比不小于 \\(1/12\\)）\\(^{62}\\)";
+    assert.equal(M.renderInline(broken), M.renderInline(correct));
+    assert.equal(M.renderInline("\\（x+1\\）"), M.renderInline("\\(x+1\\)"));
+    assert.equal(M.renderInline("\\［x+2\\］"), M.renderInline("\\[x+2\\]"));
+    assert.equal(M.renderTeX("\\frac{a｝{b}"), M.renderTeX("\\frac{a}{b}"));
+    const valid = "\\text{中文（说明）}";
+    assert.equal(M.renderTeX(valid), context.katex.renderToString(valid, {
+      displayMode: false, throwOnError: false, strict: "ignore", trust: false, output: "htmlAndMathml"
+    }));
+    assert(M.renderTeX("\\frac{｛x｝").includes('class="katex-error"'));
+    const code = M.renderInline("`\\(1/12\\）` 中文（括号）");
+    assert(code.includes("<code>\\(1/12\\）</code>"));
+    assert(code.includes("中文（括号）"));
+    assert(!M.renderInline("\\(\\frac{a\\）").includes('class="katex"'));
+  }
+  finally { context.katex = previous; }
+}
+
+async function testFullwidthMathCacheRepair() {
+  const previous = context.katex;
+  vm.runInContext(fs.readFileSync(path.join(root, "assets/vendor/katex/katex.min.js"), "utf8"), context);
+  try {
+    const broken = "缩比 \\(1/12\\））\\(^{62}\\)";
+    const correct = "缩比 \\(1/12\\)）\\(^{62}\\)";
+    const protectedText = "正文（说明）\n```tex\n" + broken + "\n```\n`" + broken + "`";
+    assert.equal(M.repairFullwidthMathSyntax(protectedText), protectedText);
+    assert.equal(M.repairFullwidthMathSyntax("```tex\n" + broken), "```tex\n" + broken);
+    assert.equal(M.repairFullwidthMathSyntax("\\(\\text{中文（说明）}\\)"), "\\(\\text{中文（说明）}\\)");
+    assert.equal(M.repairFullwidthMathSyntax("\\(\\frac{a\\）"), "\\(\\frac{a\\）");
+    assert.equal(M.repairFullwidthMathSyntax("\\(\\frac｛a｝｛b｝\\)"), "\\(\\frac｛a｝｛b｝\\)");
+    assert.equal(M.repairFullwidthMathSyntax("\\(\\frac{a｝{b}\\)"), "\\(\\frac{a}{b}\\)");
+    const storage = new MemoryStorage();
+    const readJSON = storage.readJSON.bind(storage);
+    storage.readJSON = async (file, fallback) => storage.text.has(file)
+      ? JSON.parse(storage.text.get(file)) : readJSON(file, fallback);
+    let sequence = 0;
+    let writes = 0;
+    storage.temporaryDir = () => storage.path("repair-tmp", String(++sequence));
+    storage.writeTextAtomically = async (...args) => {
+      writes++;
+      return context.LitMTrans.Storage.prototype.writeTextAtomically.apply(storage, args);
+    };
+    const llm = { getSettings: () => ({ targetLanguage: "简体中文" }) };
+    const layout = new LayoutTranslationService(storage, llm);
+    const paths = layout.paths("repair", "简体中文");
+    const meta = { identity: "old", complete: true, sourceFingerprint: "source" };
+    await storage.writeJSON(paths.translations, { block: broken, other: "中文（不变）" });
+    await storage.writeJSON(paths.meta, meta);
+    const loaded = await layout.loadTranslations("repair");
+    assert.equal(loaded.translations.block, correct);
+    assert.equal((await storage.readJSON(paths.translations)).block, correct);
+    assert.deepEqual(loaded.meta, meta);
+    assert.equal((await layout.loadTranslations("repair")).translations.other, "中文（不变）");
+    assert.equal(writes, 1);
+    const rows = layout.parseTranslationResponse(JSON.stringify({ translations: [{ id: "block", text: broken }] }), [{ id: "block", text: correct }]);
+    assert.equal(rows.translations.block, correct);
+    const stream = new TranslationService(storage, llm);
+    const streamPaths = stream.paths("repair", "简体中文");
+    await storage.writeText(streamPaths.final, broken);
+    await storage.writeJSON(streamPaths.meta, meta);
+    assert.equal((await stream.load("repair")).markdown, correct);
+    assert.equal(await storage.readText(streamPaths.final), correct);
+    await stream.load("repair");
+    assert.equal(writes, 2);
+    const controller = Object.create(context.LitMTrans.Controller.prototype);
+    controller.parser = { loadParsed: async () => null };
+    controller.translation = stream;
+    assert.equal(await controller.streamMarkdownForExport("repair", "translation"), correct);
+    await stream.publishFinal(streamPaths, broken, meta);
+    assert.equal(await storage.readText(streamPaths.final), correct);
+    assert(!(await storage.list(storage.path("repair-tmp"))).length);
+    await storage.writeText(streamPaths.final, broken);
+    const publish = storage.publishFilesAtomically;
+    storage.publishFilesAtomically = async () => { throw new Error("publish failed"); };
+    await assert.rejects(() => stream.load("repair"), /publish failed/);
+    assert.equal(await storage.readText(streamPaths.final), broken);
+    assert(!(await storage.list(storage.path("repair-tmp"))).length);
+    storage.publishFilesAtomically = publish;
+  }
+  finally { context.katex = previous; }
+}
+
   return {
     testUtils,
     testMarkdown,
     testShortTemporaryDirectory,
+    testFullwidthMathRendering,
+    testFullwidthMathCacheRepair,
   };
 };

@@ -249,12 +249,31 @@
     return true;
   }
 
+  function normalizeParserModels(value) {
+    if (!Number.isSafeInteger(value?.revision) || value.revision < 1) return null;
+    const output = { revision: value.revision };
+    for (const [key, pattern, schema] of [
+      ["paddle", /^PaddleOCR-VL(?:-[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$/, "paddle-layout-blocks-v1"],
+      ["paddleOCR", /^PP-OCRv[0-9][A-Za-z0-9._-]{0,63}$/, "paddle-text-lines-v1"]
+    ]) {
+      const entry = value[key];
+      if (typeof entry?.model !== "string" || !pattern.test(entry.model) || entry.model !== entry.model.trim()
+        || typeof entry.minPluginVersion !== "string" || !/^\d+(?:\.\d+)*$/.test(entry.minPluginVersion)
+        || entry.minPluginVersion !== entry.minPluginVersion.trim()
+        || entry.apiProtocol !== "aistudio-jobs-v2" || entry.resultSchema !== schema) continue;
+      output[key] = { model: entry.model, minPluginVersion: entry.minPluginVersion,
+        apiProtocol: entry.apiProtocol, resultSchema: entry.resultSchema };
+    }
+    return output.paddle || output.paddleOCR ? output : null;
+  }
+
   const Updater = {
     stagedVersion: null,
     isUpdating: false,
     compareVersions,
     normalizeAnnouncements,
     isAnnouncementApplicable,
+    normalizeParserModels,
 
     async fetchUpdateManifest(timeoutMs = 8000, onProgress = null) {
       if (typeof onProgress === "function") {
@@ -304,6 +323,7 @@
               updateHash: rawHash,
               sourceUrl: url,
               announcements,
+              parserModels: normalizeParserModels(data.parserModels),
               raw: data
             };
           }
@@ -334,9 +354,14 @@
 
       // Multiple mirrors can briefly disagree while a release is propagating.
       // Prefer the newest valid manifest instead of whichever endpoint responds first.
-      return successful.reduce((best, candidate) => (
+      const manifest = successful.reduce((best, candidate) => (
         compareVersions(candidate.version, best.version) > 0 ? candidate : best
       ));
+      // 模型目录独立于插件版本更新，优先采用修订号最高的有效目录。
+      const parserModels = successful.reduce((best, candidate) => (
+        (candidate.parserModels?.revision || 0) > (best?.revision || 0) ? candidate.parserModels : best
+      ), null);
+      return { ...manifest, parserModels };
     },
 
     async checkUpdate(currentVersion, onProgress = null) {
@@ -344,7 +369,7 @@
       const remoteVersion = String(manifestInfo.version || "").trim();
       const current = String(currentVersion || "").trim();
       if (!remoteVersion || !current) {
-        return { hasUpdate: false, version: current, announcements: manifestInfo?.announcements || [] };
+        return { hasUpdate: false, version: current, announcements: manifestInfo?.announcements || [], parserModels: manifestInfo.parserModels };
       }
 
       const cmp = compareVersions(remoteVersion, current);
@@ -354,7 +379,8 @@
         version: remoteVersion,
         updateLink: manifestInfo.updateLink,
         updateHash: manifestInfo.updateHash,
-        announcements: manifestInfo.announcements || []
+        announcements: manifestInfo.announcements || [],
+        parserModels: manifestInfo.parserModels
       };
     },
 

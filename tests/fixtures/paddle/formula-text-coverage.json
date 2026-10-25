@@ -1,0 +1,22 @@
+[
+  {
+    "page": 2,
+    "source": "[V_{\\mathrm{r}}^{\\prime}(\\theta)]^{2}>, \\text{where } V_{\\mathrm{r}}^{\\prime}=V_{\\mathrm{r}}-<V_{\\mathrm{r}}>, \\text{is a function of the azimuth angle: } \\sigma_{\\mathrm{r}}^{2}=\\sigma_{\\mathrm{r}}^{2}(\\theta).  For the variance of the radial velocity averaged over the azimuth angles",
+    "pdfText": "[V ′\nr (θ)]2 >, where V ′\nr = Vr −< Vr >, is a function of the az-\nimuth angle: σ 2\nr = σ 2\nr (θ). For the variance of the radial ve-\nlocity averaged over the azimuth angles\n"
+  },
+  {
+    "page": 3,
+    "source": "where   S_{\\perp}(\\kappa)=[S_{\\parallel}(\\kappa)-\\kappa\\mathrm{d}S_{\\parallel}(\\kappa)/\\mathrm{d}\\kappa]/2  is the transverse spectrum of wind velocity fluctuations (Lumley and Panofsky, 1964; Monin and Yaglom, 1971).",
+    "pdfText": "where S⊥(κ) = [S∥(κ) −κdS∥(κ)/dκ]/2 is the transverse\nspectrum of wind velocity ﬂuctuations (Lumley and Panof-\nsky, 1964; Monin and Yaglom, 1971).\n"
+  },
+  {
+    "page": 4,
+    "source": "where   \\overline{\\sigma}_{\\alpha}^{2}=M^{-1}\\sum_{m=0}^{M-1}\\sigma_{\\alpha}^{2}(\\theta_{m});\\quad\\sigma_{\\alpha}^{2}(\\theta_{m})=<[V_{\\alpha}^{\\prime}(\\theta_{m})]^{2}> ;\n  \\overline{D}_{\\alpha}(\\psi_{l})=(M-l)^{-1}\\sum_{m=0}^{M-1-l}D_{\\alpha}(\\psi_{l},\\quad\\theta_{m});\\quad D_{\\alpha}(\\psi_{l},\\quad\\theta_{m})=<\\left[V_{\\alpha}^{\\prime}(\\theta_{m}+\\psi_{l})-V_{\\alpha}^{\\prime}(\\theta_{m})\\right]^{2}> ; \\quad V_{\\alpha}^{\\prime}=V_{\\alpha}-<V_{\\mathrm{r}}>\\quad and\\quad\\mathrm{~subscript~}\\alpha\\mathrm{~is~L~or~a.~In~Eqs.~{(13)~and~(14)~it~is~assumed~that~}\\sigma_{\\mathrm{e}}\\mathrm{~is~independent~of~the~azimuth~angle~}\\theta_{m}.~The~variance~} $\n  \\overline{\\sigma}_{\\mathrm{a}}^{2}  can be represented as\n  \\overline{\\sigma}_{\\mathrm{a}}^{2}=\\overline{\\sigma}_{\\mathrm{r}}^{2}-\\overline{\\sigma}_{\\mathrm{t}}^{2} , (15)\nwhere   \\overline{\\sigma}_{\\mathrm{t}}^{2}=M^{-1}\\sum_{m=0}^{M-1}\\sigma_{\\mathrm{t}}^{2}(\\theta_{m})  and   \\sigma_{\\mathrm{t}}^{2}(\\theta_{m})=\\sigma_{\\mathrm{r}}^{2}(\\theta_{m})-\\sigma_{\\mathrm{a}}^{2}(\\theta_{m})  is the turbulent broadening of the Doppler spectrum (Banakh and Smalikho, 2013).",
+    "pdfText": "where\nσ 2\nα = M−1 M−1\nP\nm=0\nσ 2\nα(θm);\nσ 2\nα(θm) = < [V ′\nα(θm)]2 >;\nDα(ψl) = (M −l)−1 M−1−l\nP\nm=0\nDα(ψl,\nθm);\nDα(ψl,\nθm) =\n< [V ′\nα(θm + ψl) −V ′\nα(θm)]2 >;\nV ′\nα = Vα −< Vr >\nand\nsubscript α is L or a. In Eqs. (13) and (14) it is assumed\nthat σe is independent of the azimuth angle θm. The variance\nσ 2\na can be represented as\nσ 2\na = σ 2\nr −σ 2\nt ,\n(15)\nwhere\nσ 2\nt = M−1 M−1\nP\nm=0\nσ 2\nt (θm)\nand\nσ 2\nt (θm) = σ 2\nr (θm) −\nσ 2\na (θm) is the turbulent broadening of the Doppler spectrum\n(Banakh and Smalikho, 2013).\n"
+  },
+  {
+    "page": 5,
+    "source": "H_{\\parallel}(\\kappa_{1}) = [\\exp\\{-(\\pi\\Delta p\\kappa_{1})^{2}\\}\\mathrm{sinc}(\\pi\\Delta R\\kappa_{1})]^{2} \\text{ is the longitudinal transfer function of the low-frequency filter, and } H_{\\perp}(\\kappa_{2}) = [\\mathrm{sinc}(\\pi\\Delta y_{k}\\kappa_{2})]^{2} \\text{ is the transverse one}; \\Delta p = c\\sigma_{\\mathrm{p}}/2; c \\text{ is the speed of light; } 2\\sigma_{\\mathrm{p}} \\text{ is the duration of the probing pulse determined by the } e^{-1} \\text{ power level to the right and to the left of the peak point, } \\Delta R = cT_{\\mathrm{W}}/2, \\text{ where } T_{\\mathrm{W}} \\text{ is the temporal window width; and } \\mathrm{sinc}(x) = \\sin x/x.",
+    "pdfText": "H∥(κ1) = [exp{−(π1pκ1)2}sinc(π1Rκ1)]2\nis\nthe\nlon-\ngitudinal transfer function of the low-frequency ﬁlter,\nand\nH⊥(κ2) = [sinc(π1ykκ2)]2\nis\nthe\ntransverse\none;\n1p = cσp/2; c is the speed of light; 2σp is the duration of\nthe probing pulse determined by the e−1 power level to the\nright and to the left of the peak point, 1R = cTW/2, where\nTW is the temporal window width; and sinc(x) = sinx/x.\n2\n"
+  }
+]

@@ -129,7 +129,7 @@
       if (!last || label.test(last) || dangling.test(last)) tail.pop();
       else break;
     }
-    return [...head, ...tail].join("\n").trimEnd() + "\n";
+    return M.repairFullwidthMathSyntax([...head, ...tail].join("\n").trimEnd() + "\n");
   }
 
   function continuationPrompt(targetLanguage, marker) {
@@ -148,10 +148,10 @@
   }
 
   class TranslationService {
-    constructor(storage, llm, mineru = null, webMachine = null) {
+    constructor(storage, llm, parser = null, webMachine = null) {
       this.storage = storage;
       this.llm = llm;
-      this.mineru = mineru;
+      this.parser = parser;
       this.webMachine = webMachine;
     }
 
@@ -186,6 +186,7 @@
     }
 
     async publishFinal(paths, markdown, meta) {
+      markdown = M.repairFullwidthMathSyntax(markdown);
       // Keep temporary files out of the document path. Target-language names
       // may be non-ASCII and the document/profile path can already be long on
       // Windows, causing IOUtils.write to fail before the atomic publish.
@@ -208,6 +209,7 @@
         if (this.storage.temporaryDir) await this.storage.remove(stagingRoot, true);
       }
       await this.storage.remove(paths.progress, false);
+      return markdown;
     }
 
     async manualCompletionMarker(markdown) {
@@ -298,10 +300,12 @@
           markdown = await this.storage.readText(filePath, "");
         }
         else if (C.SUPPORTED_INPUT_EXTENSIONS.has(extension)) {
-          if (!this.mineru?.parseExternalReference) {
+          if (!this.parser?.parseExternalReference) {
             throw new Error(`参考文件解析服务未就绪，请重启LitMTrans后重试：${fileName}`);
           }
-          const parsed = await this.mineru.parseExternalReference(filePath, parsedRoot, {
+          const parsed = await this.parser.parseExternalReference(filePath, parsedRoot, {
+            parseProvider: settings.parseProvider || "mineru",
+            parseModel: settings.paddleModel,
             modelVersion: settings.mineruModel || "vlm",
             isOCR: false,
             enableFormula: true,
@@ -408,7 +412,14 @@
         this.storage.readJSON(paths.meta, null),
         this.storage.readText(paths.live, "")
       ]);
-      return { markdown, meta, live };
+      const repaired = await this.repairCachedMarkdown(paths.final, markdown);
+      return { markdown: repaired, meta, live: M.repairFullwidthMathSyntax(live) };
+    }
+
+    async repairCachedMarkdown(path, markdown) {
+      const repaired = M.repairFullwidthMathSyntax(markdown);
+      if (repaired !== markdown) await this.storage.writeTextAtomically(path, repaired);
+      return repaired;
     }
 
     async audit(documentID, requestKind, settings, messages, timeout, promptCacheKey = "") {
@@ -483,6 +494,7 @@
         "Preserve the document structure, headings, tables, code blocks, inline code, HTML tags, links, and image placeholders such as IMAGE_001. " +
         "Keep anchor tags, ids, image references, and table structure intact whenever they are present. " +
         "Be conservative about formatting: do not turn normal prose into headings, captions, centered text, bold text, lists, or tables unless the Markdown structure clearly indicates it. " +
+        C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + " " +
         "Act like a careful journal copy editor for layout cleanup: keep ordinary body paragraphs as body text with normal paragraph flow, repair obvious paragraph breaks, and separate merged captions from explanatory prose. " +
         "Figure/table captions should remain separate from body paragraphs; true captions such as 'Figure 1.', 'Fig. 1', 'Table 2.', or their translated equivalents should be caption-like blocks, while body paragraphs that merely mention figures or tables, such as 'Figure 1 shows ...' or 'Table 2 reports ...', must stay normal paragraphs. " +
         "Where the rendered output supports it, captions should be visually distinct from body text: centered where appropriate, slightly smaller than body text, and not followed by accidental centered body paragraphs. " +
@@ -555,8 +567,9 @@
         this.storage.readText(paths.final, "")
       ]);
       if (!options.force && cached && meta?.identity === identity && meta?.complete) {
-        emit?.({ type: "translation", mode, markdown: cached, complete: true, cached: true });
-        return { markdown: cached, meta, cached: true };
+        const repaired = await this.repairCachedMarkdown(paths.final, cached);
+        emit?.({ type: "translation", mode, markdown: repaired, complete: true, cached: true });
+        return { markdown: repaired, meta, cached: true };
       }
       const clearWorkingState = async () => {
         const workingNames = [
@@ -626,8 +639,9 @@
         this.storage.readJSON(paths.meta, null)
       ]);
       if (!settings.force && cached && previous?.identity === identity && previous?.complete) {
-        emit?.({ type: "translation", mode, markdown: cached, complete: true, cached: true });
-        return { markdown: cached, meta: previous, cached: true };
+        const repaired = await this.repairCachedMarkdown(paths.final, cached);
+        emit?.({ type: "translation", mode, markdown: repaired, complete: true, cached: true });
+        return { markdown: repaired, meta: previous, cached: true };
       }
       emit?.({
         type: "status",
@@ -635,14 +649,14 @@
         message: edgeLocal ? "正在启动Edge本地翻译…" : "正在连接联网免费机翻，必要时将自动切换Bing。",
         progress: 0
       });
-      const markdownResult = await this.webMachine.translateMarkdown(markdown, {
+      const markdownResult = M.repairFullwidthMathSyntax(await this.webMachine.translateMarkdown(markdown, {
         provider,
         targetLanguage: webSettings.targetLanguage,
         sourceLanguage,
         signal,
         log: message => emit?.({ type: "log", message }),
         liveUpdate: live => emit?.({ type: "translation", mode, markdown: live, complete: false })
-      });
+      }));
       const meta = {
         identity,
         sourceFingerprint: U.hashString(markdown),
@@ -745,6 +759,7 @@
           `Translate the following academic-paper Markdown source chunk into ${settings.targetLanguage}. ${U.targetLanguageInstruction(settings.targetLanguage)} ` +
           "While translating, gently fix clear Markdown/table formatting problems caused by parsing, such as malformed table separators, obvious heading/caption formatting issues, and excessive line breaks. Preserve meaning and do not over-correct uncertain scientific content. " +
           "Do not introduce new centering, bolding, heading levels, list markers, or caption formatting unless the source Markdown clearly marks that block as such. " +
+          C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + " " +
           "As a journal copy editor, split true figure/table captions away from surrounding explanatory paragraphs when they are merged, and restore the surrounding explanation to normal paragraph formatting. " +
           "Keep figure/table captions separate from body paragraphs; a paragraph that discusses a figure/table is still normal prose. Captions may be centered or caption-styled only when the block is clearly a caption. " +
           "Keep numeric reference citations such as [1], [2-4], and [5,6] intact as citation markers suitable for superscript PDF export styling. " +
@@ -1043,6 +1058,7 @@
       const makeUser = () => (
         `Translate the following academic-paper Markdown completely into ${settings.targetLanguage}.\n\n` +
         "Rules:\n" +
+        C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + "\n" +
         "1. Understand the research field and terminology before translating.\n" +
         "2. Preserve all Markdown tables, formulas, image references, HTML anchor ids, and placeholders such as IMAGE_001.\n" +
         "3. While translating, fix obvious parsing-related Markdown/formatting defects, including broken table syntax, excessive line breaks, and malformed captions. Preserve every formula verbatim with its original TeX delimiters; never output naked TeX as ordinary text.\n" +

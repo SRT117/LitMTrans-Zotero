@@ -39,6 +39,8 @@ docs/deepseek-web-provider-upgrade-plan.md
 .mutagen.yml
 scripts/manage_feedbacks.py
 docs/feedback-management-guide.md
+docs/parser-model-updates.md
+docs/releases/*-preflight.md
 docs/plugin-python-migration-comparison.md
 feedbacks/
 *.log

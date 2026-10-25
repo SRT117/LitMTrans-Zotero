@@ -107,6 +107,10 @@
       settings.targetLanguage = String(raw.targetLanguage || "");
       settings.translationMode = String(raw.translationMode || "");
       settings.chatEngine = String(raw.chatEngine || "");
+      settings.parseProvider = String(raw.parseProvider || "mineru");
+      settings.parseModel = settings.parseProvider === "paddle" ? String(raw.paddleModel || "PaddleOCR-VL-1.6") : String(raw.mineruModel || "vlm");
+      settings.paddleConfigured = Boolean(raw.paddleToken || raw.hasPaddleToken || controller?.secrets?.getPaddleToken?.());
+      settings.parserConfigured = settings.parseProvider === "paddle" ? settings.paddleConfigured : Boolean(raw.mineruToken || raw.hasMinerUToken || controller?.secrets?.getMinerUToken?.());
       settings.mineruModel = String(raw.mineruModel || "");
       settings.mineruConfigured = Boolean(raw.mineruToken || raw.hasMinerUToken || controller?.secrets?.getMinerUToken?.());
     }

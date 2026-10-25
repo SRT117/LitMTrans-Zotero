@@ -162,6 +162,12 @@
       this.remove(this.llmKeyName(providerID));
     }
 
+    getPaddleToken() { return this.get("paddle"); }
+
+    setPaddleToken(value) { return this.set("paddle", String(value || "").trim().replace(/^Bearer\s+/i, "")); }
+
+    removePaddleToken() { this.remove("paddle"); }
+
     getMinerUToken() {
       return this.get("mineru");
     }

@@ -1,0 +1,1219 @@
+{
+  "fixtureNote": "实测版面坐标与公式表格结构，正文已替换为测试文本",
+  "result": {
+    "layoutParsingResults": [
+      {
+        "prunedResult": {
+          "page_count": null,
+          "width": 1191,
+          "height": 1588,
+          "model_settings": {
+            "use_doc_preprocessor": false,
+            "use_layout_detection": true,
+            "use_chart_recognition": false,
+            "use_seal_recognition": false,
+            "use_ocr_for_image_block": false,
+            "format_block_content": false,
+            "merge_layout_blocks": true,
+            "markdown_ignore_labels": [
+              "number",
+              "footnote",
+              "header",
+              "header_image",
+              "footer",
+              "footer_image",
+              "aside_text"
+            ],
+            "return_layout_polygon_points": true
+          },
+          "parsing_res_list": [
+            {
+              "block_label": "header",
+              "block_content": "Header",
+              "block_bbox": [
+                71,
+                70,
+                157,
+                87
+              ],
+              "block_id": 0,
+              "block_order": null,
+              "group_id": 0,
+              "block_polygon_points": [
+                [
+                  71.0,
+                  70.0
+                ],
+                [
+                  156.0,
+                  70.0
+                ],
+                [
+                  156.0,
+                  86.0
+                ],
+                [
+                  71.0,
+                  86.0
+                ]
+              ]
+            },
+            {
+              "block_label": "header",
+              "block_content": "Header",
+              "block_bbox": [
+                869,
+                69,
+                1120,
+                88
+              ],
+              "block_id": 1,
+              "block_order": null,
+              "group_id": 1,
+              "block_polygon_points": [
+                [
+                  869.0,
+                  69.0
+                ],
+                [
+                  1119.0,
+                  69.0
+                ],
+                [
+                  1119.0,
+                  87.0
+                ],
+                [
+                  869.0,
+                  87.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                69,
+                114,
+                460,
+                135
+              ],
+              "block_id": 2,
+              "block_order": 1,
+              "group_id": 2,
+              "block_polygon_points": [
+                [
+                  69.0,
+                  114.0
+                ],
+                [
+                  459.0,
+                  114.0
+                ],
+                [
+                  459.0,
+                  134.0
+                ],
+                [
+                  69.0,
+                  134.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                69,
+                135,
+                582,
+                323
+              ],
+              "block_id": 3,
+              "block_order": 2,
+              "group_id": 3,
+              "block_polygon_points": [
+                [
+                  69.0,
+                  135.0
+                ],
+                [
+                  582.0,
+                  135.0
+                ],
+                [
+                  582.0,
+                  323.0
+                ],
+                [
+                  69.0,
+                  323.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                68,
+                325,
+                582,
+                532
+              ],
+              "block_id": 4,
+              "block_order": 3,
+              "group_id": 4,
+              "block_polygon_points": [
+                [
+                  68.0,
+                  325.0
+                ],
+                [
+                  582.0,
+                  325.0
+                ],
+                [
+                  582.0,
+                  532.0
+                ],
+                [
+                  68.0,
+                  532.0
+                ]
+              ]
+            },
+            {
+              "block_label": "display_formula",
+              "block_content": " $$ \\begin{array}{r}{\\int_{t}\\int_{x}\\bigg(\\frac{\\partial\\phi}{\\partial t}+\\nu\\frac{\\partial\\phi}{\\partial x}\\bigg)\\mathrm{d}x\\mathrm{d}t=\\int_{x}(\\phi^{\\mid_{t_{n}}^{t_{n}+1}})\\mathrm{d}x+\\int_{t}\\nu(\\phi^{\\mid_{x_{n}+1}}^{x_{n+1}})\\mathrm{d}t=0.}\\end{array} $$ ",
+              "block_bbox": [
+                69,
+                546,
+                525,
+                588
+              ],
+              "block_id": 5,
+              "block_order": 4,
+              "group_id": 5,
+              "block_polygon_points": [
+                [
+                  69.0,
+                  546.0
+                ],
+                [
+                  525.0,
+                  546.0
+                ],
+                [
+                  525.0,
+                  588.0
+                ],
+                [
+                  69.0,
+                  588.0
+                ]
+              ]
+            },
+            {
+              "block_label": "formula_number",
+              "block_content": "(11)",
+              "block_bbox": [
+                546,
+                569,
+                579,
+                588
+              ],
+              "block_id": 6,
+              "block_order": 5,
+              "group_id": 6,
+              "block_polygon_points": [
+                [
+                  546.0,
+                  569.0
+                ],
+                [
+                  578.0,
+                  569.0
+                ],
+                [
+                  578.0,
+                  587.0
+                ],
+                [
+                  546.0,
+                  587.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                68,
+                602,
+                581,
+                810
+              ],
+              "block_id": 7,
+              "block_order": 6,
+              "group_id": 7,
+              "block_polygon_points": [
+                [
+                  68.0,
+                  602.0
+                ],
+                [
+                  581.0,
+                  602.0
+                ],
+                [
+                  581.0,
+                  810.0
+                ],
+                [
+                  68.0,
+                  810.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                68,
+                811,
+                582,
+                981
+              ],
+              "block_id": 8,
+              "block_order": 7,
+              "group_id": 8,
+              "block_polygon_points": [
+                [
+                  68.0,
+                  811.0
+                ],
+                [
+                  582.0,
+                  811.0
+                ],
+                [
+                  582.0,
+                  981.0
+                ],
+                [
+                  68.0,
+                  981.0
+                ]
+              ]
+            },
+            {
+              "block_label": "paragraph_title",
+              "block_content": "2.2. Equation of state",
+              "block_bbox": [
+                70,
+                1006,
+                227,
+                1027
+              ],
+              "block_id": 9,
+              "block_order": 8,
+              "group_id": 9,
+              "block_polygon_points": [
+                [
+                  70.0,
+                  1006.0
+                ],
+                [
+                  226.0,
+                  1006.0
+                ],
+                [
+                  226.0,
+                  1026.0
+                ],
+                [
+                  70.0,
+                  1026.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                69,
+                1048,
+                581,
+                1152
+              ],
+              "block_id": 10,
+              "block_order": 9,
+              "group_id": 10,
+              "block_polygon_points": [
+                [
+                  69.0,
+                  1048.0
+                ],
+                [
+                  581.0,
+                  1048.0
+                ],
+                [
+                  581.0,
+                  1152.0
+                ],
+                [
+                  69.0,
+                  1152.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                68,
+                1153,
+                581,
+                1300
+              ],
+              "block_id": 11,
+              "block_order": 10,
+              "group_id": 11,
+              "block_polygon_points": [
+                [
+                  68.0,
+                  1153.0
+                ],
+                [
+                  581.0,
+                  1153.0
+                ],
+                [
+                  581.0,
+                  1300.0
+                ],
+                [
+                  68.0,
+                  1300.0
+                ]
+              ]
+            },
+            {
+              "block_label": "display_formula",
+              "block_content": " $$ p=A\\bigg(1-\\frac{\\omega\\eta}{R_{1}}\\bigg)e^{-\\frac{R_{1}}{\\eta}}+B\\bigg(1-\\frac{\\omega\\eta}{R_{2}}\\bigg)e^{-\\frac{R_{2}}{\\eta}}+\\omega\\eta\\rho_{0}e $$ ",
+              "block_bbox": [
+                70,
+                1311,
+                419,
+                1357
+              ],
+              "block_id": 12,
+              "block_order": 11,
+              "group_id": 12,
+              "block_polygon_points": [
+                [
+                  70.0,
+                  1311.0
+                ],
+                [
+                  419.0,
+                  1311.0
+                ],
+                [
+                  419.0,
+                  1357.0
+                ],
+                [
+                  70.0,
+                  1357.0
+                ]
+              ]
+            },
+            {
+              "block_label": "formula_number",
+              "block_content": "(12)",
+              "block_bbox": [
+                546,
+                1338,
+                579,
+                1357
+              ],
+              "block_id": 13,
+              "block_order": 12,
+              "group_id": 13,
+              "block_polygon_points": [
+                [
+                  546.0,
+                  1338.0
+                ],
+                [
+                  578.0,
+                  1338.0
+                ],
+                [
+                  578.0,
+                  1356.0
+                ],
+                [
+                  546.0,
+                  1356.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                68,
+                1371,
+                581,
+                1475
+              ],
+              "block_id": 14,
+              "block_order": 13,
+              "group_id": 14,
+              "block_polygon_points": [
+                [
+                  68.0,
+                  1371.0
+                ],
+                [
+                  581.0,
+                  1371.0
+                ],
+                [
+                  581.0,
+                  1475.0
+                ],
+                [
+                  68.0,
+                  1475.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                94,
+                1475,
+                583,
+                1496
+              ],
+              "block_id": 15,
+              "block_order": 14,
+              "group_id": 15,
+              "block_polygon_points": [
+                [
+                  94.0,
+                  1475.0
+                ],
+                [
+                  583.0,
+                  1475.0
+                ],
+                [
+                  583.0,
+                  1496.0
+                ],
+                [
+                  94.0,
+                  1496.0
+                ]
+              ]
+            },
+            {
+              "block_label": "figure_title",
+              "block_content": "Table 1\nMaterial parameters and coefficients in JWL EOS for TNT [54].",
+              "block_bbox": [
+                608,
+                120,
+                1023,
+                155
+              ],
+              "block_id": 16,
+              "block_order": null,
+              "group_id": 16,
+              "block_polygon_points": [
+                [
+                  608.0,
+                  120.0
+                ],
+                [
+                  1023.0,
+                  120.0
+                ],
+                [
+                  1023.0,
+                  155.0
+                ],
+                [
+                  608.0,
+                  155.0
+                ]
+              ]
+            },
+            {
+              "block_label": "table",
+              "block_content": "<table><tr><td>$ \\rho_{0} $ $ (kg/m^{3}) $</td><td>A(Pa)</td><td>B(Pa)</td><td>R_{1}</td><td>R_{2}</td><td>$ \\omega $</td><td>e(J/kg)</td></tr><tr><td>1630</td><td>3.71 \\times 10^{11}</td><td>3.21 \\times 10^{9}</td><td>4.15</td><td>0.95</td><td>0.3</td><td>4.29 \\times 10^{6}</td></tr></table>",
+              "block_bbox": [
+                613,
+                159,
+                1114,
+                226
+              ],
+              "block_id": 17,
+              "block_order": null,
+              "group_id": 17,
+              "block_polygon_points": [
+                [
+                  613.0,
+                  159.0
+                ],
+                [
+                  1114.0,
+                  159.0
+                ],
+                [
+                  1114.0,
+                  226.0
+                ],
+                [
+                  613.0,
+                  226.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                607,
+                257,
+                1120,
+                383
+              ],
+              "block_id": 18,
+              "block_order": 15,
+              "group_id": 18,
+              "block_polygon_points": [
+                [
+                  607.0,
+                  257.0
+                ],
+                [
+                  1120.0,
+                  257.0
+                ],
+                [
+                  1120.0,
+                  383.0
+                ],
+                [
+                  607.0,
+                  383.0
+                ]
+              ]
+            },
+            {
+              "block_label": "display_formula",
+              "block_content": " $$ p=\\frac{\\rho_{_{0}}c_{_{0}}^{2}\\mu\\left[1+\\left(1-\\frac{\\gamma_{_{0}}}{2}\\right)\\mu-\\frac{a}{2}\\mu^{2}\\right]}{\\left[1-\\left(s_{1}-1\\right)\\mu-\\frac{s_{2}\\mu^{2}}{\\mu+1}-\\frac{s_{3}\\mu^{3}}{(\\mu+1)^{2}}\\right]^{2}}+\\rho_{_{0}}(\\gamma_{_{0}}+a\\mu)\\Delta e $$ ",
+              "block_bbox": [
+                607,
+                393,
+                999,
+                468
+              ],
+              "block_id": 19,
+              "block_order": 16,
+              "group_id": 19,
+              "block_polygon_points": [
+                [
+                  607.0,
+                  393.0
+                ],
+                [
+                  999.0,
+                  393.0
+                ],
+                [
+                  999.0,
+                  468.0
+                ],
+                [
+                  607.0,
+                  468.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                632,
+                481,
+                977,
+                501
+              ],
+              "block_id": 20,
+              "block_order": 17,
+              "group_id": 20,
+              "block_polygon_points": [
+                [
+                  632.0,
+                  481.0
+                ],
+                [
+                  976.0,
+                  481.0
+                ],
+                [
+                  976.0,
+                  500.0
+                ],
+                [
+                  632.0,
+                  500.0
+                ]
+              ]
+            },
+            {
+              "block_label": "formula_number",
+              "block_content": "(13)",
+              "block_bbox": [
+                1084,
+                449,
+                1117,
+                469
+              ],
+              "block_id": 21,
+              "block_order": 18,
+              "group_id": 21,
+              "block_polygon_points": [
+                [
+                  1084.0,
+                  449.0
+                ],
+                [
+                  1116.0,
+                  449.0
+                ],
+                [
+                  1116.0,
+                  468.0
+                ],
+                [
+                  1084.0,
+                  468.0
+                ]
+              ]
+            },
+            {
+              "block_label": "display_formula",
+              "block_content": " $$ p=\\rho_{0}c_{0}^{2}\\mu+\\rho_{0}(\\gamma_{0}+a\\mu)\\Delta e $$ ",
+              "block_bbox": [
+                608,
+                513,
+                806,
+                535
+              ],
+              "block_id": 22,
+              "block_order": 19,
+              "group_id": 22,
+              "block_polygon_points": [
+                [
+                  608.0,
+                  513.0
+                ],
+                [
+                  805.0,
+                  513.0
+                ],
+                [
+                  805.0,
+                  534.0
+                ],
+                [
+                  608.0,
+                  534.0
+                ]
+              ]
+            },
+            {
+              "block_label": "formula_number",
+              "block_content": "(14)",
+              "block_bbox": [
+                1084,
+                515,
+                1117,
+                534
+              ],
+              "block_id": 23,
+              "block_order": 20,
+              "group_id": 23,
+              "block_polygon_points": [
+                [
+                  1084.0,
+                  515.0
+                ],
+                [
+                  1116.0,
+                  515.0
+                ],
+                [
+                  1116.0,
+                  533.0
+                ],
+                [
+                  1084.0,
+                  533.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                606,
+                546,
+                1120,
+                799
+              ],
+              "block_id": 24,
+              "block_order": 21,
+              "group_id": 24,
+              "block_polygon_points": [
+                [
+                  606.0,
+                  546.0
+                ],
+                [
+                  1120.0,
+                  546.0
+                ],
+                [
+                  1120.0,
+                  799.0
+                ],
+                [
+                  606.0,
+                  799.0
+                ]
+              ]
+            },
+            {
+              "block_label": "display_formula",
+              "block_content": " $$ p=\\left\\{\\begin{aligned}&P,&p>P_{\\nu}\\\\ &P_{\\nu},&p<P_{\\nu}\\end{aligned}\\right. $$ ",
+              "block_bbox": [
+                608,
+                809,
+                735,
+                855
+              ],
+              "block_id": 25,
+              "block_order": 22,
+              "group_id": 25,
+              "block_polygon_points": [
+                [
+                  608.0,
+                  809.0
+                ],
+                [
+                  735.0,
+                  809.0
+                ],
+                [
+                  735.0,
+                  855.0
+                ],
+                [
+                  608.0,
+                  855.0
+                ]
+              ]
+            },
+            {
+              "block_label": "formula_number",
+              "block_content": "(15)",
+              "block_bbox": [
+                1084,
+                838,
+                1117,
+                857
+              ],
+              "block_id": 26,
+              "block_order": 23,
+              "group_id": 26,
+              "block_polygon_points": [
+                [
+                  1084.0,
+                  838.0
+                ],
+                [
+                  1116.0,
+                  838.0
+                ],
+                [
+                  1116.0,
+                  856.0
+                ],
+                [
+                  1084.0,
+                  856.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                607,
+                869,
+                1109,
+                890
+              ],
+              "block_id": 27,
+              "block_order": 24,
+              "group_id": 27,
+              "block_polygon_points": [
+                [
+                  607.0,
+                  869.0
+                ],
+                [
+                  1103.0,
+                  869.0
+                ],
+                [
+                  1103.0,
+                  889.0
+                ],
+                [
+                  607.0,
+                  889.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                607,
+                889,
+                1118,
+                933
+              ],
+              "block_id": 28,
+              "block_order": 25,
+              "group_id": 28,
+              "block_polygon_points": [
+                [
+                  607.0,
+                  889.0
+                ],
+                [
+                  1118.0,
+                  889.0
+                ],
+                [
+                  1118.0,
+                  933.0
+                ],
+                [
+                  607.0,
+                  933.0
+                ]
+              ]
+            },
+            {
+              "block_label": "display_formula",
+              "block_content": " $$ p=(\\gamma-1)\\rho e $$ ",
+              "block_bbox": [
+                609,
+                941,
+                714,
+                963
+              ],
+              "block_id": 29,
+              "block_order": 26,
+              "group_id": 29,
+              "block_polygon_points": [
+                [
+                  609.0,
+                  941.0
+                ],
+                [
+                  713.0,
+                  941.0
+                ],
+                [
+                  713.0,
+                  962.0
+                ],
+                [
+                  609.0,
+                  962.0
+                ]
+              ]
+            },
+            {
+              "block_label": "formula_number",
+              "block_content": "(16)",
+              "block_bbox": [
+                1084,
+                943,
+                1117,
+                962
+              ],
+              "block_id": 30,
+              "block_order": 27,
+              "group_id": 30,
+              "block_polygon_points": [
+                [
+                  1084.0,
+                  943.0
+                ],
+                [
+                  1116.0,
+                  943.0
+                ],
+                [
+                  1116.0,
+                  961.0
+                ],
+                [
+                  1084.0,
+                  961.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                606,
+                974,
+                1120,
+                1059
+              ],
+              "block_id": 31,
+              "block_order": 28,
+              "group_id": 31,
+              "block_polygon_points": [
+                [
+                  606.0,
+                  974.0
+                ],
+                [
+                  1120.0,
+                  974.0
+                ],
+                [
+                  1120.0,
+                  1059.0
+                ],
+                [
+                  606.0,
+                  1059.0
+                ]
+              ]
+            },
+            {
+              "block_label": "paragraph_title",
+              "block_content": "3. Results and discussions",
+              "block_bbox": [
+                608,
+                1081,
+                820,
+                1102
+              ],
+              "block_id": 32,
+              "block_order": 29,
+              "group_id": 32,
+              "block_polygon_points": [
+                [
+                  608.0,
+                  1081.0
+                ],
+                [
+                  819.0,
+                  1081.0
+                ],
+                [
+                  819.0,
+                  1101.0
+                ],
+                [
+                  608.0,
+                  1101.0
+                ]
+              ]
+            },
+            {
+              "block_label": "paragraph_title",
+              "block_content": "3.1. Continuous simulation of free-field underwater explosion",
+              "block_bbox": [
+                608,
+                1123,
+                1032,
+                1144
+              ],
+              "block_id": 33,
+              "block_order": 30,
+              "group_id": 33,
+              "block_polygon_points": [
+                [
+                  608.0,
+                  1123.0
+                ],
+                [
+                  1032.0,
+                  1123.0
+                ],
+                [
+                  1032.0,
+                  1144.0
+                ],
+                [
+                  608.0,
+                  1144.0
+                ]
+              ]
+            },
+            {
+              "block_label": "text",
+              "block_content": "Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. Body paragraph with inline $x^2$ and source text. ",
+              "block_bbox": [
+                606,
+                1165,
+                1120,
+                1356
+              ],
+              "block_id": 34,
+              "block_order": 31,
+              "group_id": 34,
+              "block_polygon_points": [
+                [
+                  606.0,
+                  1165.0
+                ],
+                [
+                  1120.0,
+                  1165.0
+                ],
+                [
+                  1120.0,
+                  1356.0
+                ],
+                [
+                  606.0,
+                  1356.0
+                ]
+              ]
+            },
+            {
+              "block_label": "figure_title",
+              "block_content": "Table 2\nMaterial parameters and coefficients in Mie-Gruneisen EOS for water [54].",
+              "block_bbox": [
+                607,
+                1374,
+                1097,
+                1415
+              ],
+              "block_id": 35,
+              "block_order": null,
+              "group_id": 35,
+              "block_polygon_points": [
+                [
+                  607.0,
+                  1374.0
+                ],
+                [
+                  1097.0,
+                  1374.0
+                ],
+                [
+                  1097.0,
+                  1415.0
+                ],
+                [
+                  607.0,
+                  1415.0
+                ]
+              ]
+            },
+            {
+              "block_label": "table",
+              "block_content": "<table><tr><td>$ \\rho_{0} $(kg/m $ ^{3} $)</td><td>$ c_{0} $(m/s)</td><td>$ \\gamma_{0} $</td><td>a</td><td>$ s_{1} $</td><td>$ s_{2} $</td><td>$ s_{3} $</td></tr><tr><td>998.16</td><td>1483</td><td>0.4934</td><td>0</td><td>2.56</td><td>-1.986</td><td>0.2268</td></tr></table>",
+              "block_bbox": [
+                615,
+                1420,
+                1114,
+                1484
+              ],
+              "block_id": 36,
+              "block_order": null,
+              "group_id": 36,
+              "block_polygon_points": [
+                [
+                  615.0,
+                  1420.0
+                ],
+                [
+                  1114.0,
+                  1420.0
+                ],
+                [
+                  1114.0,
+                  1484.0
+                ],
+                [
+                  615.0,
+                  1484.0
+                ]
+              ]
+            },
+            {
+              "block_label": "number",
+              "block_content": "127",
+              "block_bbox": [
+                582,
+                1519,
+                610,
+                1535
+              ],
+              "block_id": 37,
+              "block_order": null,
+              "group_id": 37,
+              "block_polygon_points": [
+                [
+                  582.0,
+                  1519.0
+                ],
+                [
+                  609.0,
+                  1519.0
+                ],
+                [
+                  609.0,
+                  1534.0
+                ],
+                [
+                  582.0,
+                  1534.0
+                ]
+              ]
+            }
+          ]
+        },
+        "markdown": {
+          "text": "# Fixture\n\nBody with $x^2$.",
+          "images": {}
+        },
+        "inputImage": "https://example.invalid/page.png",
+        "outputImages": {}
+      }
+    ]
+  }
+}

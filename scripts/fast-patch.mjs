@@ -51,8 +51,8 @@ function parseSpec(spec) {
   return { filePath, selectors };
 }
 
-// 智能定位类、函数、方法在文件中的起止行号 (1-based)
-function findSymbolBounds(lines, symbolName, scopeRange = null) {
+// 智能定位类、函数、方法在文件中的起止行号 (1-based，兼容 JS/TS/Rust 等大括号语言及 Python 缩进语言)
+function findSymbolBounds(lines, symbolName, scopeRange = null, isPython = false) {
   let searchStart = 0;
   let searchEnd = lines.length;
   if (scopeRange) {
@@ -60,17 +60,43 @@ function findSymbolBounds(lines, symbolName, scopeRange = null) {
     searchEnd = Math.min(lines.length, scopeRange.end);
   }
 
-  // 支持 Class.method 语法
   if (symbolName.includes('.')) {
     const dotIdx = symbolName.indexOf('.');
     const clsName = symbolName.slice(0, dotIdx);
     const methodName = symbolName.slice(dotIdx + 1);
-    const clsBounds = findSymbolBounds(lines, clsName);
+    const clsBounds = findSymbolBounds(lines, clsName, null, isPython);
     if (!clsBounds) return null;
-    return findSymbolBounds(lines, methodName, { start: clsBounds.startLine, end: clsBounds.endLine });
+    return findSymbolBounds(lines, methodName, { start: clsBounds.startLine, end: clsBounds.endLine }, isPython);
   }
 
   const esc = escapeRegex(symbolName);
+  if (isPython) {
+    const pyPattern = new RegExp('^(\\s*)(?:async\\s+)?(?:def|class)\\s+' + esc + '\\b');
+    let startLine = -1;
+    let baseIndent = 0;
+    for (let i = searchStart; i < searchEnd; i++) {
+      const m = lines[i].match(pyPattern);
+      if (m) {
+        startLine = i;
+        baseIndent = m[1].replace(/\t/g, '    ').length;
+        break;
+      }
+    }
+    if (startLine === -1) return null;
+    let endLine = startLine;
+    for (let i = startLine + 1; i < searchEnd; i++) {
+      const rawLine = lines[i];
+      const trimmed = rawLine.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const indent = rawLine.match(/^\s*/)[0].replace(/\t/g, '    ').length;
+      if (indent <= baseIndent && !trimmed.startsWith(')') && !trimmed.startsWith(']') && !trimmed.startsWith('}')) {
+        break;
+      }
+      endLine = i;
+    }
+    return { startLine: startLine + 1, endLine: endLine + 1 };
+  }
+
   const patterns = [
     new RegExp('^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s*\\*?\\s*' + esc + '\\s*\\('),
     new RegExp('^\\s*(?:export\\s+)?class\\s+' + esc + '(?:\\s+extends\\s+[A-Za-z0-9_$.]+)?\\s*\\{'),
@@ -204,7 +230,8 @@ function extractTarget(spec) {
       label = `Lines ${startLine}-${endLine}`;
     } else {
       // 符号定位
-      const bounds = findSymbolBounds(lines, selector);
+      const isPy = resolved.toLowerCase().endsWith('.py');
+      const bounds = findSymbolBounds(lines, selector, null, isPy);
       if (!bounds) {
         console.warn(`⚠️ 未能在 ${relPath} 中定位到函数或类: [${selector}]`);
         continue;
@@ -302,10 +329,40 @@ function cmdCopy(specs) {
   console.log(`💡 提示: 用户只需在输入框按 Ctrl+V 并回车，AI 即可 100% 完整吞入，彻底告别臃肿与工具端截断！`);
 }
 
-// 读取小文件或符号到 stdout
-function cmdRead(spec) {
-  const res = extractTarget(spec);
-  process.stdout.write(res.text + '\n');
+// 读取小文件或符号到 stdout（支持一次传入多个 spec）
+function cmdRead(specs) {
+  const list = Array.isArray(specs) ? specs : [specs];
+  const outputs = list.filter(Boolean).map(spec => extractTarget(spec).text);
+  process.stdout.write(outputs.join('\n\n') + '\n');
+}
+
+// 仅输出符号起止行号索引（毫秒级批量定位）
+function cmdLocate(specs) {
+  const list = Array.isArray(specs) ? specs : [specs];
+  for (const spec of list.filter(Boolean)) {
+    const { filePath, selectors } = parseSpec(spec);
+    const resolved = path.resolve(process.cwd(), filePath);
+    if (!fs.existsSync(resolved)) {
+      console.log(`❌ ${filePath}: 文件不存在`);
+      continue;
+    }
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const relPath = path.relative(process.cwd(), resolved).replace(/\\/g, '/');
+    const lines = raw.split(/\r?\n/);
+    if (!selectors || selectors.length === 0) {
+      console.log(`${relPath}: L1-L${lines.length} (${lines.length} lines)`);
+      continue;
+    }
+    for (const sel of selectors) {
+      const isPy = resolved.toLowerCase().endsWith('.py');
+      const bounds = findSymbolBounds(lines, sel, null, isPy);
+      if (bounds) {
+        console.log(`${relPath} :: ${sel} -> L${bounds.startLine}-L${bounds.endLine} (${bounds.endLine - bounds.startLine + 1} lines)`);
+      } else {
+        console.log(`⚠️ ${relPath} :: ${sel} -> 未找到符号`);
+      }
+    }
+  }
 }
 
 // 解析 Patch 文本
@@ -489,22 +546,63 @@ function cmdApply(patchSource) {
   }
 }
 
+// 快速输出任意代码文件的全部类/函数/方法行号大纲（无需预生成 repo-map，兼容 JS/TS/Python）
+function cmdOutline(files) {
+  for (const filePath of files.filter(Boolean)) {
+    const resolved = path.resolve(process.cwd(), filePath);
+    if (!fs.existsSync(resolved)) {
+      console.log(`❌ ${filePath}: 文件不存在`);
+      continue;
+    }
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const relPath = path.relative(process.cwd(), resolved).replace(/\\/g, '/');
+    const lines = raw.split(/\r?\n/);
+    const isPy = resolved.toLowerCase().endsWith('.py');
+    const items = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) continue;
+      if (isPy) {
+        const m = line.match(/^(\s*)(?:async\s+)?(class|def)\s+([A-Za-z0-9_]+)\b/);
+        if (m) items.push(`${m[1] ? '  ' : ''}${m[2]} ${m[3]}:L${i + 1}`);
+      } else {
+        const cls = trimmed.match(/^(?:export\s+)?class\s+([A-Za-z0-9_$]+)/);
+        if (cls) { items.push(`class ${cls[1]}:L${i + 1}`); continue; }
+        const fn = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z0-9_$]+)\s*\(/);
+        if (fn) { items.push(`fn ${fn[1]}:L${i + 1}`); continue; }
+        const vfn = trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?(?:function|\([^)]*\)\s*=>|[A-Za-z0-9_$]+\s*=>)/);
+        if (vfn) { items.push(`fn ${vfn[1]}:L${i + 1}`); continue; }
+        const mth = line.match(/^\s{2,6}(?:static\s+)?(?:async\s+)?\*?([A-Za-z0-9_$]+)\s*\([^;]*\)\s*\{\s*$/);
+        if (mth && !['if', 'for', 'while', 'switch', 'catch'].includes(mth[1])) {
+          items.push(`  method ${mth[1]}:L${i + 1}`);
+        }
+      }
+    }
+    console.log(`=== ${relPath} (${lines.length} lines) ===`);
+    console.log(items.join(', '));
+  }
+}
+
 // CLI 入口
 const args = process.argv.slice(2);
 const command = args[0];
 
 if (command === 'copy' && args.length > 1) {
   cmdCopy(args.slice(1));
-} else if (command === 'read' && args[1]) {
-  cmdRead(args[1]);
+} else if (command === 'read' && args.length > 1) {
+  cmdRead(args.slice(1));
+} else if (command === 'locate' && args.length > 1) {
+  cmdLocate(args.slice(1));
+} else if (command === 'outline' && args.length > 1) {
+  cmdOutline(args.slice(1));
 } else if (command === 'apply' && args[1]) {
   cmdApply(args[1]);
 } else {
   console.log(`用法:`);
-  console.log(`  node scripts/fast-patch.mjs copy <spec1> [spec2]...`);
-  console.log(`    - 全量复制 (默认推荐): node scripts/fast-patch.mjs copy path/to/file.js`);
-  console.log(`    - 精细提取 (仅限万行单体): node scripts/fast-patch.mjs copy path/to/giant.js:funcA,ClassB`);
-  console.log(`  node scripts/fast-patch.mjs read <spec>            # 读取小文件或符号内容到终端`);
-  console.log(`  node scripts/fast-patch.mjs apply <patch_file>     # 原子应用补丁文件`);
+  console.log(`  node scripts/fast-patch.mjs read <spec1> [spec2]...   # 批量读取指定文件或函数/类实现到终端（无需用户粘贴）`);
+  console.log(`  node scripts/fast-patch.mjs locate <spec1> [spec2]... # 批量查询指定函数/类的精确起止行号 (Lstart-Lend)`);
+  console.log(`  node scripts/fast-patch.mjs apply <patch_file>        # 原子应用补丁文件`);
+  console.log(`  node scripts/fast-patch.mjs copy <spec1> [spec2]...   # 复制到剪贴板`);
   process.exit(1);
 }
