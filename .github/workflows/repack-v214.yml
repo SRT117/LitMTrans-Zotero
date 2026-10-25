@@ -72,7 +72,7 @@ jobs:
           git merge --no-edit --no-ff "$GITHUB_SHA"
           git push gitee gitee-sync:main
           git tag -f v2.1.4 "$GITHUB_SHA"
-          git push --force-with-lease gitee refs/tags/v2.1.4
+          git push --force gitee refs/tags/v2.1.4
       - name: Replace Gitee assets and update public manifest
         run: |
           node scripts/publish-gitee-release.mjs --repository "$GITEE_REPOSITORY" --tag v2.1.4 --xpi dist/gitee/litmtrans-2.1.4.xpi --update-manifest dist/gitee/update.json
