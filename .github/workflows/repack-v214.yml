@@ -7,7 +7,7 @@ permissions:
   contents: write
 jobs:
   github:
-    if: github.event.head_commit.message == 'ops: republish v2.1.4 in place'
+    if: "github.event.head_commit.message == 'ops: republish v2.1.4 in place'"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
