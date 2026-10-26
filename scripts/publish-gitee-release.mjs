@@ -56,10 +56,16 @@ async function findRelease() {
 }
 
 async function createRelease() {
+  let notes = `LitMTrans ${tag}`;
+  try {
+    notes = await readFile(path.join("docs", "releases", `${tag}.md`), "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   const body = new URLSearchParams({
     tag_name: tag,
     name: `LitMTrans ${tag}`,
-    body: `LitMTrans ${tag}`,
+    body: notes,
     target_commitish: "main",
     prerelease: "false"
   });
@@ -137,7 +143,7 @@ async function publishUpdateManifest() {
   const content = (await readFile(updateManifestPath)).toString("base64");
   const body = {
     content,
-    message: `chore: publish ${tag} update manifest`,
+    message: `发布 ${tag} 自动更新清单`,
     branch: "main"
   };
   const method = current?.sha ? "PUT" : "POST";

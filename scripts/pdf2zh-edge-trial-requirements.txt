@@ -1,5 +1,0 @@
-pdf2zh-next==2.9.0
-babeldoc==0.6.2
-playwright==1.64.1
-bitstring==4.4.0
-peewee==3.19.0

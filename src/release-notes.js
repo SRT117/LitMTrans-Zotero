@@ -18,6 +18,12 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.5": Object.freeze({
+      title: "LitMTrans 2.1.5",
+      entries: Object.freeze([
+        "修复挂载的对照版PDF滚动卡顿的问题。"
+      ])
+    }),
     "2.1.4": Object.freeze({
       title: "LitMTrans 2.1.4",
       entries: Object.freeze([

@@ -11,8 +11,10 @@ module.exports = function(env) {
     ts.forEachChild(node, visit);
   }
   visit(source);
+  const imageThemeScope = {};
+  vm.runInNewContext(fs.readFileSync(path.join(root, "src/reader-image-theme.js"), "utf8"), imageThemeScope);
   function controller(values = {}) {
-    const Controller = vm.runInNewContext("(class {" + methods.join("\n") + "})", { Cu: { exportFunction: fn => fn, waiveXrays: value => value }, ...values });
+    const Controller = vm.runInNewContext("(class {" + methods.join("\n") + "})", { global: imageThemeScope, Cu: { exportFunction: fn => fn, waiveXrays: value => value }, ...values });
     return Object.assign(new Controller(), { log() {}, isWorkbenchReader: () => false });
   }
   function fixture() {
@@ -147,6 +149,71 @@ module.exports = function(env) {
     f.win.theme = { background: "#000000", foreground: "#FFFFFF" };
     b.customDrawImage(f.args);
     assert.deepEqual(Array.from(b.draws.at(-1)[0].pixels.slice(0, 3)), [0, 0, 0]);
+  }
+
+  function grayscaleFastPathPreservesEveryShadeAndAlpha() {
+    for (const theme of [
+      { background: "#2E3440", foreground: "#D8DEE9", bg: [46, 52, 64], fg: [216, 222, 233] },
+      { background: "#F4ECD8", foreground: "#5B4636", bg: [244, 236, 216], fg: [91, 70, 54] }
+    ]) {
+      const f = fixture(), c = controller(), b = new f.Blender();
+      f.win.theme = theme;
+      c.patchReaderComparisonBlender(f.win, b, () => true);
+      b.customDrawImage(f.args);
+      const pixels = new Uint8ClampedArray(256 * 4);
+      for (let gray = 0; gray < 256; gray++) pixels.set([gray, gray, gray, gray], gray * 4);
+      const image = { width: 16, height: 16, pixels };
+      assert.equal(b.customDrawImage([image, 600, 300, 200, 180]), "drawn");
+      const output = b.draws.at(-1)[0].pixels;
+      for (let gray = 0; gray < 256; gray++) {
+        const coverage = 1 - gray / 255;
+        const expected = theme.fg.map((ink, channel) => Math.round(ink * coverage + theme.bg[channel] * (1 - coverage)));
+        assert.deepEqual(Array.from(output.slice(gray * 4, gray * 4 + 3)), expected);
+        assert.equal(output[gray * 4 + 3], gray);
+        assert.deepEqual(Array.from(pixels.slice(gray * 4, gray * 4 + 4)), [gray, gray, gray, gray]);
+      }
+    }
+  }
+
+  function protectedPixelBufferDoesNotDisableThemeConversion() {
+    const f = fixture(), c = controller(), b = new f.Blender();
+    const createElement = f.win.document.createElement;
+    f.win.document.createElement = function(...args) {
+      const canvas = createElement.apply(this, args);
+      const context = canvas.getContext();
+      const getImageData = context.getImageData;
+      context.getImageData = function(...values) {
+        const data = getImageData.apply(this, values);
+        data.data = new Proxy(data.data, { get(target, property) {
+          if (property === "buffer") throw new Error("cross-window buffer is protected");
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        } });
+        return data;
+      };
+      canvas.getContext = () => context;
+      return canvas;
+    };
+    c.patchReaderComparisonBlender(f.win, b, () => true);
+    assert.equal(b.customDrawImage(f.args), "drawn");
+    assert.equal(b.fallbacks, 0);
+    assert.deepEqual(Array.from(b.draws[0][0].pixels.slice(0, 3)), [46, 52, 64]);
+  }
+
+  function pixelLoopUsesTheReaderWindowTransformer() {
+    const f = fixture(), c = controller(), b = new f.Blender();
+    let calls = 0;
+    f.win.LitMTransReaderImageTheme = { recolor(data, ...args) {
+      calls++;
+      assert.deepEqual(args, [46, 52, 64, 216, 222, 233, true]);
+      return imageThemeScope.LitMTransReaderImageTheme.recolor(data, ...args);
+    } };
+    c.patchReaderComparisonBlender(f.win, b, () => true);
+    assert.equal(b.customDrawImage(f.args), "drawn");
+    assert.equal(calls, 1);
+    assert.deepEqual(Array.from(b.draws[0][0].pixels.slice(0, 3)), [46, 52, 64]);
+    b.customDrawImage(f.args);
+    assert.equal(calls, 1, "reuse an already converted image");
   }
 
   function otherPluginHooksSurviveCleanupAndErrors() {
@@ -356,7 +423,9 @@ module.exports = function(env) {
   }
 
   return { onlyRegisteredComparisonReadersAreAttached, backgroundDrawPreservesBookkeepingAndDrawingChain,
-    uncertainImagesAndHostModesKeepOriginalBehavior, otherPluginHooksSurviveCleanupAndErrors,
+    uncertainImagesAndHostModesKeepOriginalBehavior, grayscaleFastPathPreservesEveryShadeAndAlpha,
+    protectedPixelBufferDoesNotDisableThemeConversion, pixelLoopUsesTheReaderWindowTransformer,
+    otherPluginHooksSurviveCleanupAndErrors,
     figuresBlendOnlyInsideConfirmedTranslationBackground,
     legacyVectorAttachmentsUseOnlyTopLevelTranslationForm,
     textContrastChangesOnlyOverConfirmedDarkBackground,

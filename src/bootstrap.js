@@ -156,6 +156,7 @@ async function startup({ id, version, rootURI }) {
     "src/deepseek-web/driver.js",
     "src/deepseek-web/provider.js",
     "src/updater.js",
+    "src/reader-image-theme.js",
     "src/controller.js",
     "src/agent/contracts.js",
     "src/agent/capability-policy.js",

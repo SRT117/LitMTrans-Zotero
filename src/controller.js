@@ -4911,6 +4911,12 @@
       const app = win?.PDFViewerApplication;
       const bus = app?.eventBus;
       if (!bus?._on || !bus?._off || typeof active !== "function") return null;
+      try {
+        // 像素循环在阅读器窗口内执行，避免逐像素穿过插件与窗口之间的包装。
+        if (typeof Services !== "undefined") {
+          Services.scriptloader.loadSubScriptWithOptions(`${this.rootURI}src/reader-image-theme.js`, { target: win });
+        }
+      } catch (error) { this.log(`阅读器图片着色模块未载入，沿用插件处理：${error?.message || error}`); }
       let disposed = false;
       const tasks = new Set();
       const taskCleanups = new Set();
@@ -5007,27 +5013,8 @@
         if (!offCtx) return img;
         offCtx.drawImage(img, 0, 0);
         const idata = offCtx.getImageData(0, 0, w, h);
-        const d = idata.data;
-        if (background) {
-          let lumSum = 0;
-          for (let i = 0; i < d.length; i += 4) {
-            if (d[i + 3] !== 255) return img;
-            lumSum += 2126 * d[i] + 7152 * d[i + 1] + 722 * d[i + 2];
-          }
-          if (lumSum / (d.length >> 2) / 10000 < 150) return img;
-        }
-        for (let i = 0; i < d.length; i += 4) {
-          const min = Math.min(d[i], d[i + 1], d[i + 2]);
-          const max = Math.max(d[i], d[i + 1], d[i + 2]);
-          const coverage = 1 - min / 255;
-          const chroma = coverage ? (max - min) / (255 - min) : 0;
-          for (let channel = 0; channel < 3; channel++) {
-            const color = coverage ? (d[i + channel] - min) / (255 - min) : 0;
-            // 与工作台的白底融合一致，合成到主题纸色，避免透出PDF自带的白色底板。
-            const ink = 255 * color + (1 - chroma) * fgRGB[channel];
-            d[i + channel] = Math.round(ink * coverage + bgRGB[channel] * (1 - coverage));
-          }
-        }
+        const recolor = win.LitMTransReaderImageTheme?.recolor || global.LitMTransReaderImageTheme.recolor;
+        if (!recolor(idata.data, ...bgRGB, ...fgRGB, background)) return img;
         offCtx.putImageData(idata, 0, 0);
         try {
           img._litmtransPaperTheme = off;
