@@ -3813,6 +3813,29 @@
     return { r: medR, g: medG, b: medB, isWhitePaper, available: bgRs.length > 0 };
   }
 
+  function sampleTableBackground(data, W, H, x0, y0, x1, y1) {
+    const left = Math.max(0, Math.ceil(x0)), top = Math.max(0, Math.ceil(y0));
+    const right = Math.min(W, Math.floor(x1)), bottom = Math.min(H, Math.floor(y1));
+    if (right <= left || bottom <= top) return null;
+    const columns = Math.min(37, right - left), rows = Math.min(29, bottom - top);
+    const samples = [];
+    // 仅采表框内部；中位数排除少量文字和线条，避免外侧纸色覆盖表格自身底色。
+    for (let row = 0; row < rows; row++) {
+      const y = top + Math.floor((row + .5) * (bottom - top) / rows);
+      for (let col = 0; col < columns; col++) {
+        const x = left + Math.floor((col + .5) * (right - left) / columns);
+        const index = (y * W + x) * 4;
+        if (data[index + 3] >= 250) samples.push([data[index], data[index + 1], data[index + 2]]);
+      }
+    }
+    if (samples.length < 16 || samples.length < columns * rows * .8) return null;
+    const rgb = [0, 1, 2].map(channel => medianByte(samples.map(sample => sample[channel])));
+    const matching = samples.filter(sample => sample.every((value, channel) => Math.abs(value - rgb[channel]) <= 20));
+    // 首版只恢复整表主底色；明显混色时保留现有白底，不猜测单元格颜色。
+    if (matching.length < samples.length * .7) return null;
+    return rgb;
+  }
+
   function eraseAndPatchPageBackground(canvas, page, erasureItems, options = {}) {
     const W = canvas.width;
     const H = canvas.height;
@@ -3835,6 +3858,7 @@
         options.displayRetainedImages.push(item.node);
         continue;
       }
+      const isTranslatedTable = item.node?.classList.contains("layout-table-translation-host");
       const isMedia = item.kind === "image" || item.kind === "table";
       const isFormula = item.kind === "formula";
       const isFormulaNumber = item.kind === "formula_number";
@@ -3861,17 +3885,28 @@
         const rw = x1 - x0;
         const rh = y1 - y0;
         if (rw <= 0 || rh <= 0) continue;
-        const sample = samplePerimeterColor(data, W, H, x0, y0, x1, y1, paperRGB);
+        let sample = samplePerimeterColor(data, W, H, x0, y0, x1, y1, paperRGB);
+        if (isTranslatedTable) {
+          const rgb = sampleTableBackground(data, W, H, bx0 * sx, by0 * sy, bx1 * sx, by1 * sy) || paperRGB;
+          sample = { r: rgb[0], g: rgb[1], b: rgb[2], isWhitePaper: false, available: true };
+        }
         // 读不到原始底色时不猜测修补，沿用已有的独立排版渲染。
         if (!sample.available && !isMediaOrFormula) return false;
         // 原始底图保持不透明，屏幕主题的透明化只发生在显示副本上。
-        ctx.fillStyle = sample.isWhitePaper || isMediaOrFormula ? paperFill : `rgb(${sample.r}, ${sample.g}, ${sample.b})`;
+        ctx.fillStyle = !isTranslatedTable && (sample.isWhitePaper || isMediaOrFormula) ? paperFill : `rgb(${sample.r}, ${sample.g}, ${sample.b})`;
         ctx.fillRect(x0, y0, rw, rh);
         const lum = 0.299 * sample.r + 0.587 * sample.g + 0.114 * sample.b;
-        if (lum < 140) darkDetected = true;
+        if (isTranslatedTable) {
+          const linear = [sample.r, sample.g, sample.b].map(value => {
+            const channel = value / 255;
+            return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+          });
+          const luminance = linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722;
+          if (1.05 / (luminance + .05) > (luminance + .05) / .05) darkDetected = true;
+        } else if (lum < 140) darkDetected = true;
         if (!darkest || lum < darkest.lum) darkest = { ...sample, lum };
       }
-      if (item.node && item.allowDarkBg) {
+      if (item.node && (item.allowDarkBg || isTranslatedTable)) {
         if (options.displayBackgrounds) {
           if (darkest) options.displayBackgrounds.push({ node: item.node, rgb: [darkest.r, darkest.g, darkest.b] });
         } else if (darkDetected) {

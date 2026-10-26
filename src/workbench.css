@@ -483,6 +483,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-block .layout-table-wrap { width: 100%; height: 100%; overflow: auto; }
 .layout-table-original, .layout-translated-table { width: 100%; height: 100%; }
 .layout-table-translation-host { cursor: zoom-in; }
+.layout-page.has-pdf-bg .layout-table-translation-host[data-pdf-background-rgb] { --layout-table-border: color-mix(in srgb, currentColor 50%, transparent); }
 .layout-block .layout-translated-table { overflow: hidden; line-height: 1.15; }
 .layout-translated-table table { width: 100%; height: 100%; border-collapse: collapse; color: inherit; font-size: inherit; }
 .layout-translated-table td, .layout-translated-table th { border: 1px solid var(--layout-table-border); padding: var(--table-padding-y, .8px) var(--table-padding-x, .2em); vertical-align: middle; }
