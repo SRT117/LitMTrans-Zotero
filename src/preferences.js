@@ -230,8 +230,6 @@ var LitMTransControllerPreferences = {
       this.$("web-input-mode-auto").checked = (settings.webInputMode || "auto") === "auto";
       this.$("web-input-mode-clipboard").checked = settings.webInputMode === "clipboard";
       this.$("delete-web-translation-sessions").checked = settings.deleteWebTranslationSessions !== false;
-      this.$("translate-tables").checked = settings.translateTables !== false;
-      this.$("translate-images").checked = settings.translateImages !== false;
       document.getElementById("litmtrans-pref-web-mode-advanced").open = false;
       this.$("target-language").value = settings.targetLanguage || "简体中文";
       this.$("machine-source-language").value = settings.machineSourceLanguage || "英文";
@@ -397,8 +395,6 @@ var LitMTransControllerPreferences = {
       webPageImageQuality: this.$("web-page-image-quality").value,
       webInputMode: this.$("web-input-mode-auto").checked ? "auto" : "clipboard",
       deleteWebTranslationSessions: this.$("delete-web-translation-sessions").checked,
-      translateTables: this.$("translate-tables").checked,
-      translateImages: this.$("translate-images").checked,
       chatProvider, chatBaseURL: this.$("chat-base-url").value.trim(), chatModel: this.$("chat-model").value.trim(),
       chatThinkingMode: this.$("chat-thinking-mode").value, chatReasoningEffort: this.$("chat-reasoning-effort").value,
       chatProviderProfiles: { ...(this.settings?.chatProviderProfiles || {}), [chatProvider]: { baseURL: this.$("chat-base-url").value.trim(), model: this.$("chat-model").value.trim(), thinkingMode: this.$("chat-thinking-mode").value, reasoningEffort: this.$("chat-reasoning-effort").value } },
@@ -763,7 +759,6 @@ var LitMTransControllerPreferences = {
       "target-language", "machine-source-language", "translation-mode",
       "thinking-mode", "reasoning-effort", "show-reasoning",
       "delete-web-translation-sessions",
-      "translate-tables", "translate-images",
       "chat-thinking-mode", "chat-reasoning-effort", "chat-show-reasoning",
       "web-page-image-quality",
       "caj-double-click-action", "show-native-reader-ask-ai", "auto-update",

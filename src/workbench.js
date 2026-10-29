@@ -187,7 +187,7 @@
       "log-toggle", "log-drawer", "log-content", "log-clear", "log-close", "stream-mode-button", "layout-mode-button",
       "both-panes-button", "source-only-button", "translation-only-button",
       "sync-scroll-check", "translate-tables-check", "translate-tables-control",
-      "translate-images-check", "translate-images-control", "setting-translate-images", "setting-translate-tables",
+      "translate-images-check", "translate-images-control",
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button", "prompt-library-button",
       "copy-source-markdown-button", "supplement-ocr-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
@@ -7360,7 +7360,6 @@
       if (originalKey !== tableDocumentKey() || revision !== tablePreferenceRevision) return;
       state.settings = { ...state.settings, translateTables: enabled };
       els["translate-tables-check"].checked = enabled;
-      if (els["setting-translate-tables"]) els["setting-translate-tables"].checked = enabled;
       if (before !== enabled && state.data?.layout?.model?.tableTranslationHash) state.data.item.tablePDFPending = true;
       updateTableDisplay();
     } catch (error) {
@@ -7470,7 +7469,6 @@
       if (originalKey !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
       state.settings = { ...state.settings, translateImages: enabled };
       els["translate-images-check"].checked = enabled;
-      if (els["setting-translate-images"]) els["setting-translate-images"].checked = enabled;
       if (before !== enabled && state.data?.layout?.model?.imageTranslationHash) state.data.item.imagePDFPending = true;
       updateTableDisplay();
     } catch (error) {
@@ -8648,8 +8646,6 @@
     els["setting-web-input-mode-auto"].checked = (settings.webInputMode || "auto") === "auto";
     els["setting-web-input-mode-clipboard"].checked = settings.webInputMode === "clipboard";
     els["setting-delete-web-translation-sessions"].checked = settings.deleteWebTranslationSessions !== false;
-    els["setting-translate-tables"].checked = settings.translateTables !== false;
-    els["setting-translate-images"].checked = settings.translateImages !== false;
     els["setting-web-mode-advanced"].open = false;
     els["setting-chat-uses-translation-model"].checked = settings.chatUsesTranslationModel !== false;
     els["setting-chat-provider"].value = settings.chatProvider ?? "oneapi";
@@ -9296,8 +9292,6 @@
       webPageImageQuality: els["setting-web-page-image-quality"].value,
       webInputMode: els["setting-web-input-mode-auto"].checked ? "auto" : "clipboard",
       deleteWebTranslationSessions: els["setting-delete-web-translation-sessions"].checked,
-      translateTables: els["setting-translate-tables"].checked,
-      translateImages: els["setting-translate-images"].checked,
       parseProvider: els["setting-parse-provider"].value,
       mineruModel: "vlm",
       // MinerU's stable parsing profile is intentionally not user-configurable.
@@ -11780,7 +11774,6 @@
       "setting-chat-thinking-mode", "setting-chat-reasoning-effort",
       "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
       "setting-web-page-image-quality", "setting-delete-web-translation-sessions",
-      "setting-translate-tables", "setting-translate-images",
       "setting-caj-double-click-action", "setting-show-native-reader-ask-ai", "setting-auto-update",
       "setting-target-language", "setting-machine-source-language", "setting-translation-mode",
       "setting-agent-access-mode", "setting-agent-allow-configured-services",
