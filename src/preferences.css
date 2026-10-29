@@ -336,3 +336,4 @@
 .litmtrans-pref-info-footer button:focus-visible { outline: 2px solid var(--litmtrans-link); outline-offset: 2px; }
 
 .litmtrans-parser-provider-fields { min-width: 0; display: grid; gap: 7px; }
+.litmtrans-translation-media-options { display: flex; gap: 18px; flex-wrap: wrap; width: 100%; }

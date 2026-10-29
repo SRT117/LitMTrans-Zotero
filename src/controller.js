@@ -226,6 +226,7 @@
       this.parser = new LitMTrans.DocumentParserService(this.storage, this.secrets, this.mineru);
       this.translation = new LitMTrans.TranslationService(this.storage, this.llm, this.parser, this.webMachine);
       this.layout = new LitMTrans.LayoutTranslationService(this.storage, this.llm, this.webMachine);
+      this.layout.imageService = new LitMTrans.ImageTranslationService(this.storage, this.parser.paddle, this.mineru);
       if (LitMTrans.DeepSeekWeb?.PDFPageRenderer) {
         this.layout.lineService = new LitMTrans.PaddleLineService(this.storage, this.parser.paddle,
           new LitMTrans.DeepSeekWeb.PDFPageRenderer(this));
@@ -4495,7 +4496,7 @@
             const duplicateIDs = sameTitleIDs.filter(id => id !== translation.id && id !== comparison.id
               && !this.generatedPDFHasUserContent(Zotero.Items.get(id)));
             if (duplicateIDs.length) await Zotero.Items.trashTx(duplicateIDs);
-            await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false });
+            await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false, imagePDFPending: false });
             return { translationAttachmentID: translation.id, comparisonAttachmentID: comparison.id,
               translationTitle, comparisonTitle, cached: true };
           }
@@ -4552,7 +4553,7 @@
             }
             throw error;
           }
-          await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false });
+          await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false, imagePDFPending: false });
           return {
             translationAttachmentID: translationAttachment.id,
             comparisonAttachmentID: comparisonAttachment.id,
@@ -5843,7 +5844,9 @@
           readerMode,
           layoutPDFIdentity: String(documentMeta?.layoutPDFIdentity || ""),
           tablePDFPending: Boolean(documentMeta?.tablePDFPending),
-          layoutTableDisplay: documentMeta?.layoutTableDisplay
+          layoutTableDisplay: documentMeta?.layoutTableDisplay,
+          imagePDFPending: Boolean(documentMeta?.imagePDFPending),
+          layoutImageDisplay: documentMeta?.layoutImageDisplay
         },
         ...snapshot,
         settings: this.getSettings()
@@ -6584,9 +6587,12 @@
             return { state: await this.stateForAttachment(attachmentID) };
           });
 
-        case "table-translation-status": {
+        case "table-translation-status":
+        case "image-translation-status": {
           const context = await this.attachmentContext(attachmentID);
-          const input = await this.layout.tableTranslationInput(context.documentID, { includeMarkdown: false });
+          const images = method === "image-translation-status";
+          const input = images ? await this.layout.imageTranslationInput(context.documentID, { includeMarkdown: false })
+            : await this.layout.tableTranslationInput(context.documentID, { includeMarkdown: false });
           const meta = await this.storage.getDocumentMeta(context.documentID);
           const registry = await this.storage.readJSON(this.storage.path(context.documentID, "generated-pdfs.json"), []);
           let hasPDF = (Array.isArray(registry) ? registry : []).some(entry =>
@@ -6604,8 +6610,34 @@
                 && item.attachmentContentType === "application/pdf" && titles.has(item.getField("title"));
             });
           }
-          return { total: input.plan.tables.length, missing: input.missing.length, available: Object.keys(input.cached).length > 0,
-            hasPDF, previousDisplay: meta?.layoutTableDisplay, targetLanguage: input.settings.targetLanguage };
+          return { total: images ? input.total : input.plan.tables.length,
+            missing: input.missing.length + (images && input.needsOCR ? input.total : 0), available: Object.keys(input.cached).length > 0,
+            hasPDF, previousDisplay: images ? meta?.layoutImageDisplay : meta?.layoutTableDisplay, targetLanguage: input.settings.targetLanguage };
+        }
+
+        case "set-image-display": {
+          const context = await this.attachmentContext(attachmentID), enabled = Boolean(payload.enabled);
+          const meta = await this.storage.setDocumentMeta(context.documentID, { layoutImageDisplay: enabled,
+            ...(payload.hasPDF === false ? { imagePDFPending: false } : payload.changed ? { imagePDFPending: true } : {}) });
+          return { enabled, imagePDFPending: Boolean(meta.imagePDFPending) };
+        }
+
+        case "set-image-preference": {
+          const enabled = Boolean(payload.enabled);
+          U.setPref("translateImages", enabled);
+          for (const target of this.tabs.values()) if (target !== runtime) this.emit(target, { type: "image-preference", enabled });
+          return { enabled };
+        }
+
+        case "translate-images": {
+          return this.withOperation(runtime, "layout", async (signal, emit) => {
+            const context = await this.attachmentContext(attachmentID);
+            const isWeb = webEngineSelected(payload) || U.getPref("translationProvider", "") === "deepseek_web";
+            const result = await this.layout.translateImagesOnly(context.documentID, {
+              ...payload, engine: isWeb ? "deepseek_web" : "api", aiMode: isWeb ? "web" : "api", runtime
+            }, event => { if (event.type !== "layout-raw-delta") emit(event); }, signal);
+            return { ...result, state: await this.stateForAttachment(attachmentID) };
+          });
         }
 
         case "set-table-display": {
@@ -6644,7 +6676,7 @@
           const input = await this.layout.tableTranslationInput(context.documentID, { manual: true });
           if (!input.markdown.trim()) throw new Error("缺少文献全文，无法为表格翻译提供上下文");
           return { fingerprint: input.fingerprint, targetLanguage: input.settings.targetLanguage,
-            command: `请将目标表格单元格翻译为${input.settings.targetLanguage}。全文仅供上下文参考，不输出正文译文。保留每个表格 id、单元格索引和保护标记，只返回 JSON：{\"translations\":[{\"id\":\"...\",\"cells\":[[0,\"译文\"]]}]}。\n\n全文 Markdown：\n${input.markdown}\n\nInput blocks JSON:\n${this.layout.formatRequestBlocks(input.missing)}` };
+            command: `请将目标表格单元格翻译为${input.settings.targetLanguage}。全文仅供上下文参考，不输出正文译文。保留每个表格 id、从 1 开始的单元格编号和保护标记，只返回 JSON：{"request":"${input.plan.records.requestCode}","translations":[{"id":"T1","cells":[[1,"译文"]]}]}。\n\n全文 Markdown：\n${input.markdown}\n\nInput blocks JSON:\n${this.layout.formatRequestBlocks(input.missing, input.plan.records.requestCode)}` };
         }
 
         case "translate-layout":
@@ -7375,6 +7407,7 @@
     }
 
     saveSettings(values = {}) {
+      const previousMedia = { translateTables: U.getPref("translateTables", true), translateImages: U.getPref("translateImages", true) };
       if (Object.prototype.hasOwnProperty.call(values, "parseProvider")) {
         if (!["mineru", "paddle"].includes(values.parseProvider)) throw new Error("不支持所选文献解析服务");
         U.setPref("parseProvider", values.parseProvider);
@@ -7516,6 +7549,11 @@
         this.llm.saveSettings(chatValues, "chat");
       }
       void this.agent?.applySettings?.();
+      for (const [key, type] of [["translateTables", "table-preference"], ["translateImages", "image-preference"]]) {
+        if (Object.prototype.hasOwnProperty.call(values, key) && Boolean(previousMedia[key]) !== Boolean(U.getPref(key, true))) {
+          for (const target of this.tabs.values()) this.emit(target, { type, enabled: Boolean(U.getPref(key, true)) });
+        }
+      }
       return {
         ...translation,
         ...this.getSettings(),

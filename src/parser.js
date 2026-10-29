@@ -7,7 +7,7 @@
     "model.json", "content-list.json", "asset-map.json", "image-map.json", "mineru-task.json", "document.json",
     "layout-revision.json", "parse-info.json", "parsed-document.v1.json", "translation", "layout-translation",
     "compiled-model.json", "compiled-model.v13.json", "compiled-model.paddle-lines.v1.json",
-    "line-geometry.v1.json", "paddle-line-task.json", "fit"];
+    "line-geometry.v1.json", "paddle-line-task.json", "image-ocr.v1.json", "fit"];
 
   function parseRevisionID(documentID, meta = {}) {
     return String(meta?.parseRevisionID || `legacy-${U.hashString([documentID, meta?.parseIdentity || meta?.sourceIdentity || "", meta?.parsedAt || ""].join("|"))}`);
@@ -93,7 +93,9 @@
       catch (error) {
         if (!error.cancelled && !signal?.aborted) {
           const alternative = provider === "paddle" ? "MinerU" : "Paddle";
-          error.message = `${error.message || error}；可在设置中将解析服务切换为 ${alternative} 后重试`;
+          if (!(provider === "paddle" && U.isPaddleTokenCredentialError(error))) {
+            error.message = `${error.message || error}；可在设置中将解析服务切换为 ${alternative} 后重试`;
+          }
           emit?.({ type: "progress", phase: "parser-service-error", progress: null,
             message: `解析失败：${error.message}` });
         }

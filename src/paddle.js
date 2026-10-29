@@ -216,13 +216,14 @@
       if (sizes.length > 1000) {
         throw new Error(`文档共 ${sizes.length} 页，超过Paddle单次解析上限（最多支持 1000 页），请先拆分后重试`);
       }
-      const identity = U.hashString(`${options.sourceIdentity || filePath}|${bytes.length}|${model}|${JSON.stringify(DEFAULT_OPTIONS)}`);
+      const parseOptions = options.isOCR ? { ...DEFAULT_OPTIONS, useOcrForImageBlock: true } : DEFAULT_OPTIONS;
+      const identity = U.hashString(`${options.sourceIdentity || filePath}|${bytes.length}|${model}|${JSON.stringify(parseOptions)}`);
       const persist = task => taskPath ? this.storage.writeJSON(taskPath, { ...task, identity, model, provider: "paddle" }) : Promise.resolve();
       let task = taskPath ? await this.storage.readJSON(taskPath, null) : null;
       try {
         if (!task?.jobID || task.identity !== identity || ["failed", "published"].includes(task.state)) {
           emit?.({ type: "progress", phase: "paddle-upload", progress: 5, message: "正在上传文献到Paddle" });
-          task = await this.submit(bytes, model, token, signal);
+          task = await this.submit(bytes, model, token, signal, parseOptions);
           await persist(task);
         }
         emit?.({ type: "log", message: `Paddle任务：${task.jobID}` });

@@ -133,6 +133,9 @@
   let tablePreferenceRevision = 0;
   let tableOpenChecked = "";
   let tableOpenResolved = "";
+  let imagePreferenceRevision = 0;
+  let imageOpenChecked = "";
+  let imageOpenResolved = "";
   let tableDecisionQueue = Promise.resolve();
   let manualTablesOnly = false;
   let manualTableContext = null;
@@ -184,6 +187,7 @@
       "log-toggle", "log-drawer", "log-content", "log-clear", "log-close", "stream-mode-button", "layout-mode-button",
       "both-panes-button", "source-only-button", "translation-only-button",
       "sync-scroll-check", "translate-tables-check", "translate-tables-control",
+      "translate-images-check", "translate-images-control", "setting-translate-images", "setting-translate-tables",
       "reader-font-input", "key-points-button", "paper-mindmap-button", "paper-logic-flow-button", "prompt-library-button",
       "copy-source-markdown-button", "supplement-ocr-button", "swap-panes-button", "debug-boxes-control", "debug-boxes-check", "reader-split", "source-pane", "translation-pane", "split-handle", "sidebar-split-handle",
       "source-scroll", "translation-scroll", "source-placeholder", "translation-placeholder", "retry-source-pdf-button", "source-pdf", "source-content", "source-layout", "translation-content",
@@ -741,6 +745,7 @@
   function updateOperationUI() {
     const running = state.running.size > 0;
     if (els["translate-tables-check"]) els["translate-tables-check"].disabled = (tableInteraction && !tableSupplementRunning) || tablePreferenceSaving || exportBusy;
+    if (els["translate-images-check"]) els["translate-images-check"].disabled = (tableInteraction && !tableSupplementRunning) || tablePreferenceSaving || exportBusy;
     els["stop-button"].hidden = !running;
     els["translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
     els["manual-translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
@@ -889,6 +894,10 @@
     }
     if (type === "table-preference") {
       void changeTablePreference(event.enabled, { external: true });
+      return;
+    }
+    if (type === "image-preference") {
+      void changeImagePreference(event.enabled, { external: true });
       return;
     }
     if (type === "announcements-updated") {
@@ -1149,6 +1158,7 @@
     renderedSourceMarkdown = null;
     state.settings = mergePromptLibraryDraft(data?.settings || state.settings);
     els["translate-tables-check"].checked = state.settings?.translateTables !== false;
+    els["translate-images-check"].checked = state.settings?.translateImages !== false;
     if (!state.aiModeInitialized) {
       state.aiModeInitialized = true;
       const preferredMode = (state.settings?.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
@@ -1207,6 +1217,7 @@
     }
     updateOperationUI();
     queueTableOpenCheck();
+    queueImageOpenCheck();
   }
 
   function applyReaderTheme(theme) {
@@ -1574,6 +1585,10 @@
         + `<div class="layout-translated-table" hidden="hidden">${block.translatedTableHTML}</div>`;
     }
     if (block.kind === "image" && block.imageURL) {
+      if (useTranslation && block.translatedImageLabels?.length) {
+        return `<div class="layout-image-translation" data-protected-boxes="${U.escapeAttribute(JSON.stringify(block.imageProtectedBoxes || []))}"><img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`
+          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("") + "</div>";
+      }
       return `<img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`;
     }
     if (block.kind === "table" && block.tableHTML) {
@@ -1706,6 +1721,32 @@
     }
   }
 
+  function hasStackedSourceTextLines(stream, page) {
+    if (stream.debugRole !== "text" || stream.styleKind !== "text" || stream.refsOnly
+        || stream.bodyInherited || stream.textRegion || stream.items?.length !== 1) return false;
+    const item = stream.items[0];
+    if (item.type !== "text" || item.fromList || item.symbolGlossary) return false;
+    const box = stream.bbox;
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) return false;
+    const width = box[2] - box[0];
+    const height = box[3] - box[1];
+    if (!(width > 0 && height > 0)) return false;
+    // 只用段内宽行框证明多行；排除整段框、同一行碎片和上下标小框。
+    const lines = (page.restoration?.ocrBoxes || []).filter(line => {
+      if (!Array.isArray(line) || line.length !== 4 || !line.every(Number.isFinite)) return false;
+      const lineHeight = line[3] - line[1];
+      return line[2] - line[0] >= width * .25 && lineHeight > 0 && lineHeight <= height * .65
+        && line[0] >= box[0] - 2 && line[2] <= box[2] + 2
+        && line[1] >= box[1] - 2 && line[3] <= box[3] + 2;
+    }).sort((a, b) => a[1] - b[1]);
+    return lines.some((upper, index) => lines.slice(index + 1).some(lower => {
+      const overlap = Math.min(upper[2], lower[2]) - Math.max(upper[0], lower[0]);
+      return overlap >= Math.min(upper[2] - upper[0], lower[2] - lower[0]) * .5
+        && lower[1] - upper[3] >= Math.min(upper[3] - upper[1], lower[3] - lower[1]) * .1
+        && lower[3] - upper[1] >= height * .6;
+    }));
+  }
+
   function buildFlowStreamNode(stream, page, useTranslation) {
     const node = document.createElement("div");
     const roles = String(stream.debugRole || "text").replace(/[^a-z0-9_-]+/gi, "-");
@@ -1728,7 +1769,8 @@
       sum + Number(item.originalLineCount || item.parts?.reduce((partSum, part) => partSum + Number(part.originalLineCount || 0), 0) || 0), 0);
     const paragraphCount = (stream.items || []).reduce((sum, item) =>
       sum + (Array.isArray(item.paragraphs) && item.paragraphs.length ? item.paragraphs.length : 1), 0);
-    const originalLines = isToc || (stream.items || []).length > 1 || paragraphCount > 1 || originalLineCount > 1 ? "multi" : "single";
+    const originalLines = isToc || (stream.items || []).length > 1 || paragraphCount > 1 || originalLineCount > 1
+      || hasStackedSourceTextLines(stream, page) ? "multi" : "single";
     const [left, , right] = stream.bbox || [0, 0, 0, 0];
     const symmetry = Math.abs(left - (page.width - right)) / Math.max(1, right - left) <= .07;
     node.dataset.flowKind = stream.refsOnly ? "ref_text" : "text";
@@ -1854,6 +1896,10 @@
       node.dataset.tableSourceWidth = String(block.bbox[2] - block.bbox[0]);
       node.litmtransOriginalTableHTML = block.originalTableHTML || "";
 
+    }
+    if (useTranslation && block.translatedImageLabels?.length) {
+      node.classList.add("layout-image-translation-host");
+      node.dataset.imageSourceWidth = String(block.bbox[2] - block.bbox[0]);
     }
     return node;
   }
@@ -2002,7 +2048,69 @@
     } finally { probe.remove(); }
   }
 
+  function fitLayoutImageLabels(pages) {
+    for (const page of pages) for (const host of page.querySelectorAll(".layout-image-translation")) {
+      if (state.settings?.translateImages === false) {
+        host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; });
+        delete host._litmtransImageLabelFit;
+        continue;
+      }
+      const image = host.querySelector("img");
+      const paint = () => {
+        if (state.settings?.translateImages === false || !host.isConnected || !image.naturalWidth || !host.clientWidth || !host.clientHeight) return;
+        const hostStyle = getComputedStyle(host);
+        const hostWidth = parseFloat(hostStyle.width) || host.clientWidth, hostHeight = parseFloat(hostStyle.height) || host.clientHeight;
+        const key = `${image.src}|${hostWidth}|${hostHeight}|${document.fonts?.status || ""}`;
+        if (host._litmtransImageLabelFit === key) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        try {
+          const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
+          const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          const scale = Math.min(hostWidth / canvas.width, hostHeight / canvas.height);
+          const offsetX = (hostWidth - canvas.width * scale) / 2, offsetY = (hostHeight - canvas.height * scale) / 2;
+          const protectedBoxes = JSON.parse(host.dataset.protectedBoxes || '[]');
+          for (const label of host.querySelectorAll(".layout-image-label")) {
+            label.hidden = true;
+            const box = JSON.parse(label.dataset.box);
+            const restored = window.LitMTrans.LayoutImages.restoreImageLabel(pixels, canvas.width, canvas.height, box, protectedBoxes, label.dataset.sourceText);
+            if (!restored) continue;
+            const [x0, y0, x1, y1] = restored.box;
+            const patch = document.createElement("canvas"); patch.width = restored.width; patch.height = restored.height;
+            let background;
+            try {
+              const paint = patch.getContext("2d"), data = paint.createImageData(patch.width, patch.height);
+              data.data.set(restored.pixels); paint.putImageData(data, 0, 0); background = patch.toDataURL("image/png");
+            } finally { patch.width = patch.height = 1; }
+            label.style.cssText = `left:${offsetX + x0 * scale}px;top:${offsetY + y0 * scale}px;width:${(x1 - x0) * scale}px;height:${(y1 - y0) * scale}px;background-image:url("${background}");background-size:100% 100%;color:rgb(${restored.color.join(",")})`;
+            const font = getComputedStyle(host).fontFamily;
+            let size = (y1 - y0) * scale * .9;
+            ctx.font = `${size}px ${font}`;
+            size *= Math.min(1, (x1 - x0) * scale / Math.max(1, ctx.measureText(label.textContent).width));
+            const minimum = 3 * host.closest(".layout-block").clientWidth / Math.max(1, Number(host.closest(".layout-block").dataset.imageSourceWidth));
+            if (size < minimum) continue;
+            label.style.fontSize = `${size}px`;
+            label.hidden = false;
+            while ((label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) && size > minimum) {
+              size = Math.max(minimum, size - .5);
+              label.style.fontSize = `${size}px`;
+            }
+            if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.hidden = true;
+          }
+          host._litmtransImageLabelFit = key;
+        } catch (_) { host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; }); }
+        finally { canvas.width = canvas.height = 1; }
+      };
+      if (image.complete) paint();
+      else if (!host._litmtransImageLabelWaiting) {
+        host._litmtransImageLabelWaiting = true;
+        image.addEventListener("load", () => { host._litmtransImageLabelWaiting = false; paint(); }, { once: true });
+      }
+    }
+  }
+
   function fitLayoutTables(pages) {
+    fitLayoutImageLabels(pages);
     for (const page of pages) {
       for (const host of page.querySelectorAll(".layout-table-translation-host")) {
         const original = host.querySelector(".layout-table-original");
@@ -2525,7 +2633,7 @@
     const bodyFont = Number(state.layoutFontPt || 0).toFixed(1);
     const rulesVersion = LitMTrans.Constants.LAYOUT_READER_FONT_RULES_VERSION;
     const lineSuffix = model.geometryHash ? `|lines:${model.geometryHash}` : "";
-    return `${documentID}|${identity}|${bodyFont}|rules:${rulesVersion}${lineSuffix}${pane === "source" ? "|source" : (model.tableTranslationHash ? `|tables:${model.tableTranslationHash}` : "")}`;
+    return `${documentID}|${identity}|${bodyFont}|rules:${rulesVersion}${lineSuffix}${pane === "source" ? "|source" : (model.tableTranslationHash ? `|tables:${model.tableTranslationHash}` : "") + (model.imageTranslationHash ? `|images:${model.imageTranslationHash}` : "")}`;
   }
 
   function layoutFitPageKey(page) {
@@ -2863,8 +2971,8 @@
   function layoutTranslationPageState(page, useTranslation) {
     const blocks = Array.isArray(page?.blocks) ? page.blocks : [];
     const hasTranslatableBlocks = blocks.some(block => Boolean(block?.translatable));
-    const hasPageTranslation = blocks.some(block => Boolean((block?.translatable && block?.translatedText) || block?.translatedTableHTML))
-      || (page?.restoration?.absoluteBlocks || []).some(block => Boolean(block?.translatedTableHTML));
+    const hasPageTranslation = blocks.some(block => Boolean((block?.translatable && block?.translatedText) || block?.translatedTableHTML || block?.translatedImageLabels?.length))
+      || (page?.restoration?.absoluteBlocks || []).some(block => Boolean(block?.translatedTableHTML || block?.translatedImageLabels?.length));
     // Reference-only and media-only pages have no requested translation IDs.
     // Keep rendering their source representation in the translation pane;
     // otherwise a complete bibliography becomes an unexplained blank page.
@@ -3187,7 +3295,7 @@
           anchor.textContent = token[0];
           anchor.setAttribute('href', `#${references.get(start)}`);
           anchor.dataset.layoutReferenceTarget = references.get(start);
-          anchor.title = `参考文献 ${token[0]}`;
+          anchor.dataset.layoutReferenceEnd = String(end);
           fragment.appendChild(anchor);
         } else fragment.appendChild(document.createTextNode(token[0]));
         cursor = token.index + token[0].length;
@@ -3217,7 +3325,10 @@
         anchor.textContent = label;
         anchor.setAttribute('href', href);
         anchor.className = 'litmtrans-link';
-        if (target) { anchor.dataset.layoutReferenceTarget = target; anchor.title = `参考文献 ${label}`; }
+        if (target) {
+          anchor.dataset.layoutReferenceTarget = target;
+          anchor.dataset.layoutReferenceEnd = String(Number(label.split(/[-–−]/).at(-1)));
+        }
         fragment.appendChild(anchor);
       };
       for (const match of matches) {
@@ -3311,6 +3422,67 @@
     }
   }
 
+  function linkifyLayoutFigures(root, pane) {
+    const targets = new Map();
+    const pattern = /(?:\b(?:fig(?:ure)?s?\.?|tables?)(?![a-z])|[图表])\s*([1-9]\d*(?:[.\-]\d+)*)(?!\d|[.\-]\d)/gi;
+    const keyOf = match => `${/^(?:表|table)/i.test(match[0]) ? 'table' : 'figure'}-${match[1]}`;
+    let serial = 0;
+    for (const caption of root.querySelectorAll('.type-image_caption, .type-chart_caption, .type-table_caption')) {
+      const text = caption.textContent.trim();
+      pattern.lastIndex = 0;
+      const match = pattern.exec(text);
+      if (!match || match.index !== 0) continue;
+      const key = keyOf(match);
+      caption.id ||= `litmtrans-figure-${pane}-${serial++}`;
+      targets.set(key, targets.has(key) ? null : caption.id);
+    }
+    if (!targets.size) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode, parent = node.parentElement;
+      if (parent?.closest('.layout-flow-stream, .layout-block')
+        && !parent.closest('a, sup, code, pre, .layout-caption, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer')) nodes.push(node);
+    }
+    for (const node of nodes) {
+      const text = node.textContent, fragment = document.createDocumentFragment();
+      let cursor = 0;
+      pattern.lastIndex = 0;
+      for (const match of text.matchAll(pattern)) {
+        const target = targets.get(keyOf(match));
+        if (!target) continue;
+        // 范围和子图编号暂不推断，避免把不完整的编号链接到整图。
+        if (/^[a-z\d]|^\s*[-–−(（]/i.test(text.slice(match.index + match[0].length))) continue;
+        fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        const anchor = document.createElement('a');
+        anchor.className = 'litmtrans-link';
+        anchor.textContent = match[0];
+        anchor.setAttribute('href', `#${target}`);
+        anchor.dataset.layoutReferenceTarget = target;
+        fragment.appendChild(anchor);
+        cursor = match.index + match[0].length;
+      }
+      if (cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor)));
+        node.replaceWith(fragment);
+      }
+    }
+  }
+
+  function setLayoutReferencePreviews(root) {
+    const entries = new Map([...root.querySelectorAll('[id]')].map(entry => [entry.id, entry]));
+    for (const anchor of root.querySelectorAll('a[data-layout-reference-target]')) {
+      const target = anchor.dataset.layoutReferenceTarget;
+      const ids = [target];
+      const match = target.match(/^(litmtrans-reference-.+-)(\d+)$/);
+      const end = Number(anchor.dataset.layoutReferenceEnd);
+      if (match && end > Number(match[2])) {
+        for (let number = Number(match[2]) + 1; number <= end; number++) ids.push(`${match[1]}${number}`);
+      }
+      anchor.title = ids.map(id => entries.get(id)?.textContent.trim()).filter(Boolean).join('\n\n');
+    }
+  }
+
   function buildLayoutDocument(model, useTranslation) {
     const root = document.createDocumentFragment();
     const observers = [];
@@ -3401,6 +3573,8 @@
       observers.push(pageNode);
     }
     linkifyLayoutDocument(root, useTranslation ? 'translation' : 'source', model.referenceNumbers);
+    linkifyLayoutFigures(root, useTranslation ? 'translation' : 'source');
+    setLayoutReferencePreviews(root);
     requestAnimationFrame(() => {
       let fitQueued = false;
       let fitInProgress = false;
@@ -3854,7 +4028,7 @@
     const paperFill = options.paperRGB ? `rgb(${paperRGB.join(",")})` : "#ffffff";
     for (const item of erasureItems || []) {
       if (options.displayRetainedImages && item.kind === "image"
-        && !item.node?.matches(".layout-table-translation-host, .type-table, .type-table_body")) {
+        && !item.node?.matches(".layout-table-translation-host, .layout-image-translation-host, .type-table, .type-table_body")) {
         options.displayRetainedImages.push(item.node);
         continue;
       }
@@ -4376,6 +4550,8 @@
     const singlePane = view !== "both";
     const layoutLocked = state.mode === "layout";
     els["translate-tables-control"].hidden = !layoutLocked;
+    els["translate-images-control"].hidden = !layoutLocked;
+    els["translate-images-control"].parentElement.hidden = !layoutLocked;
     els["sync-scroll-check"].checked = layoutLocked ? true : state.syncScroll;
     els["sync-scroll-check"].disabled = singlePane || layoutLocked;
     els["sync-scroll-check"].title = singlePane
@@ -5888,7 +6064,7 @@
       if (target === "source") {
         return Boolean(state.data?.layout?.model?.pages?.length);
       }
-      return Boolean(state.data?.layout?.model?.tableTranslationHash || state.data?.layout?.model?.pages?.some(page =>
+      return Boolean(state.data?.layout?.model?.tableTranslationHash || state.data?.layout?.model?.imageTranslationHash || state.data?.layout?.model?.pages?.some(page =>
         (page.blocks || []).some(block => block.translatable && block.translatedText)
       ));
     }
@@ -5905,9 +6081,10 @@
     const layoutIdentity = String(state.data?.layout?.meta?.identity || state.data?.layout?.meta?.sourceFingerprint || state.data?.layout?.model?.sourceFingerprint || "");
     const parseRevisionID = String(state.data?.parsed?.meta?.parseRevisionID || "");
     const tables = state.settings?.translateTables === false ? "" : state.data?.layout?.model?.tableTranslationHash;
+    const images = state.settings?.translateImages === false ? "" : state.data?.layout?.model?.imageTranslationHash;
     const retranslationCount = Number(state.data?.layout?.meta?.retranslationCount || 0);
     const rev = retranslationCount > 0 ? `:rev-${retranslationCount}` : "";
-    return layoutIdentity ? `${parseRevisionID ? `${parseRevisionID}:` : ""}${layoutIdentity}${tables ? `:tables-${tables}` : ""}${rev}:pdf-${LAYOUT_PDF_EXPORT_REVISION}` : "";
+    return layoutIdentity ? `${parseRevisionID ? `${parseRevisionID}:` : ""}${layoutIdentity}${tables ? `:tables-${tables}` : ""}${images ? `:images-${images}` : ""}${rev}:pdf-${LAYOUT_PDF_EXPORT_REVISION}` : "";
   }
 
   async function waitForLayoutPanePDFReady(pane = "translation") {
@@ -6991,7 +7168,7 @@
   }
 
   async function createLayoutPDFAttachmentsAfterTranslation({ tableUpdate = false } = {}) {
-    if (!tableUpdate && (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending)) return null;
+    if (!tableUpdate && (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending || state.data?.item?.imagePDFPending)) return null;
     if (!hasCurrentTranslationForExport(true)) return;
     const expectedIdentity = layoutPDFExportIdentity();
     // The final translation publication precedes the visual settle task by a
@@ -6999,7 +7176,7 @@
     // printable, so PDFs never preserve the temporary fitting mask.
     if (!await waitForLayoutPDFReady()) return null;
     if (expectedIdentity !== layoutPDFExportIdentity()) return null;
-    if (!tableUpdate && (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending)) return null;
+    if (!tableUpdate && (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending || state.data?.item?.imagePDFPending)) return null;
     // This command is only queued after the translation service has emitted
     // its final publication. It consumes the reader's existing fitted state
     // and deliberately never starts another visual-fit pass.
@@ -7016,7 +7193,8 @@
   }
 
   function queueLayoutPDFAttachmentsAfterFinalPublication() {
-    if (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending || tableOpenResolved !== tableDocumentKey()) return;
+    if (tableInteraction || tablePreferenceSaving || state.data?.item?.tablePDFPending || state.data?.item?.imagePDFPending
+      || tableOpenResolved !== tableDocumentKey() || imageOpenResolved !== tableDocumentKey()) return;
     const model = state.data?.layout?.model;
     const layoutPDFIdentity = layoutPDFExportIdentity();
     if (!model?.pages?.length || !layoutPDFIdentity) return;
@@ -7058,8 +7236,9 @@
     return key === tableDocumentKey();
   }
 
-  function tableDecision(message, { manual = false } = {}) {
+  function tableDecision(message, { manual = false, title = "翻译表格" } = {}) {
     const dialog = $("table-decision-dialog");
+    $("table-decision-title").textContent = title;
     $("table-decision-message").textContent = message;
     $("table-decision-manual").hidden = !manual;
     return new Promise(resolve => {
@@ -7127,6 +7306,7 @@
     }
     if (attachments && !attachments.cancelled) {
       state.data.item.tablePDFPending = false;
+      state.data.item.imagePDFPending = false;
       state.data.item.layoutPDFIdentity = layoutPDFExportIdentity();
       toast("PDF 附件已更新");
     }
@@ -7180,6 +7360,7 @@
       if (originalKey !== tableDocumentKey() || revision !== tablePreferenceRevision) return;
       state.settings = { ...state.settings, translateTables: enabled };
       els["translate-tables-check"].checked = enabled;
+      if (els["setting-translate-tables"]) els["setting-translate-tables"].checked = enabled;
       if (before !== enabled && state.data?.layout?.model?.tableTranslationHash) state.data.item.tablePDFPending = true;
       updateTableDisplay();
     } catch (error) {
@@ -7224,6 +7405,100 @@
         toast("当前文献没有可翻译的结构化表格");
       }
       if (revision === tablePreferenceRevision) await askTablePDFUpdate(key, status);
+    });
+  }
+
+  async function rememberImageDisplay(enabled, changed, status) {
+    status ||= await hostCall("image-translation-status");
+    const result = await hostCall("set-image-display", { enabled, changed, hasPDF: status.hasPDF });
+    state.data.item.layoutImageDisplay = enabled;
+    state.data.item.imagePDFPending = Boolean(result.imagePDFPending);
+  }
+
+  async function askImagePDFUpdate(key, status) {
+    if (!state.data?.item?.imagePDFPending || !status.hasPDF || !hasCurrentTranslationForExport(true)) return;
+    if (!await waitForTableDecisionSlot(key)) return;
+    const revision = imagePreferenceRevision;
+    if (!await tableDecision("图片显示已切换，是否更新条目下的译文 PDF 和对照 PDF？已有批注的旧附件会保留。", { title: "翻译图片" })) return;
+    if (key !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
+    const mode = state.mode, view = state.readerView;
+    let attachments;
+    try {
+      state.mode = "layout";state.readerView = "both";renderMode();
+      await ensureTranslationLayoutExportPane();
+      attachments = await createLayoutPDFAttachmentsAfterTranslation({ tableUpdate: true });
+    } finally { state.mode = mode;state.readerView = view;renderMode(); }
+    if (attachments && !attachments.cancelled) {
+      state.data.item.imagePDFPending = false;state.data.item.tablePDFPending = false;
+      state.data.item.layoutPDFIdentity = layoutPDFExportIdentity();toast("PDF 附件已更新");
+    }
+  }
+
+  function queueImageOpenCheck() {
+    const key = tableDocumentKey();
+    if (imageOpenChecked === key) return;
+    imageOpenChecked = key;
+    queueTableTask(async current => {
+      try {
+        if (!state.data?.parsed?.hasLayout) return;
+        const status = await hostCall("image-translation-status"), revision = imagePreferenceRevision;
+        let enabled = state.settings?.translateImages !== false;
+        const previous = status.previousDisplay ?? status.available;
+        if (!enabled && previous && status.available) {
+          if (!await waitForTableDecisionSlot(current)) return;
+          enabled = await tableDecision("这篇文献此前启用了翻译图片，当前全局设置为不翻译。是否重新勾选“翻译图片”？此选择会修改全局设置。选择否将显示原图。", { title: "翻译图片" });
+          if (revision !== imagePreferenceRevision) return;
+          if (enabled) { await hostCall("set-image-preference", { enabled: true });state.settings.translateImages = true; }
+        }
+        els["translate-images-check"].checked = enabled;
+        const changed = Boolean(status.available && previous !== enabled);
+        await rememberImageDisplay(enabled, changed, status);updateTableDisplay();
+        if (changed) await askImagePDFUpdate(current, status);
+      } finally { if (current === tableDocumentKey()) imageOpenResolved = current; }
+    }).then(() => {
+      if (key === tableDocumentKey() && imageOpenResolved === key && state.data?.layout?.meta?.complete) queueLayoutPDFAttachmentsAfterFinalPublication();
+    });
+  }
+
+  async function changeImagePreference(enabled, { external = false } = {}) {
+    const originalKey = tableDocumentKey(), before = state.settings?.translateImages !== false, revision = ++imagePreferenceRevision;
+    tablePreferenceSaving = true;updateOperationUI();
+    try {
+      while (exportBusy || document.body.dataset.printSnapshot) await new Promise(resolve => setTimeout(resolve, 100));
+      if (external) enabled = (await hostCall("get-settings")).translateImages !== false;
+      else await hostCall("set-image-preference", { enabled });
+      if (originalKey !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
+      state.settings = { ...state.settings, translateImages: enabled };
+      els["translate-images-check"].checked = enabled;
+      if (els["setting-translate-images"]) els["setting-translate-images"].checked = enabled;
+      if (before !== enabled && state.data?.layout?.model?.imageTranslationHash) state.data.item.imagePDFPending = true;
+      updateTableDisplay();
+    } catch (error) {
+      els["translate-images-check"].checked = before;toast(error.message || String(error), "error");return;
+    } finally { tablePreferenceSaving = false;updateOperationUI(); }
+    return queueTableTask(async key => {
+      if (key !== originalKey || revision !== imagePreferenceRevision || !state.data?.parsed?.hasLayout) return;
+      const status = await hostCall("image-translation-status");
+      await rememberImageDisplay(enabled, Boolean(status.available && before !== enabled), status);
+      if (enabled && status.missing && !external) {
+        if (!await waitForTableDecisionSlot(key)) return;
+        const accepted = await tableDecision(status.available ? "部分图片缺少译文，是否补翻缺失的图片？" : "当前文献的图片尚无可用译文，是否翻译？", { title: "翻译图片" });
+        if (key !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
+        if (accepted) {
+          const oldHash = state.data?.layout?.model?.imageTranslationHash || "";
+          let result, failure;tableSupplementRunning = true;updateOperationUI();
+          try { result = await hostCall("translate-images", { engine: state.aiMode === "web" ? "deepseek_web" : "api", aiMode: state.aiMode }); }
+          catch (error) { failure = error; }
+          finally { tableSupplementRunning = false;updateOperationUI(); }
+          if (key !== tableDocumentKey()) return;
+          if (failure) { if (!failure.cancelled) toast(failure.message || String(failure), "error");return; }
+          setData(result.state);
+          if (state.settings?.translateImages !== false && (state.data?.layout?.model?.imageTranslationHash || "") !== oldHash) await rememberImageDisplay(true, true, status);
+          if (!state.data?.layout?.model?.imageTranslationHash) toast("未识别到可翻译的图片文字");
+          if (result.remaining) toast("部分图片未获得有效译文，已保留原图", "warning");
+        }
+      } else if (enabled && !status.total && !external) toast("当前文献没有可翻译的图片");
+      if (revision === imagePreferenceRevision) await askImagePDFUpdate(key, status);
     });
   }
 
@@ -8373,6 +8648,8 @@
     els["setting-web-input-mode-auto"].checked = (settings.webInputMode || "auto") === "auto";
     els["setting-web-input-mode-clipboard"].checked = settings.webInputMode === "clipboard";
     els["setting-delete-web-translation-sessions"].checked = settings.deleteWebTranslationSessions !== false;
+    els["setting-translate-tables"].checked = settings.translateTables !== false;
+    els["setting-translate-images"].checked = settings.translateImages !== false;
     els["setting-web-mode-advanced"].open = false;
     els["setting-chat-uses-translation-model"].checked = settings.chatUsesTranslationModel !== false;
     els["setting-chat-provider"].value = settings.chatProvider ?? "oneapi";
@@ -9019,6 +9296,8 @@
       webPageImageQuality: els["setting-web-page-image-quality"].value,
       webInputMode: els["setting-web-input-mode-auto"].checked ? "auto" : "clipboard",
       deleteWebTranslationSessions: els["setting-delete-web-translation-sessions"].checked,
+      translateTables: els["setting-translate-tables"].checked,
+      translateImages: els["setting-translate-images"].checked,
       parseProvider: els["setting-parse-provider"].value,
       mineruModel: "vlm",
       // MinerU's stable parsing profile is intentionally not user-configurable.
@@ -9326,7 +9605,7 @@
     const input = els["mineru-token-input"];
     const errorNode = els["mineru-token-error"];
     const saveButton = els["save-mineru-token-and-parse"];
-    title.textContent = expired ? `${name}访问令牌可能已失效` : `配置${name}访问令牌`;
+    title.textContent = expired ? (paddle ? "Paddle访问令牌无法通过验证" : "MinerU访问令牌可能已失效") : `配置${name}访问令牌`;
     dialog.querySelector("label[for=mineru-token-input]").textContent = `${name}访问令牌`;
     const link = dialog.querySelector("a[data-external-url]");
     if (link) {
@@ -9451,10 +9730,13 @@
         const message = String(error?.message || error);
         lastActionError = message;
         const cacheProtectionPrefix = "DEEPSEEK_FAST_CACHE_PROTECTION:";
-        if (method === "parse" && state.settings?.parseProvider !== "paddle" && U.isMinerUTokenCredentialError?.(error)) {
-          const notice = "MinerU访问令牌可能已过期或失效，请前往官网重新创建。";
+        const paddle = state.settings?.parseProvider === "paddle";
+        const tokenError = paddle ? U.isPaddleTokenCredentialError?.(error) : U.isMinerUTokenCredentialError?.(error);
+        if (method === "parse" && tokenError) {
+          const name = paddle ? "Paddle" : "MinerU";
+          const notice = paddle ? "Paddle访问令牌无法通过验证，请前往官网检查或重新获取。" : "MinerU访问令牌可能已过期或失效，请前往官网重新创建。";
           lastActionError = notice;
-          setStatus("MinerU访问令牌需要更新", null, "error");
+          setStatus(`${name}访问令牌需要更新`, null, "error");
           addLog(notice, "error");
           const replaced = await ensureParserTokenForParse({ force: true, reason: "expired" });
           if (replaced) return runAction(method, payload, options);
@@ -10232,7 +10514,7 @@
         // checkpoint, not mistake it for a finished version and erase it.
         const force = Boolean(
           state.data?.layout?.meta?.complete
-          && (Object.keys(state.data?.layout?.translations || {}).length || state.data?.layout?.model?.tableTranslationHash)
+          && (Object.keys(state.data?.layout?.translations || {}).length || state.data?.layout?.model?.tableTranslationHash || state.data?.layout?.model?.imageTranslationHash)
         );
         if (force && !window.confirm("确认重新进行排版翻译？当前译文会继续用于阅读和导出，直到新译文完成并通过校验后自动替换。")) return;
         if (force) {
@@ -10611,6 +10893,9 @@
     }, { passive: false });
     els["translate-tables-check"].addEventListener("change", () => {
       void changeTablePreference(els["translate-tables-check"].checked);
+    });
+    els["translate-images-check"].addEventListener("change", () => {
+      void changeImagePreference(els["translate-images-check"].checked);
     });
     els["sync-scroll-check"].addEventListener("change", () => {
       if (state.mode === "layout") {
@@ -11495,6 +11780,7 @@
       "setting-chat-thinking-mode", "setting-chat-reasoning-effort",
       "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
       "setting-web-page-image-quality", "setting-delete-web-translation-sessions",
+      "setting-translate-tables", "setting-translate-images",
       "setting-caj-double-click-action", "setting-show-native-reader-ask-ai", "setting-auto-update",
       "setting-target-language", "setting-machine-source-language", "setting-translation-mode",
       "setting-agent-access-mode", "setting-agent-allow-configured-services",

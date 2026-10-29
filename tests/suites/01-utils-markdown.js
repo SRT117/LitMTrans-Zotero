@@ -18,6 +18,11 @@ async function testUtils() {
   assert.equal(U.isMinerUTokenCredentialError({ status: 401, message: "Unauthorized" }), true);
   assert.equal(U.isMinerUTokenCredentialError("MinerU token无效，请重新配置"), true);
   assert.equal(U.isMinerUTokenCredentialError("HTTP 429: Too Many Requests"), false);
+  assert.equal(U.isPaddleTokenCredentialError('HTTP 401: {"msg":"Unauthorized"}'), true);
+  assert.equal(U.isPaddleTokenCredentialError({ status: 401 }), true);
+  assert.equal(U.isPaddleTokenCredentialError("HTTP 403: Forbidden"), false);
+  assert.equal(U.isPaddleTokenCredentialError("HTTP 429: Too Many Requests"), false);
+  assert.equal(U.isPaddleTokenCredentialError("网络请求超过 180 秒仍未完成"), false);
   prefValues.set("extensions.ai-literature-translator.provider", "deepseek");
   U.migrateLegacyPreferences();
   assert.equal(

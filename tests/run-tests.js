@@ -18,7 +18,8 @@ const suites = [
   { name: "12-paddle-lines", file: "./suites/12-paddle-lines" },
   { name: "13-layout-tables", file: "./suites/13-layout-tables" },
   { name: "14-layout-background", file: "./suites/14-layout-background" },
-  { name: "15-reader-comparison", file: "./suites/15-reader-comparison" }
+  { name: "15-reader-comparison", file: "./suites/15-reader-comparison" },
+  { name: "16-layout-images", file: "./suites/16-layout-images" }
 ];
 
 (async () => {

@@ -276,7 +276,7 @@ function createTestContext() {
     "src/edge-local-translation.js",
     "src/web-machine-translation.js",
     "src/translation.js",
-    "src/layout-tables.js", "src/layout.js",
+    "src/layout-tables.js", "src/layout-images.js", "src/layout.js",
     "src/chat.js",
     "src/pipeline.js",
     "src/updater.js",

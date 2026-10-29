@@ -11,6 +11,7 @@
   <script src="chrome://litmtrans/content/assets/vendor/katex/katex.min.js"></script>
   <script src="chrome://litmtrans/content/src/markdown.js"></script>
   <script src="chrome://litmtrans/content/src/layout-tables.js"></script>
+  <script src="chrome://litmtrans/content/src/layout-images.js"></script>
   <script src="chrome://litmtrans/content/src/layout.js"></script>
   <script src="chrome://litmtrans/content/src/mindmap.js"></script>
   <script src="chrome://litmtrans/content/src/mindmap-v2.js"></script>
@@ -96,7 +97,10 @@
           </div>
           <button id="clean-reader-ai-button" class="icon-button clean-only-control" type="button" title="显示对话侧栏" aria-label="显示对话侧栏">显示对话侧栏</button>
           <label class="compact-check"><input id="sync-scroll-check" type="checkbox" checked="checked" /> 同步滚动</label>
-          <label id="translate-tables-control" class="compact-check"><input id="translate-tables-check" type="checkbox" checked="checked" /> 翻译表格</label>
+          <div class="translation-media-toggles">
+            <label id="translate-tables-control" class="compact-check"><input id="translate-tables-check" type="checkbox" checked="checked" /> 翻译表格</label>
+            <label id="translate-images-control" class="compact-check"><input id="translate-images-check" type="checkbox" checked="checked" /> 翻译图片</label>
+          </div>
           <label id="reader-font-control" class="font-control">正文 <input id="reader-font-input" type="number" step="any" value="" placeholder="自动" title="留空时显示并使用自动排版得到的正文字号" /> pt</label>
           <div class="reader-ai-actions" role="group" aria-label="AI阅读视图">
             <button id="key-points-button" class="link-button" type="button" title="根据自定义要求提炼全文要点">要点提炼</button>
@@ -418,6 +422,7 @@
 
         <section class="settings-section translation-model-section settings-card-model">
           <h3 id="setting-model-heading">翻译模型设置</h3>
+          <div class="translation-media-options"><label class="inline-check"><input id="setting-translate-tables" type="checkbox" checked="checked" /> 翻译表格</label><label class="inline-check"><input id="setting-translate-images" type="checkbox" checked="checked" /> 翻译图片</label></div>
           <div class="web-mode-toggle-row">
             <label class="inline-check shared-model-toggle web-mode-toggle"><input id="setting-chat-engine-web" type="checkbox" checked="checked" /> <span class="web-mode-copy"><span class="web-mode-title-line"><strong>使用DeepSeek官方网页模式</strong><button id="open-web-mode-info-button" class="settings-inline-link" type="button">使用说明</button></span><small>勾选后，翻译与对话均走DeepSeek官方网页端，无需配置API密钥。</small></span></label>
           </div>

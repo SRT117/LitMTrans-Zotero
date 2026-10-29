@@ -317,11 +317,14 @@ module.exports = function (env) {
       const command = await pipeline.manualTranslationCommand(ref, "layout");
       const { records } = await service.manualTranslationInput(documentID);
       const table = records.find(record => record.type === "table_cells");
-      assert.ok(command.includes('"cells"') && command.includes(table.id));
+      assert.ok(command.includes('"cells"') && command.includes(table.wireID));
+      assert.ok(!command.includes(table.id), "internal source fingerprints must remain local");
       const inputJSON = command.split("输入文本块 JSON：\n").at(-1);
       const inputBlocks = JSON.parse(inputJSON).blocks;
       assert.equal(inputBlocks.filter(block => block.type === "table_cells").length, 1);
-      assert.equal(inputBlocks.at(-1).id, table.id);
+      assert.equal(inputBlocks.at(-1).id, table.wireID);
+      assert.equal(JSON.parse(inputJSON).request, records.requestCode);
+      assert.deepEqual(Array.from(inputBlocks.at(-1).cells, item => item[0]), [1, 2, 3, 4]);
       assert.ok(inputJSON.includes("    " + JSON.stringify(inputBlocks.at(-1))), "only the table record must stay on one line");
       assert.ok(!Object.hasOwn(inputBlocks.at(-1), "caption"), "table captions must not be repeated as untranslated context");
       const bodyBlocks = inputBlocks.filter(block => block.type !== "table_cells");
@@ -350,7 +353,7 @@ module.exports = function (env) {
       const tableOnly = await pipeline.mergeManualTranslationResponse(ref, "layout", {}, JSON.stringify(row));
       assert.ok(tableOnly.translations[table.id], "a single table JSONL record must be accepted without body records");
       const bodyOnlyRecovery = await pipeline.manualTranslationRecoveryCommand(ref, "layout", { p1: "第一段译文。" });
-      assert.ok(bodyOnlyRecovery.includes('"cells"') && bodyOnlyRecovery.includes(table.id));
+      assert.ok(bodyOnlyRecovery.includes('"cells"') && bodyOnlyRecovery.includes(table.wireID));
       const legacy = service.normalizeManualTranslations(records, JSON.stringify({ translations: [row, { id: "p1", text: "译文" }] }));
       assert.ok(legacy[table.id]);
       const bad = await pipeline.mergeManualTranslationResponse(ref, "layout", second.translations, JSON.stringify({ id: table.id, cells: [[0, "不完整"]] }) + '\n' + JSON.stringify({ id: "p2", text: "修订正文" }));
@@ -634,6 +637,7 @@ module.exports = function (env) {
     assert.equal(pageState(page, true).showAwaitingOverlay, false, "a valid translated table is visible without a translated body");
     assert.equal(JSON.stringify(page), before, "recognizing table content must not change body translation state");
     assert.equal(pageState({ blocks: [body], restoration: { absoluteBlocks: [table] } }, true).showAwaitingOverlay, false);
+    assert.equal(pageState({ blocks: [body, { type: "image_body", translatedImageLabels: [{ text: "译文", bbox: [0, 0, 1, 1] }] }] }, true).showAwaitingOverlay, false, "仅补翻图片时也必须显示可用译图");
     assert.equal(pageState({ blocks: [body, { ...table, translatedTableHTML: "" }] }, true).showAwaitingOverlay, true);
     assert.equal(pageState({ blocks: [body] }, true).showAwaitingOverlay, true, "untranslated pages must retain their placeholder");
     assert.equal(pageState({ blocks: [body] }, false).showAwaitingOverlay, false);
@@ -669,7 +673,7 @@ module.exports = function (env) {
           generated++;
           return {};
         } });
-      vm.runInContext('let startupNoticeGateClosed=true,exportBusy=false,tableInteraction=false,tablePreferenceSaving=false,tablePreferenceRevision=0,tableOpenChecked="",tableOpenResolved="",tableDecisionQueue=Promise.resolve();\n'
+      vm.runInContext('let startupNoticeGateClosed=true,exportBusy=false,tableInteraction=false,tablePreferenceSaving=false,tablePreferenceRevision=0,tableOpenChecked="",tableOpenResolved="",imageOpenResolved="paper|简体中文",tableDecisionQueue=Promise.resolve();\n'
         + keyAndWait + tasks + remember + pdf + open, sandbox);
       vm.runInContext("queueTableOpenCheck(); queueLayoutPDFAttachmentsAfterFinalPublication();", sandbox);
       await Promise.resolve();
@@ -723,7 +727,7 @@ module.exports = function (env) {
           }
           return controller.dispatch({ attachmentID: 1 }, method, payload);
         } });
-      vm.runInContext('let startupNoticeGateClosed=true,exportBusy=false,tableInteraction=false,tablePreferenceSaving=false,tablePreferenceRevision=0,tableOpenChecked="paper|简体中文",tableOpenResolved="paper|简体中文",tableDecisionQueue=Promise.resolve(),tableSupplementRunning=false,manualTablesOnly=true,manualTableContext={fingerprint:"source",targetLanguage:"简体中文"};\n'
+      vm.runInContext('let startupNoticeGateClosed=true,exportBusy=false,tableInteraction=false,tablePreferenceSaving=false,tablePreferenceRevision=0,tableOpenChecked="paper|简体中文",tableOpenResolved="paper|简体中文",imageOpenResolved="paper|简体中文",tableDecisionQueue=Promise.resolve(),tableSupplementRunning=false,manualTablesOnly=true,manualTableContext={fingerprint:"source",targetLanguage:"简体中文"};\n'
         + queue + pdf + '\nasync function importManualTable() { const response="table response";\n' + manual + '\n}', sandbox);
       if (entry === "automatic") await vm.runInContext("changeTablePreference(true)", sandbox);
       else {
@@ -771,6 +775,7 @@ module.exports = function (env) {
     table.getBoundingClientRect = () => { measurements++; return host.getBoundingClientRect(); };
     const state = { settings: { translateTables: true } };
     const toggle = vm.runInNewContext(fit + update + "\nupdateTableDisplay", { document, state,
+      fitLayoutImageLabels: () => {},
       els: { "translation-layout": container }, LitMTrans: context.LitMTrans,
       measureLayoutTableColumns: () => assert.fail("a fitting table needs no column redistribution") });
     toggle();
@@ -806,7 +811,7 @@ module.exports = function (env) {
       llm.complete = async messages => {
         const blocks = JSON.parse(messages[1].content.split("Input blocks JSON:\n").at(-1)).blocks;
         return { text: JSON.stringify({ translations: blocks.map(block => block.type === "table_cells"
-          ? { id: block.id, cells: block.cells.map(([index, text]) => [index, index === 0 ? "参数 ~12!" : text]) }
+          ? { id: block.id, cells: block.cells.map(([index, text]) => [index, index === 1 ? "参数 ~12!" : text]) }
           : { id: block.id, text: "正文译文。" }) }) };
       };
       await service.translate(documentID);

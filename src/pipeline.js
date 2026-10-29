@@ -45,7 +45,8 @@
         const formulaReplacements = stale ? {} : (layoutTranslations?.formulaReplacements || {});
         // The atomically published revision, not translation metadata, proves
         // that compiled-model.json belongs to the current layout source.
-        const model = await this.layout.buildModel(documentID, translations, formulaReplacements, revision, null, emit);
+        const model = await this.layout.buildModel(documentID, translations, formulaReplacements,
+          { ...revision, targetLanguage: layoutTranslations?.meta?.targetLanguage }, null, emit);
         let fitSnapshot = null;
         try {
           // Use the model fingerprint when translation metadata is stale.
@@ -65,7 +66,8 @@
           const rulesVersion = LitMTrans.Constants.LAYOUT_READER_FONT_RULES_VERSION;
           const lineSuffix = model?.geometryHash ? `|lines:${model.geometryHash}` : "";
           const tableSuffix = model?.tableTranslationHash ? `|tables:${model.tableTranslationHash}` : "";
-          const key = `${documentID}|${identity}|${bodyFont}|rules:${rulesVersion}${lineSuffix}${tableSuffix}`;
+          const imageSuffix = model?.imageTranslationHash ? `|images:${model.imageTranslationHash}` : "";
+          const key = `${documentID}|${identity}|${bodyFont}|rules:${rulesVersion}${lineSuffix}${tableSuffix}${imageSuffix}`;
           const fitPath = PathUtils.join(this.storage.documentsRoot, documentID, "fit", `${U.hashString(key)}.json`);
           if (await this.storage.exists(fitPath)) {
             fitSnapshot = await this.storage.readJSON(fitPath, null);
@@ -173,7 +175,7 @@
       const canParse = LitMTrans.Constants.SUPPORTED_INPUT_EXTENSIONS.has(U.extension(context.filePath));
       const hasParsed = Boolean(parsed.markdown);
       const hasLayoutModel = Boolean(layout.model?.pages?.length);
-      const hasLayoutTranslation = Boolean(Object.keys(layout.translations || {}).length || layout.model?.tableTranslationHash);
+      const hasLayoutTranslation = Boolean(Object.keys(layout.translations || {}).length || layout.model?.tableTranslationHash || layout.model?.imageTranslationHash);
       // The Zotero PDF Reader is useful before MinerU has produced a layout
       // model.  Keep that reader capability separate from the parsed-layout
       // capability so a new attachment does not lose the layout reading mode.
@@ -302,8 +304,10 @@
         }
         return this.layout.translate(context.documentID, {
           force: Boolean(payload.force),
+          targetLanguage: payload.targetLanguage ?? settings.targetLanguage,
           mode: String(payload.mode || settings.translationMode || "full_context"),
           translateTables: payload.translateTables ?? settings.translateTables,
+          translateImages: payload.translateImages,
           // Character-mix retry is an opt-in compatibility mode.
           enableUntranslatedCheck: Boolean(payload.enableUntranslatedCheck),
           referenceContext: reference.corpus,
@@ -351,7 +355,7 @@
           '{"id":"原始id","text":"该id对应的译文"}\n' +
           "不要添加外层对象、外层数组或 `translations` 字段。必须按输入顺序一次性输出全部记录，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
           this.layout.manualTableInstruction(records) +
-          "输入文本块 JSON：\n" + this.layout.formatRequestBlocks(blocks)
+          "输入文本块 JSON：\n" + this.layout.formatRequestBlocks(blocks, records.requestCode)
         );
       }
       const parsed = await this.parser.loadParsed(context.documentID);
@@ -394,8 +398,8 @@
         "3. 请只输出一个 `text` 代码块。代码块内使用 JSON Lines，每个缺失块对应一条独立 JSON 记录并单独占一行：\n" +
         '{"id":"原始id","text":"该id对应的译文"}\n' +
         "不要添加外层对象、外层数组或 `translations` 字段，不要输出解释或其他文字。译文内部的换行必须写成 JSON 转义 `\\n`；TeX 反斜杠必须转义为两个反斜杠。\n\n" +
-        this.layout.manualTableInstruction(missingRecords) +
-        "缺失文本块 JSON：\n" + this.layout.formatRequestBlocks(missing)
+        this.layout.manualTableInstruction(missingRecords, records.requestCode) +
+        "缺失文本块 JSON：\n" + this.layout.formatRequestBlocks(missing, records.requestCode)
       );
     }
 

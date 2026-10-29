@@ -1,0 +1,193 @@
+[
+  {
+    "layout_dets": [
+      {
+        "cls_id": 22,
+        "label": "text",
+        "score": 0.6055,
+        "bbox": [
+          155,
+          160,
+          335,
+          194
+        ],
+        "index": 1
+      },
+      {
+        "cls_id": 17,
+        "label": "paragraph_title",
+        "score": 0.6014,
+        "bbox": [
+          118,
+          238,
+          370,
+          269
+        ],
+        "index": 2
+      },
+      {
+        "cls_id": 17,
+        "label": "paragraph_title",
+        "score": 0.5884,
+        "bbox": [
+          542,
+          160,
+          889,
+          194
+        ],
+        "index": 3
+      },
+      {
+        "cls_id": 22,
+        "label": "text",
+        "score": 0.821,
+        "bbox": [
+          610,
+          238,
+          819,
+          270
+        ],
+        "index": 4
+      },
+      {
+        "cls_id": 17,
+        "label": "paragraph_title",
+        "score": 0.6267,
+        "bbox": [
+          1043,
+          160,
+          1329,
+          194
+        ],
+        "index": 5
+      },
+      {
+        "cls_id": 22,
+        "label": "text",
+        "score": 0.7947,
+        "bbox": [
+          1075,
+          238,
+          1296,
+          272
+        ],
+        "index": 6
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          153,
+          159,
+          335,
+          195
+        ],
+        "score": 0.988,
+        "text": "RAW INPUT"
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          119,
+          238,
+          370,
+          269
+        ],
+        "score": 1,
+        "text": "IMAGE TEXT 7319"
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          543,
+          161,
+          888,
+          194
+        ],
+        "score": 1,
+        "text": "FEATURE EXTRACTOR"
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          608,
+          235,
+          819,
+          271
+        ],
+        "score": 1,
+        "text": "Noise reduction"
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          1043,
+          161,
+          1328,
+          194
+        ],
+        "score": 1,
+        "text": "DECISION OUTPUT"
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          1074,
+          237,
+          1297,
+          273
+        ],
+        "score": 1,
+        "text": "Quality accepted"
+      }
+    ],
+    "page_info": {
+      "page_no": 0,
+      "width": 1441,
+      "height": 450
+    }
+  },
+  {
+    "layout_dets": [
+      {
+        "cls_id": 7,
+        "label": "figure_title",
+        "score": 0.6403,
+        "bbox": [
+          535,
+          25,
+          907,
+          69
+        ],
+        "index": 1
+      },
+      {
+        "cls_id": 3,
+        "label": "chart",
+        "score": 0.9702,
+        "bbox": [
+          83,
+          92,
+          1318,
+          639
+        ],
+        "index": 2
+      },
+      {
+        "label": "ocr_text",
+        "bbox": [
+          539,
+          25,
+          903,
+          67
+        ],
+        "score": 1,
+        "text": "Treatment response"
+      }
+    ],
+    "page_info": {
+      "page_no": 1,
+      "width": 1441,
+      "height": 650
+    }
+  }
+]

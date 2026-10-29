@@ -13,6 +13,48 @@ module.exports = function createSuite(env) {
     ChatService, ChatInternals, ControllerInternals, DocumentPipeline
   } = env;
 
+function testStackedSourceTextLineEvidence() {
+  const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
+  const helper = source.slice(source.indexOf('  function hasStackedSourceTextLines('), source.indexOf('  function buildFlowStreamNode('));
+  const detect = vm.runInNewContext(`${helper}\nhasStackedSourceTextLines`);
+  // 此文献第一页三段、第二页窄栏两行的原始坐标。
+  const cases = [
+    [[38, 299, 544, 338], [[69.966, 300.694, 541.788, 310.821], [41.86, 313.937, 540.592, 322.506], [42.458, 327.18, 269.698, 334.97]]],
+    [[38, 348, 544, 386], [[70.564, 350.55, 541.19, 359.119], [41.86, 363.014, 541.788, 370.804], [41.86, 375.478, 174.018, 384.826]]],
+    [[38, 509, 544, 535], [[69.368, 509.466, 541.788, 520.372], [40.066, 522.709, 541.19, 532.836]]],
+    [[44, 561, 312, 586], [[74.375, 562.6, 309.995, 572.688], [45.815, 575.016, 309.995, 585.104]]]
+  ];
+  const stream = bbox => ({ bbox, debugRole: 'text', styleKind: 'text', items: [{ type: 'text', originalLineCount: 1 }] });
+  const page = ocrBoxes => ({ restoration: { ocrBoxes } });
+  for (const [bbox, boxes] of cases) {
+    const s = stream(bbox), p = page(boxes);
+    const before = JSON.stringify({ s, p });
+    assert(detect(s, p), 'stacked source lines must correct the paragraph-as-one-line presentation');
+    assert.equal(JSON.stringify({ s, p }), before, 'cached model and geometry must remain unchanged');
+  }
+  const box = [40, 100, 540, 140];
+  const positive = page([[45, 102, 535, 112], [45, 125, 535, 135]]);
+  for (const boxes of [
+    [], [box], [[45, 102, 535, 112]],
+    [[45, 102, 240, 112], [250, 102, 535, 112]],
+    [[45, 102, 535, 112], [520, 125, 525, 130]],
+    [[45, 102, 535, 112], [45, 142, 535, 152]],
+    [[45, 102, 535, 112], [45, 108, 535, 118]],
+    [[45, 102, 535, 112], [NaN, 125, 535, 135]]
+  ]) assert.equal(detect(stream(box), page(boxes)), false, 'ambiguous, neighboring, fragmented or invalid boxes must retain the existing path');
+  for (const change of [
+    s => { s.debugRole = 'merged_body'; }, s => { s.styleKind = 'body_text'; },
+    s => { s.refsOnly = true; }, s => { s.bodyInherited = true; }, s => { s.textRegion = 'abstract'; },
+    s => { s.items[0].type = 'title'; }, s => { s.items[0].type = 'image_caption'; },
+    s => { s.items[0].fromList = true; }, s => { s.items[0].symbolGlossary = true; },
+    s => { s.items.push({ type: 'text' }); }
+  ]) {
+    const s = stream(box); change(s);
+    assert.equal(detect(s, positive), false, 'other layout roles must retain the existing path');
+  }
+  assert.equal(detect(stream(box), {}), false, 'old models without OCR boxes must remain usable');
+}
+
 async function testLayout() {
   const documentID = "1-ABC";
   const payload = {
@@ -182,6 +224,109 @@ async function testLayoutEquationBarrier() {
     "an untagged equation must retain its original MinerU ink bbox");
 }
 
+async function testCollapsedSourceLinesRuntimeRecovery() {
+  const prose = 'The measurements describe the behavior of underwater shock waves. We compare experimental observations with numerical predictions and investigate the pressure changes near the explosive. The recorded pressure histories also establish how the waves propagate through water under different experimental conditions.';
+  const block = (bbox, text = prose, type = 'text') => ({ type, bbox, lines: [{ bbox: [...bbox], spans: [{ type: 'text', content: text }] }] });
+  const rowBoxes = (bbox, count) => Array.from({ length: count }, (_, i) => [bbox[0] + 3, bbox[1] + 1 + i * 13, bbox[2] - 3, bbox[1] + 11 + i * 13]);
+  const payload = { pdf_info: [0, 1].map(page_idx => ({ page_idx, page_size: [600, 800], preproc_blocks: [
+    block([48, 60, 552, 86], 'Department of Mechanical Engineering, Kumamoto University'),
+    block([48, 120, 552, 160], 'Figure 1. Experimental apparatus.', 'image_caption'),
+    block([48, 220, 552, 300]), block([48, 320, 552, 400]), block([48, 410, 552, 436])
+  ] })) };
+  payload.pdf_info[1].preproc_blocks[2] = block([48, 220, 300, 400]);
+  payload.pdf_info[1].preproc_blocks[3] = block([48, 440, 552, 520]);
+  payload.pdf_info[1].preproc_blocks[4] = block([48, 410, 300, 436]);
+  const modelPages = payload.pdf_info.map(page => page.preproc_blocks.flatMap(b => rowBoxes(b.bbox, Math.floor((b.bbox[3] - b.bbox[1] - 11) / 13) + 1))
+    .map(bbox => ({ type: 'ocr_text', bbox, text: '' })));
+  const files = new Map([
+    ['/data/recovery/layout.json', payload], ['/data/recovery/model.json', modelPages], ['/data/recovery/asset-map.json', {}]
+  ]);
+  const writes = [];
+  const storage = {
+    path: (...parts) => path.posix.join('/data', ...parts),
+    readJSON: async (file, fallback) => files.has(file) ? structuredClone(files.get(file)) : fallback,
+    readText: async file => files.has(file) ? JSON.stringify(files.get(file)) : '',
+    exists: async file => files.has(file),
+    writeJSON: async (file, value) => { writes.push(file); files.set(file, value); },
+    resourceURL: () => ''
+  };
+  const service = new LayoutTranslationService(storage, { getSettings: () => ({ targetLanguage: '简体中文' }) });
+  const translations = { p001_b0003: '实验结果与数值计算相符。', p001_b0005: '数值模拟与实验结果一致。' };
+  const revision = { sourceFingerprint: U.hashString(JSON.stringify(payload)), assetMapHash: U.hashString('{}') };
+  const cached = { version: 13, keywordLineBreaksVersion: 1, ...revision,
+    translationsHash: U.hashString(JSON.stringify(translations) + '|{}'), geometryHash: '',
+    model: { pages: payload.pdf_info.map((page, index) => ({ index: index + 1, width: 600, height: 800,
+      blocks: page.preproc_blocks.map(b => ({ type: b.type, bbox: b.bbox, text: b.lines[0].spans[0].content, lineCount: 1 })),
+      restoration: { ocrBoxes: modelPages[index].map(r => r.bbox) }
+    })) }
+  };
+  files.set('/data/recovery/compiled-model.json', cached);
+  const before = JSON.stringify([...files]);
+  const rebuilt = await service.buildBaseModel('recovery', translations, {}, revision);
+  const streams = rebuilt.pages[0].restoration.streams;
+  const find = id => streams.find(s => s.items.some(i => i.id === id || i.parts?.some(part => part.id === id)));
+  assert.equal(find('p001_b0003').styleKind, 'body_text', 'recovered lines must feed the existing single-column classifier');
+  assert.equal(find('p001_b0005').debugRole, 'body_inherited', 'the recovered two-line first-page paragraph must inherit the proven body font');
+  assert.equal(find('p001_b0001').styleKind, 'text', 'affiliations must remain independent');
+  assert(rebuilt.pages[1].restoration.streams.some(s => s.debugRole === 'merged_body'
+    && s.items.some(i => i.parts?.some(p => p.id === 'p002_b0003') && i.parts?.some(p => p.id === 'p002_b0005'))),
+  'narrow prose and its short continuation must use their recovered rows and merge before the following full-width paragraph');
+  assert(rebuilt.pages[0].restoration.absoluteBlocks.some(b => b.type === 'image_caption'), 'captions must remain separate');
+  assert.equal(rebuilt.pages[0].blocks.find(b => b.id === 'p001_b0005').translatedText, translations.p001_b0005);
+  assert.equal(writes.length, 0, 'reading legacy data must not rewrite any compiled or source cache');
+  assert.equal(JSON.stringify([...files]), before, 'all persisted inputs must remain byte-equivalent');
+  const again = await service.buildBaseModel('recovery', translations, {}, revision);
+  assert.equal(JSON.stringify(again), JSON.stringify(rebuilt), 'repeated adaptation must not accumulate');
+  files.delete('/data/recovery/layout.json');
+  const fallback = await service.buildBaseModel('recovery', translations, {}, revision);
+  assert.equal(JSON.stringify(fallback.pages), JSON.stringify(cached.model.pages),
+    'missing source layout must preserve the usable compiled model');
+  files.set('/data/recovery/layout.json', { pdf_info: [] });
+  const unsupported = await service.buildBaseModel('recovery', translations, {}, revision);
+  assert.equal(JSON.stringify(unsupported.pages), JSON.stringify(cached.model.pages),
+    'unconfirmed recovery must preserve the existing model');
+  assert.equal(writes.length, 0);
+  const detect = LayoutHelpers.collapsedSourceTextLines;
+  const wide = block([48, 220, 552, 300]);
+  const boxes = rowBoxes(wide.bbox, 6);
+  assert.equal(detect(wide, boxes, 600).length, 6);
+  for (const change of [b => { b.lines.push(b.lines[0]); }, b => { b.parser = { semanticRole: 'abstract' }; },
+    b => { b.type = 'image_caption'; }, b => { b.type = 'ref_text'; }, b => { b.type = 'list'; },
+    b => { b.bbox = [48, 220, 120, 300]; }, b => { b.text = 'Department of Physics, Example University'; }]) {
+    const b = structuredClone(wide); change(b);
+    assert.equal(detect(b, boxes, 600).length, 0, 'explicit roles, normal multiline records and narrow labels must retain their original evidence');
+  }
+  for (const rows of [[], [wide.bbox], [[51, 221, 300, 231], [305, 221, 549, 231]],
+    [[51, 221, 549, 231], [51, 301, 549, 311]], [[51, 221, 549, 231], [51, 286, 549, 296]]]) {
+    assert.equal(detect(wide, rows, 600).length, 0, 'incomplete or discontinuous rows must not alter body classification');
+  }
+}
+
+function testTwoLineFirstLineIndent() {
+  const estimate = LayoutHelpers.estimateFirstLineIndent;
+  const bbox = [38, 509, 544, 535];
+  const rows = [[69.368, 509.466, 541.788, 520.372], [40.066, 522.709, 541.19, 532.836]];
+  assert.equal(estimate(bbox, rows, true), 29.3, 'the real two-line paragraph must recover its source first-line indent');
+  assert.equal(estimate(bbox, rows), 0, 'two-line inference must be explicitly enabled for ordinary prose');
+  const variants = [
+    [], [rows[0]],
+    [[40.066, 509.466, 541.788, 520.372], rows[1]],
+    [rows[0], [100, 522.709, 481, 532.836]],
+    [[100, 509.466, 481, 520.372], rows[1]],
+    [rows[0], [40.066, 511, 541.19, 521]],
+    [rows[0], [40.066, 522.709, 45, 525]],
+    [[69.368, 503, 541.788, 514], rows[1]],
+    [rows[0], [40.066, 530, 541.19, 541]],
+    [[69, 509.5, 541, 512], rows[1]],
+    [[69, 509.5, 541, 514], [40, 529, 541, 534]]
+  ];
+  for (const boxes of variants) assert.equal(estimate(bbox, boxes, true), 0,
+    'missing, unindented, centered, fragmented, superscript and neighboring lines must not create an indent');
+  const threeRows = [[70, 300, 542, 310], [42, 313, 542, 323], [42, 326, 270, 336]];
+  assert.equal(estimate([38, 299, 544, 338], threeRows), 28, 'the existing multiline path must retain its result');
+  assert.equal(estimate([38, 299, 544, 338], threeRows, true), 28);
+}
+
 function testSingleColumnBodyPromotion() {
   const textBlock = (bbox, lines = 5) => ({
     type: "text",
@@ -217,6 +362,15 @@ function testSingleColumnBodyPromotion() {
     "the stable full-width anchor must retain its normal body role");
   assert.equal(inherited[2].debugRole, "text",
     "first-page metadata geometry must remain on the legacy path");
+  const firstPageAnchor = { ...anchor, pageIndex: 0, bbox: [48, 220, 552, 400] };
+  const recoveredShort = { ...transition, pageIndex: 0, bbox: [48, 410, 552, 436], originalLineCount: 2, sourceLinesRecovered: true };
+  const firstPage = LayoutHelpers.inheritStableSingleColumnShortItems([
+    firstPageAnchor, recoveredShort, { ...recoveredShort, sourceLinesRecovered: false },
+    { ...recoveredShort, bbox: [48, 110, 552, 136] }, { ...recoveredShort, bbox: [48, 410, 280, 436] }
+  ], 600, 800, profile);
+  assert.equal(firstPage[1].debugRole, 'body_inherited');
+  assert(firstPage.slice(2).every(item => item.debugRole === 'text'),
+    'first-page metadata, normal short blocks and narrow panels must retain the existing protection');
 
   const twoColumnItems = [
     anchor,
@@ -1495,7 +1649,7 @@ function testCompletedLayoutCreatesPDFItemAttachments() {
   assert(controller.includes('const layoutPDFIdentity = String(payload.layoutIdentity || "")'), "controller must use the completed layout identity provided by the workbench");
   assert(workbench.includes('queueLayoutPDFAttachmentsAfterFinalPublication();'), "final layout event must queue PDF attachment generation");
   assert(workbench.includes('if (result?.meta?.complete === true) queueLayoutPDFAttachmentsAfterFinalPublication();'), "the first completed layout response must provide the PDF-generation fallback");
-  assert(controller.includes('await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false })'), "completed PDF exports must persist their identity and resolve pending table changes");
+  assert(controller.includes('await this.storage.setDocumentMeta(context.documentID, { layoutPDFIdentity, tablePDFPending: false, imagePDFPending: false })'), "completed PDF exports must persist their identity and resolve pending media changes");
   assert(workbench.includes('withLayoutPaintPrintRoot((expectedPages, layoutPaper) =>'), "automatic PDF generation must reuse the same complete-page print root as manual export");
   assert(workbench.includes('async function waitForLayoutPDFReady()'), "PDF exports must wait for the translated layout to finish fitting");
   assert(workbench.includes('if (!await waitForLayoutPDFReady()) return null;'), "automatic attachment exports must defer while the fitting mask is active");
@@ -1566,12 +1720,15 @@ async function testWebMachineRetranslationIncrementsPDFRevision() {
       loadLayout: async () => ({ rawText: "Source text" }),
       extractRecords: async () => [{ id: "p001_b0001", type: "text", text: "Source text" }],
       tableRequestPlan: () => ({ ids: new Set(), records: [], tables: [] }),
+      imageRequestPlan: async () => ({ ids: new Set(), records: [], images: [] }),
       loadTranslations: async () => ({
         meta: stored.get(paths.meta) || null,
         translations: stored.get(paths.translations) || {},
         formulaReplacements: stored.get(paths.formulaReplacements) || {}
       }),
       saveTableTranslations: async () => ({ tables: [] }),
+      saveImageTranslations: async () => ({ images: [] }),
+      publishTranslationResult: LayoutTranslationService.prototype.publishTranslationResult,
       buildModel: async () => ({ pages: [{ blocks: [] }] })
     };
     const settings = { provider, targetLanguage: "简体中文", sourceLanguage: "en", machineSourceLanguage: "en", translateTables: false };
@@ -2786,8 +2943,11 @@ async function testDocumentCleanupRemovesGeneratedPDFsAndFontOnly() {
     testFinalBodyFontInheritanceCollisionRollback,
     testFinalTextClearanceBoundaries,
     testAbstractRecognitionAndBodyProtection,
+    testStackedSourceTextLineEvidence,
     testLayout,
     testLayoutEquationBarrier,
+    testCollapsedSourceLinesRuntimeRecovery,
+    testTwoLineFirstLineIndent,
     testSingleColumnBodyPromotion,
     testEquationNumberAnchorUsesLocalColumns,
     testLayoutCodeAndContentsRules,

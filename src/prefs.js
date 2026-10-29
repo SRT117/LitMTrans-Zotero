@@ -25,6 +25,7 @@ pref("extensions.litmtrans.machineSourceLanguage", "英文");
 pref("extensions.litmtrans.translationMode", "full_context");
 pref("extensions.litmtrans.deepseekFastLayoutTranslation", true);
 pref("extensions.litmtrans.translateTables", true);
+pref("extensions.litmtrans.translateImages", true);
 pref("extensions.litmtrans.translationReferencePaths", "[]");
 pref("extensions.litmtrans.customTranslationInstruction", "");
 pref("extensions.litmtrans.cajDoubleClickAction", "ask");

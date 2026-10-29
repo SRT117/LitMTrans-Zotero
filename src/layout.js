@@ -124,7 +124,7 @@
   }
 
   function fastLayoutKind(record) {
-    if (["text", "ref_text", "table_cells"].includes(record?.type)) return "body";
+    if (["text", "ref_text", "table_cells", "image_labels"].includes(record?.type)) return "body";
     if (["table_caption", "chart_caption", "image_caption", "image_footnote"].includes(record?.type)) return "caption";
     if (record?.type === "table_footnote") return "table-note";
     return record?.type || "unknown";
@@ -514,7 +514,7 @@
   function classifyRetryRecords(records, translations, targetLanguage, enableUntranslatedCheck = false) {
     // 是否缺块只取决于对应 ID 有无非空内容，不推断模型译文的对错。
     return records
-      .filter(record => record.type !== "table_cells" && !String(translations[record.id] ?? "").trim())
+      .filter(record => !["table_cells", "image_labels"].includes(record.type) && !String(translations[record.id] ?? "").trim())
       .map(record => {
         const reasons = ["missing"];
         return {
@@ -856,6 +856,49 @@
     return output;
   }
 
+  function collapsedSourceTextLines(block, ocrBoxes, pageWidth) {
+    const box = validBBox(block?.bbox);
+    if (block?.type !== "text" || block.parser || !box || !(pageWidth > 0)
+        || bboxWidth(box) < pageWidth * .18
+        || Number(block._layout_original_line_count || block.lineCount || block.lines?.length || 0) !== 1) return [];
+    const text = String(block.text || blockText(block) || "");
+    if (isLayoutMetadataText(text) || affiliationLikeText(text) || authorBylineLikeText(text)
+        || bibliographyLikeText(text) || isSymbolGlossaryBlock(block)) return [];
+    const candidates = (ocrBoxes || []).filter(line => validBBox(line)
+      && bboxWidth(line) >= bboxWidth(box) * .25 && bboxHeight(line) <= bboxHeight(box) * .65
+      && line[0] >= box[0] - 2 && line[2] <= box[2] + 2
+      && line[1] >= box[1] - 2 && line[3] <= box[3] + 2).sort((a, b) => a[1] - b[1]);
+    const rows = [];
+    for (const line of candidates) {
+      const previous = rows[rows.length - 1];
+      if (previous && line[1] - previous[3] < Math.min(bboxHeight(previous), bboxHeight(line)) * .1) continue;
+      if (previous && (horizontalOverlapRatio(previous, line) < .5
+          || line[1] - previous[3] > Math.max(bboxHeight(previous), bboxHeight(line)) * 1.5)) return [];
+      rows.push(line);
+    }
+    return rows.length >= 2 && rows[rows.length - 1][3] - rows[0][1] >= bboxHeight(box) * .6 ? rows : [];
+  }
+
+  function recoverCollapsedSourceLines(pages, modelPages) {
+    let recovered = false;
+    for (const [index, page] of pages.entries()) {
+      const [width, height] = normalizePageSize(page, page.preproc_blocks || []);
+      const boxes = collectModelOCRBoxes(modelPages[index], width, height);
+      for (const block of page.preproc_blocks || []) {
+        const lineBox = validBBox(block.lines?.[0]?.bbox);
+        const box = validBBox(block.bbox);
+        if (!box || !lineBox || box.some((value, i) => Math.abs(value - lineBox[i]) > 2)) continue;
+        const rows = collapsedSourceTextLines(block, boxes, width);
+        if (!rows.length) continue;
+        // 只补内存中的行数证据；原文字、行结构与磁盘解析结果保持完整。
+        block._layout_original_line_count = rows.length;
+        block._layout_recovered_source_lines = true;
+        recovered = true;
+      }
+    }
+    return recovered;
+  }
+
   function ocrBoxesInRegion(ocrBoxes, bbox, padding = 2) {
     const [x0, y0, x1, y1] = [
       bbox[0] - padding, bbox[1] - padding, bbox[2] + padding, bbox[3] + padding
@@ -866,10 +909,26 @@
     });
   }
 
-  function estimateFirstLineIndent(bbox, ocrBoxes) {
+  function estimateFirstLineIndent(bbox, ocrBoxes, allowTwoLines = false) {
     const hits = ocrBoxesInRegion(ocrBoxes, bbox, 1.5)
       .sort((a, b) => bboxCenter(a)[1] - bboxCenter(b)[1] || a[0] - b[0]);
-    if (hits.length < 3) return 0;
+    if (hits.length < 3) {
+      if (!allowTwoLines || hits.length !== 2 || hits.some(box => !validBBox(box))) return 0;
+      const [first, second] = hits;
+      const width = bboxWidth(bbox);
+      const height = bboxHeight(bbox);
+      const alignmentTolerance = Math.max(3, width * .01);
+      const gap = second[1] - first[3];
+      // 两行必须完整落在段内，首行排至右边界、次行贴左边界，避免把居中或碎片识别为缩进。
+      if (hits.some(box => box[0] < bbox[0] - 2 || box[2] > bbox[2] + 2
+          || box[1] < bbox[1] - 2 || box[3] > bbox[3] + 2 || bboxWidth(box) < width * .25)
+          || Math.abs(first[2] - bbox[2]) > alignmentTolerance
+          || Math.abs(second[0] - bbox[0]) > alignmentTolerance
+          || Math.min(...hits.map(bboxHeight)) < Math.max(...hits.map(bboxHeight)) * .65
+          || gap < Math.min(...hits.map(bboxHeight)) * .1
+          || gap > Math.max(...hits.map(bboxHeight)) * 1.5
+          || second[3] - first[1] < height * .6) return 0;
+    }
     const firstCenter = bboxCenter(hits[0])[1];
     const typicalHeight = medianValue(hits.map(bboxHeight), 8);
     const tolerance = Math.max(2.5, Math.min(6, typicalHeight * .55));
@@ -1147,18 +1206,21 @@
     const laneWidth = Math.max(1, (profile.rightRatio - profile.leftRatio) * pageWidth);
     return items.map(original => {
       if (original.kind !== "text" || original.fromList || original.symbolGlossary || original.debugRole !== "text"
-        || Number(original.pageIndex || 0) <= 0 || !validBBox(original.bbox)
+        || !validBBox(original.bbox)
         || ![1, 2].includes(Number(original.originalLineCount || 0))) return original;
+      if (Number(original.pageIndex || 0) <= 0 && !(original.sourceLinesRecovered
+          && original.originalLineCount === 2
+          && bboxWidth(original.bbox) >= pageWidth * SINGLE_COLUMN_MIN_WIDTH_RATIO
+          && items.some(anchor => anchor.debugRole === "body_candidate"
+            && anchor.bbox[3] <= original.bbox[1]
+            && singleColumnProfileMatches(profile, anchor.bbox, pageWidth, pageHeight, anchor.originalLineCount)))) return original;
       const [left, , right] = original.bbox;
       const leftMatches = Math.abs(left / pageWidth - profile.leftRatio) <= SINGLE_COLUMN_LEFT_TOLERANCE_RATIO;
       const staysInside = right / pageWidth <= profile.rightRatio + SINGLE_COLUMN_RIGHT_TOLERANCE_RATIO;
       if (!leftMatches || !staysInside || bboxWidth(original.bbox) < laneWidth * SINGLE_COLUMN_MIN_SHORT_WIDTH_TO_LANE_RATIO) {
         return original;
       }
-      // This role inherits the body baseline but never participates in the
-      // baseline solver, so a narrow derivation transition cannot shrink the
-      // entire document. The first page remains on the legacy path to protect
-      // author, affiliation, and address panels.
+      // 短段只继承字号，不限制整篇；首页仅接纳已证实正文之后恢复出的通栏两行段。
       return { ...original, debugRole: "body_inherited", columnKey: "single-column" };
     });
   }
@@ -1418,10 +1480,12 @@
             Number(block._layout_original_line_count || block.parser?.estimatedLineCount || 0),
             layoutVisualLineCount(block.lines)
           ),
+        ...(block._layout_recovered_source_lines ? { sourceLinesRecovered: true } : {}),
         debugLines: lineDebugData(block._layout_debug_lines || block._layout_original_lines || block.lines),
         fontEstimate: estimateLayoutFontSize(kind, bbox, text) || (kind === "ref_text" ? 8.2 : 8.5),
         side: streamSideForBBox(bbox, pageWidth),
-        indent: estimateFirstLineIndent(bbox, ocrBoxes),
+        indent: estimateFirstLineIndent(bbox, ocrBoxes, kind === "text" && !fromList && !tocRows && !symbolGlossary
+          && !isLayoutMetadataText(text) && !affiliationLikeText(text) && !authorBylineLikeText(text)),
         pageIndex: Number(page.page_idx || 0),
         debugRole: kind === "ref_text" ? "reference" : (tocRows ? "toc" : "text"),
         tocRows,
@@ -2021,6 +2085,7 @@
         translations: PathUtils.join(root, `translations.${slug}.json`),
         formulaReplacements: PathUtils.join(root, `formula-replacements.${slug}.json`),
         tables: PathUtils.join(root, `table-translations.${slug}.v1.json`),
+        images: PathUtils.join(root, `image-translations.${slug}.v1.json`),
         meta: PathUtils.join(root, `meta.${slug}.json`),
         guide: PathUtils.join(root, `guide.${slug}.md`)
       };
@@ -2183,7 +2248,9 @@
       if (!LitMTrans.LayoutTables) return model;
       const paths = this.paths(documentID, knownRevision?.targetLanguage || this.llm.getSettings().targetLanguage);
       const cache = await this.storage.readJSON(paths.tables, null);
-      return LitMTrans.LayoutTables.attach(model, cache);
+      const imageCache = await this.storage.readJSON(paths.images, null);
+      const parseRevisionID = imageCache ? (await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "" : "";
+      return LitMTrans.LayoutImages.attach(LitMTrans.LayoutTables.attach(model, cache), imageCache, parseRevisionID);
     }
 
     async buildBaseModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null, emit = null) {
@@ -2223,6 +2290,7 @@
       const upgradedCompiledPath = this.storage.path(documentID, geometry
         ? "compiled-model.paddle-lines.v1.json" : "compiled-model.v13.json");
       let legacyCompiledModel = false;
+      let sourceLineFallbackModel = null;
       try {
         for (const path of [upgradedCompiledPath, compiledPath]) {
           const cached = await this.storage.readJSON(path, null);
@@ -2240,13 +2308,25 @@
             cached.model?.pages?.length &&
             (!asideIDs.size || cached.asidePolicyVersion === 1)
           ) {
-            return { ...cached.model, lineDetection };
+            const needsSourceLines = !geometry && cached.model.pages.some(page =>
+              (page.blocks || []).some(block => collapsedSourceTextLines(block, page.restoration?.ocrBoxes, page.width).length));
+            if (!needsSourceLines) return { ...cached.model, lineDetection };
+            sourceLineFallbackModel = cached.model;
+            break;
           }
         }
       } catch (_) {}
 
-      const { pages, modelPages, rawText } = layout || await this.loadLayout(documentID);
+      try { layout ||= await this.loadLayout(documentID); }
+      catch (error) {
+        U.throwIfAborted(signal);
+        if (sourceLineFallbackModel) return { ...sourceLineFallbackModel, lineDetection };
+        throw error;
+      }
+      const { pages, modelPages, rawText } = layout;
       U.throwIfAborted(signal);
+      const recoveredSourceLines = !geometry && recoverCollapsedSourceLines(pages, modelPages);
+      if (sourceLineFallbackModel && !recoveredSourceLines) return { ...sourceLineFallbackModel, lineDetection };
       const sourceFingerprint = U.hashString(rawText || "");
       const assetMap = await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {});
       const assetMapHash = U.hashString(JSON.stringify(assetMap));
@@ -2464,7 +2544,7 @@
       try {
         U.throwIfAborted(signal);
         const preserveCompiledModel = legacyCompiledModel || Boolean(await this.storage.exists?.(compiledPath));
-        await this.storage.writeJSON(geometry || preserveCompiledModel ? upgradedCompiledPath : compiledPath, {
+        if (!recoveredSourceLines) await this.storage.writeJSON(geometry || preserveCompiledModel ? upgradedCompiledPath : compiledPath, {
           // 第 13 版在排版迭代前补回页眉页脚，旧缓存原样保留。
           version: 13,
           keywordLineBreaksVersion: 1,
@@ -2565,8 +2645,8 @@
 
     fastGroupRecords(records, fullMarkdownContext = "") {
       const input = Array.isArray(records) ? records : [];
-      const tables = input.filter(record => record.type === "table_cells");
-      const source = input.filter(record => record.type !== "table_cells");
+      const tables = input.filter(record => ["table_cells", "image_labels"].includes(record.type));
+      const source = input.filter(record => !["table_cells", "image_labels"].includes(record.type));
       const sourceOrder = new Map(source.map((record, index) => [record.id, index]));
       const positions = markdownRecordPositions(source, fullMarkdownContext);
       // MinerU's visual block order can interleave columns.  When a block can
@@ -2693,35 +2773,46 @@
       const layout = await this.loadLayout(documentID);
       const bodyRecords = await this.extractRecords(documentID, layout);
       const tablePlan = this.tableRequestPlan(layout, bodyRecords, settings, false, U.hashString(layout.rawText || ""));
-      return { layout, bodyRecords, tablePlan, records: [...bodyRecords, ...tablePlan.records] };
+      const imagePlan = await this.imageRequestPlan(documentID, layout, [...bodyRecords, ...tablePlan.records], settings);
+      const mediaPlan = { ids: new Set([...tablePlan.ids, ...imagePlan.ids]) };
+      const records = this.bindManualRequest(documentID, [...bodyRecords, ...tablePlan.records, ...imagePlan.records], settings.targetLanguage);
+      return { layout, bodyRecords, tablePlan, imagePlan, mediaPlan, records };
+    }
+
+    bindManualRequest(documentID, records, targetLanguage) {
+      if (records.some(record => record.wireID)) records.requestCode = U.hashString(JSON.stringify([
+        documentID, targetLanguage, records.map(record => [record.id, record.cells || record.text])
+      ])).slice(0, 12);
+      return records;
     }
 
     manualRecordPayload(record) {
-      return record.type === "table_cells"
-        ? { id: record.id, page: record.page, type: record.type, cells: record.cells }
+      return ["table_cells", "image_labels"].includes(record.type)
+        ? LitMTrans.LayoutTables.wireRecord(record)
         : { id: record.id, page: record.page, type: record.type, text: this.sanitizeManualText(record.text) };
     }
 
-    formatRequestBlocks(blocks) {
-      if (!blocks.some(block => block.type === "table_cells")) return JSON.stringify({ blocks }, null, 2);
+    formatRequestBlocks(blocks, requestCode = "") {
+      blocks = blocks.map(record => LitMTrans.LayoutTables.wireRecord(record));
+      if (!blocks.some(block => ["table_cells", "image_labels"].includes(block.type))) return JSON.stringify({ blocks }, null, 2);
       const rows = blocks.map(block => {
-        const json = block.type === "table_cells" ? JSON.stringify(block) : JSON.stringify(block, null, 2);
+        const json = ["table_cells", "image_labels"].includes(block.type) ? JSON.stringify(block) : JSON.stringify(block, null, 2);
         return json.split("\n").map(line => "    " + line).join("\n");
       });
-      return '{\n  "blocks": [\n' + rows.join(",\n") + "\n  ]\n}";
+      return '{\n' + (requestCode ? `  "request":"${requestCode}",\n` : "") + '  "blocks": [\n' + rows.join(",\n") + "\n  ]\n}";
     }
 
-    manualTableInstruction(records) {
-      return records.some(record => record.type === "table_cells")
-        ? '末尾的 cells 按 [编号,译文] 返回，保留编号和 ⟦0⟧ 等标记：{"id":"原始id","cells":[[0,"译文"]]}。\n'
-        : "";
+    manualTableInstruction(records, requestCode = records.requestCode) {
+      return (requestCode ? `每轮回答的代码块首行原样输出 {"request":"${requestCode}"}，只输出一次任务码。\n` : "")
+        + (records.some(record => ["table_cells", "image_labels"].includes(record.type))
+          ? 'T1、T2 是表格，I1、I2 是图片。每个 cells 内从 1 开始连续编号，按 [编号,译文] 返回，保留编号和 ⟦0⟧ 等标记：{"id":"I1","cells":[[1,"译文"]]}。\n' : "");
     }
 
     async importManualTranslation(documentID, responses, emit = null) {
       const settings = this.llm.getSettings();
-      const { layout, bodyRecords, tablePlan, records } = await this.manualTranslationInput(documentID, settings);
+      const { layout, bodyRecords, tablePlan, imagePlan, mediaPlan, records } = await this.manualTranslationInput(documentID, settings);
       const received = this.normalizeManualTranslations(records, responses);
-      const translations = LitMTrans.LayoutTables.bodyTranslations(tablePlan, received);
+      const translations = LitMTrans.LayoutTables.bodyTranslations(mediaPlan, received);
       if (!Object.keys(received).length) {
         throw new Error("未能读取排版译文。请确认回答包含带 id 和 text 的独立 JSON 记录，并放在 text 代码块中。");
       }
@@ -2742,25 +2833,29 @@
         translatedBlocks: Object.keys(translations).length,
         completedAt: new Date().toISOString()
       };
-      const tableCache = await this.saveTableTranslations(documentID, settings, layout, tablePlan, received, emit);
+      const mediaFiles = [];
+      const tableCache = await this.saveTableTranslations(documentID, settings, layout, tablePlan, received, emit, mediaFiles);
       meta.translatedTables = tableCache?.tables.length || 0;
-      await this.storage.writeJSON(paths.translations, translations);
-      await this.storage.writeJSON(paths.formulaReplacements, {});
-      await this.storage.writeJSON(paths.meta, meta);
-      const model = await this.buildModel(documentID, translations, {}, { sourceFingerprint }, null, emit);
+      const imageCache = await this.saveImageTranslations(documentID, settings, layout, imagePlan, received, emit, mediaFiles);
+      meta.translatedImages = imageCache?.images.length || 0;
+      await this.publishTranslationResult(paths, translations, {}, meta, mediaFiles);
+      const model = await this.buildModel(documentID, translations, {}, { sourceFingerprint, targetLanguage: settings.targetLanguage }, null, emit);
       emit?.({ type: "layout-translation", translations, model, complete: true, translatedBlocks: bodyRecords.length, totalBlocks: bodyRecords.length });
       return { translations, model, meta };
     }
 
     normalizeManualTranslations(records, responses) {
-      const expected = new Map(records.map(record => [record.id, record]));
+      const expected = LitMTrans.LayoutTables.recordMap(records);
       const translations = {};
       if (responses && !Array.isArray(responses) && typeof responses === "object") {
+        if (Array.isArray(responses.translations)) return this.parseManualTranslationResponse(JSON.stringify(responses), records).translations;
+        if (Object.keys(responses).some(id => expected.get(id)?.wireID === id)
+          && (!records.requestCode || responses.request !== records.requestCode)) throw new Error("回答缺少当前任务码，请复制本轮命令中的 request 后重试");
         for (const [id, text] of Object.entries(responses)) {
           const record = expected.get(id);
-          if (record?.type === "table_cells") {
-            const value = LitMTrans.LayoutTables.responseCells(record, Array.isArray(text) ? { cells: text } : { text });
-            if (value) translations[id] = value;
+          if (["table_cells", "image_labels"].includes(record?.type)) {
+            const value = LitMTrans.LayoutTables.responseCells(record, Array.isArray(text) ? { id, cells: text } : { id, text });
+            if (value) translations[record.id] = value;
           } else if (record && String(text || "").trim()) translations[id] = String(text).trim();
         }
         return translations;
@@ -2792,7 +2887,7 @@
       for (const record of records) {
         const estimated = record.text.length + record.id.length + 80;
         if (excerpt.length && excerptChars + estimated > 24000) break;
-        excerpt.push({ id: record.id, page: record.page, type: record.type, text: record.text });
+        excerpt.push(record.wireID ? LitMTrans.LayoutTables.wireRecord(record) : { id: record.id, page: record.page, type: record.type, text: record.text });
         excerptChars += estimated;
       }
       emit?.({ type: "status", phase: "layout-guide", message: "正在整理全文术语和行文风格" });
@@ -2847,7 +2942,7 @@
     }
 
     parseTranslationResponse(text, group, options = {}) {
-      const expected = new Map(group.map(record => [record.id, record]));
+      const expected = LitMTrans.LayoutTables.recordMap(group);
       const translations = {};
 
       let payload = null;
@@ -2870,9 +2965,9 @@
             const id = String(row?.id || "");
             const record = expected.get(id);
             if (!record) continue;
-            if (record.type === "table_cells") {
+            if (["table_cells", "image_labels"].includes(record.type)) {
               const cells = LitMTrans.LayoutTables.responseCells(record, row);
-              if (cells) translations[id] = cells;
+              if (cells) translations[record.id] = cells;
               continue;
             }
             const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe, Boolean(options.allowSanitized));
@@ -2899,9 +2994,9 @@
       for (const row of rows) {
         const id = String(row?.id || "");
         const record = expected.get(id);
-        if (record?.type === "table_cells") {
+        if (["table_cells", "image_labels"].includes(record?.type)) {
           const cells = LitMTrans.LayoutTables.responseCells(record, row);
-          if (cells) translations[id] = cells;
+          if (cells) translations[record.id] = cells;
           continue;
         }
         const rawText = acceptedModelText(row?.text, options.sanitizeUnsafe, Boolean(options.allowSanitized));
@@ -2917,6 +3012,19 @@
     }
 
     parseManualTranslationResponse(text, group) {
+      const expected = LitMTrans.LayoutTables.recordMap(group), codes = [];
+      let hasShortID = false;
+      for (const candidate of completeJSONObjectCandidates(text)) {
+        let payload;
+        try { payload = U.extractJSONObject(candidate); } catch (_) { continue; }
+        if (typeof payload?.request === "string") codes.push(payload.request);
+        const rows = Array.isArray(payload?.translations) ? payload.translations : [payload];
+        if (rows.some(row => row?.id && expected.get(row.id)?.wireID === row.id)) hasShortID = true;
+      }
+      if ((codes.length && group.requestCode && codes.some(code => code !== group.requestCode))
+        || (hasShortID && (!group.requestCode || !codes.includes(group.requestCode)))) {
+        throw new Error("回答缺少当前任务码或属于其他任务，请检查代码块首行的 request");
+      }
       // Manual translation deliberately uses independent JSON records so a
       // complete answer does not depend on one document-wide closing brace.
       // Keep the legacy aggregate response readable for answers produced by
@@ -2927,7 +3035,6 @@
       }
       catch (_) {}
 
-      const expected = new Map(group.map(record => [record.id, record]));
       const translations = {};
       for (const candidate of completeJSONObjectCandidates(text)) {
         let payload;
@@ -2944,9 +3051,9 @@
           const id = String(row?.id || "");
           const record = expected.get(id);
           if (!record) continue;
-          if (record.type === "table_cells") {
+          if (["table_cells", "image_labels"].includes(record.type)) {
             const cells = LitMTrans.LayoutTables.responseCells(record, row);
-            if (cells) translations[id] = cells;
+            if (cells) translations[record.id] = cells;
             continue;
           }
           const rawText = acceptedModelText(row?.text, true, true);
@@ -2966,8 +3073,8 @@
     }
 
     async translateGroup(group, guide, referenceContext, documentID, identity, settings, index, count, emit, signal) {
-      const source = group.map(record => record.type === "table_cells"
-        ? { id: record.id, page: record.page, type: record.type, cells: record.cells }
+      const source = group.map(record => ["table_cells", "image_labels"].includes(record.type)
+        ? LitMTrans.LayoutTables.wireRecord(record)
         : { id: record.id, page: record.page, type: record.type, text: record.text });
       const system = "You are a professional academic paper translator and layout-aware scientific copy editor. Translate with field-aware terminology, preserve scientific facts exactly, respect visual bounding box boundaries, and keep layout block IDs stable. You must output strict JSON only, without Markdown fences.";
       const retryDetails = settings.retryDetails && typeof settings.retryDetails.get === "function"
@@ -3015,8 +3122,8 @@
           ? "\nFull paper Markdown context follows. It is context only: do not translate, repeat, summarize, or return it. Use it to resolve continuations across pages or columns, but translate ONLY the target blocks supplied after this fixed context and never merge their output.\n===== BEGIN FULL PAPER MARKDOWN =====\n" +
             `${settings.fullMarkdownContext}\n===== END FULL PAPER MARKDOWN =====\n`
           : "") +
-        (settings.hasTableTargets
-          ? "Translate the cells at the end last. Return {\"id\":\"...\",\"cells\":[[0,\"translation\"]]}, preserving each cell index and marker such as ⟦0⟧.\n"
+        (settings.hasTableTargets || settings.hasImageTargets
+          ? "Translate the table_cells and image_labels records at the end last. These contain only supplied text, never reconstruct images or invent labels. Each record uses consecutive local cell indices starting at 1. Return {\"id\":\"...\",\"cells\":[[1,\"translation\"]]}, preserving each cell index and marker such as ⟦0⟧.\n"
           : "") +
         "\nInput blocks JSON:\n" + this.formatRequestBlocks(requestRecords)
       );
@@ -3049,7 +3156,8 @@
           : `Translate the missing blocks listed below into ${settings.targetLanguage || "Simplified Chinese"}. No nonempty translation has been received for these IDs. Return one nonempty translation for every listed ID. Translate strictly within each visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n`
       ) + (retryFormatOnly ? "" : C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + "\n\n") + JSON.stringify({ blocks_to_correct: retryPayload }, null, 2) : "";
       const retryContext = retryDetails && Array.isArray(settings.retryContextGroup)
-        ? settings.retryContextGroup.map(record => ({ id: record.id, page: record.page, type: record.type, text: record.text }))
+        ? settings.retryContextGroup.map(record => record.wireID ? LitMTrans.LayoutTables.wireRecord(record)
+          : { id: record.id, page: record.page, type: record.type, text: record.text })
         : null;
       const primaryMessages = retryDetails && retryContext?.length
         ? [{ role: "system", content: system }, { role: "user", content: buildPrimaryUser(retryContext) }, { role: "user", content: retryUser }]
@@ -3247,9 +3355,9 @@
           // During the document-wide first pass/recovery phase, preserve the
           // absence so the coordinator can classify it as genuinely missing.
           // Standalone group calls still receive the legacy safe fallback.
-          if (!settings.deferLayoutRetry && record.type !== "table_cells") parsed.translations[record.id] = record.text;
+          if (!settings.deferLayoutRetry && !["table_cells", "image_labels"].includes(record.type)) parsed.translations[record.id] = record.text;
         }
-        else if (record.type !== "table_cells") parsed.translations[record.id] = repairEquationReferenceTranslation(
+        else if (!["table_cells", "image_labels"].includes(record.type)) parsed.translations[record.id] = repairEquationReferenceTranslation(
           record.text,
           M.normalizeTranslatedInlineHTML(parsed.translations[record.id])
         );
@@ -3270,7 +3378,9 @@
       ]);
       const bodyRecords = await this.extractRecords(documentID, layout, assetMap);
       const tablePlan = this.tableRequestPlan(layout, bodyRecords, settings, true);
-      const records = [...bodyRecords, ...tablePlan.records];
+      const imagePlan = await this.imageRequestPlan(documentID, layout, [...bodyRecords, ...tablePlan.records], settings, true, signal, emit);
+      const mediaPlan = { ids: new Set([...tablePlan.ids, ...imagePlan.ids]) };
+      const records = [...bodyRecords, ...tablePlan.records, ...imagePlan.records];
       if (!records.length) throw new Error("当前文档没有可翻译的正文。");
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const identity = U.hashString([
@@ -3282,8 +3392,11 @@
         settings.targetLanguage
       ].join("\u241f"));
       const current = await this.loadTranslations(documentID, settings.targetLanguage);
-      if (!settings.force && current.meta?.identity === identity && current.meta?.complete) {
-        const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal, emit);
+      const imageCache = await this.storage.readJSON(paths.images, null);
+      const cachedImages = LitMTrans.LayoutImages.cachedRecords(imagePlan, imageCache, sourceFingerprint);
+      if (!settings.force && current.meta?.identity === identity && current.meta?.complete
+        && imagePlan.records.every(record => cachedImages[record.id])) {
+        const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint, targetLanguage: settings.targetLanguage }, signal, emit);
         emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true, meta: current.meta });
         return { ...current, model, cached: true };
       }
@@ -3293,7 +3406,10 @@
         message: edgeLocal ? "正在启动Edge本地翻译…" : "正在连接联网免费机翻，必要时将自动切换Bing。",
         progress: 0
       });
-      const translations = await this.webMachine.translateRecords(records, {
+      const tableCache = await this.storage.readJSON(paths.tables, null);
+      const preserved = !settings.force && current.meta?.identity === identity ? { ...current.translations,
+        ...LitMTrans.LayoutTables.cachedRecords(tablePlan, tableCache, sourceFingerprint), ...cachedImages } : {};
+      const incoming = await this.webMachine.translateRecords(records.filter(record => !preserved[record.id]), {
         provider,
         targetLanguage: settings.targetLanguage,
         sourceLanguage,
@@ -3323,9 +3439,10 @@
           });
         }
       });
+      const translations = { ...preserved, ...incoming };
       const normalizedTranslations = {};
       for (const record of records) {
-        if (tablePlan.ids.has(record.id)) continue;
+        if (mediaPlan.ids.has(record.id)) continue;
         normalizedTranslations[record.id] = normalizeWebMachineRecord(
           record,
           translations[record.id] ?? record.text
@@ -3333,8 +3450,10 @@
       }
       Object.assign(translations, normalizedTranslations);
       const formulaReplacements = {};
-      const savedTables = await this.saveTableTranslations(documentID, settings, layout, tablePlan, translations, emit);
-      const bodyTranslations = LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations);
+      const mediaFiles = settings.force ? [] : null;
+      const savedTables = await this.saveTableTranslations(documentID, settings, layout, tablePlan, translations, emit, mediaFiles);
+      const savedImages = await this.saveImageTranslations(documentID, settings, layout, imagePlan, translations, emit, mediaFiles);
+      const bodyTranslations = LitMTrans.LayoutTables.bodyTranslations(mediaPlan, translations);
       const meta = {
         identity,
         sourceFingerprint,
@@ -3347,30 +3466,20 @@
         totalBlocks: bodyRecords.length,
         translatedBlocks: Object.keys(bodyTranslations).length,
         translatedTables: savedTables?.tables.length || 0,
+        translatedImages: savedImages?.images.length || 0,
         completedAt: new Date().toISOString(),
         ...(settings.force
           ? { retranslationCount: Number(current.meta?.retranslationCount || 0) + 1 }
           : (current.meta?.retranslationCount ? { retranslationCount: current.meta.retranslationCount } : {}))
       };
-      if (settings.force && this.storage.temporaryDir) {
-        const staging = this.storage.temporaryDir("layout-web-machine");
-        const staged = { translations: PathUtils.join(staging, "translations.json"), formulaReplacements: PathUtils.join(staging, "formulas.json"), meta: PathUtils.join(staging, "meta.json") };
-        try {
-          await this.storage.writeJSON(staged.translations, bodyTranslations);
-          await this.storage.writeJSON(staged.formulaReplacements, formulaReplacements);
-          await this.storage.writeJSON(staged.meta, meta);
-          await this.storage.publishFilesAtomically([
-            { source: staged.translations, destination: paths.translations },
-            { source: staged.formulaReplacements, destination: paths.formulaReplacements },
-            { source: staged.meta, destination: paths.meta }
-          ]);
-        } finally { await this.storage.remove(staging, true); }
+      if (settings.force) {
+        await this.publishTranslationResult(paths, bodyTranslations, formulaReplacements, meta, mediaFiles);
       } else {
         await this.storage.writeJSON(paths.translations, bodyTranslations);
         await this.storage.writeJSON(paths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(paths.meta, meta);
       }
-      const model = await this.buildModel(documentID, bodyTranslations, formulaReplacements, { sourceFingerprint }, signal, emit);
+      const model = await this.buildModel(documentID, bodyTranslations, formulaReplacements, { sourceFingerprint, targetLanguage: settings.targetLanguage }, signal, emit);
       emit?.({ type: "layout-translation", translations: bodyTranslations, model, complete: true, meta });
       return { translations: bodyTranslations, formulaReplacements, model, meta, cached: false };
     }
@@ -3379,7 +3488,55 @@
       return LitMTrans.LayoutTables.requestPlan(layout, settings.translateTables !== false, machine, new Set(records.map(record => record.id)), sourceTag);
     }
 
-    async saveTableTranslations(documentID, settings, layout, plan, translations, emit) {
+    async imageRequestPlan(documentID, layout, records, settings, machine = false, signal = null, emit = null) {
+      let ocr = null;
+      if (settings.translateImages !== false && this.imageService) {
+        try { ocr = await this.imageService.ensure(documentID, layout, signal, emit, { parseProvider: settings.parseProvider }); }
+        catch (error) {
+          U.throwIfAborted(signal);
+          if (error.cancelled) throw error;
+          emit?.({ type: "warning", message: "图片文字识别暂不可用，已保留原图并继续翻译正文。" });
+        }
+      }
+      return LitMTrans.LayoutImages.requestPlan(ocr, layout, machine, new Set(records.flatMap(record => [record.id, record.wireID || record.id])));
+    }
+
+    async publishTranslationResult(paths, translations, formulaReplacements, meta, mediaFiles, stagingRoot = null) {
+      const staging = stagingRoot || (this.storage.temporaryDir ? this.storage.temporaryDir("layout-publish") : paths.root);
+      const files = [
+        { source: PathUtils.join(staging, "translations.json"), destination: paths.translations, value: translations },
+        { source: PathUtils.join(staging, "formulas.json"), destination: paths.formulaReplacements, value: formulaReplacements },
+        ...mediaFiles.map((file, index) => ({ source: PathUtils.join(staging, `media-${index}.json`), destination: file.path, value: file.value })),
+        { source: PathUtils.join(staging, "meta.json"), destination: paths.meta, value: meta }
+      ];
+      try {
+        for (const file of files) await this.storage.writeJSON(file.source, file.value);
+        // 复用现有文件回滚，只改变替换顺序，不增加译文验收条件。
+        await this.storage.publishFilesAtomically(files);
+      } finally {
+        for (const file of files) await this.storage.remove(file.source, false);
+        if (this.storage.temporaryDir) await this.storage.remove(staging, true);
+      }
+    }
+
+    async saveImageTranslations(documentID, settings, layout, plan, translations, emit, mediaFiles = null) {
+      if (!plan.images.length) return;
+      const sourceFingerprint = U.hashString(layout.rawText || ""), paths = this.paths(documentID, settings.targetLanguage);
+      if (U.hashString(await this.storage.readText(this.storage.path(documentID, "layout.json"), "")) !== sourceFingerprint) return;
+      if (((await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "") !== (plan.parseRevisionID || "")) return;
+      const cache = LitMTrans.LayoutImages.cacheFromRecords(plan, translations, sourceFingerprint, settings.targetLanguage);
+      const previous = await this.storage.readJSON(paths.images, null);
+      if (previous?.sourceFingerprint === sourceFingerprint && previous.targetLanguage === settings.targetLanguage
+        && (previous.parseRevisionID || "") === (plan.parseRevisionID || "") && Array.isArray(previous.images)) {
+        const completed = new Set(cache.images.map(image => image.id));
+        cache.images.push(...previous.images.filter(image => !completed.has(image.id)));
+      }
+      if (mediaFiles) { mediaFiles.push({ path: paths.images, value: cache }); return cache; }
+      try { await this.storage.writeTextAtomically(paths.images, JSON.stringify(cache)); return cache; }
+      catch (_) { emit?.({ type: "warning", message: "图片译文未能保存，已保留原图。" }); }
+    }
+
+    async saveTableTranslations(documentID, settings, layout, plan, translations, emit, mediaFiles = null) {
       const paths = this.paths(documentID, settings.targetLanguage);
       if (!plan.tables.length) return;
       const fingerprint = U.hashString(layout.rawText || "");
@@ -3390,6 +3547,7 @@
         const completed = new Set(cache.tables.map(table => table.fingerprint));
         cache.tables.push(...(previous.tables || []).filter(table => !completed.has(table.fingerprint)));
       }
+      if (mediaFiles) { mediaFiles.push({ path: paths.tables, value: cache }); return cache; }
       try { await this.storage.writeTextAtomically(paths.tables, JSON.stringify(cache)); return cache; }
       catch (error) { emit?.({ type: "warning", message: `表格译文未能保存，正文译文不受影响：${error.message || error}` }); }
     }
@@ -3400,12 +3558,55 @@
       const fingerprint = U.hashString(layout.rawText || "");
       const machine = !options.manual && !this.llm.isWebEngineActive?.(settings) && U.isWebMachineProvider(settings.provider);
       const plan = this.tableRequestPlan(layout, [], settings, machine, fingerprint);
+      this.bindManualRequest(documentID, plan.records, settings.targetLanguage);
       const cache = await this.storage.readJSON(this.paths(documentID, settings.targetLanguage).tables, null);
       const cached = cache?.targetLanguage === settings.targetLanguage
         ? LitMTrans.LayoutTables.cachedRecords(plan, cache, fingerprint) : {};
       const missing = plan.records.filter(record => !cached[record.id]);
       const markdown = options.includeMarkdown === false ? "" : await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
       return { settings, layout, fingerprint, plan, cached, missing, markdown };
+    }
+
+    async imageTranslationInput(documentID, options = {}, signal = null, emit = null) {
+      const settings = { ...this.llm.getSettings(), ...options, translateImages: true };
+      const layout = await this.loadLayout(documentID), fingerprint = U.hashString(layout.rawText || "");
+      const machine = !options.manual && !this.llm.isWebEngineActive?.(settings) && U.isWebMachineProvider(settings.provider);
+      const ocr = options.recognize && this.imageService
+        ? await this.imageService.ensure(documentID, layout, signal, emit, { parseProvider: settings.parseProvider })
+        : await this.storage.readJSON(this.storage.path(documentID, "image-ocr.v1.json"), null);
+      const plan = LitMTrans.LayoutImages.requestPlan(ocr, layout, machine);
+      this.bindManualRequest(documentID, plan.records, settings.targetLanguage);
+      const cache = await this.storage.readJSON(this.paths(documentID, settings.targetLanguage).images, null);
+      const cached = cache?.targetLanguage === settings.targetLanguage ? LitMTrans.LayoutImages.cachedRecords(plan, cache, fingerprint) : {};
+      const missing = plan.records.filter(record => !cached[record.id]);
+      const total = LitMTrans.LayoutImages.extract(layout).length;
+      const revision = (await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "";
+      const needsOCR = !ocr || ocr.version !== 1 || !Array.isArray(ocr.images) || ocr.sourceFingerprint !== fingerprint || (ocr.parseRevisionID || "") !== revision;
+      const markdown = options.includeMarkdown === false ? "" : await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
+      return { settings, layout, fingerprint, plan, cached, missing, markdown, total, needsOCR };
+    }
+
+    async translateImagesOnly(documentID, options = {}, emit = null, signal = null) {
+      const input = await this.imageTranslationInput(documentID, { ...options, recognize: true }, signal, emit);
+      const { settings, layout, fingerprint, plan, cached, missing, markdown } = input;
+      if (!missing.length) return { translatedImages: 0, cached: true, remaining: 0 };
+      if (!markdown.trim()) throw new Error("缺少文献全文，无法为图片翻译提供上下文");
+      let received;
+      if (plan.machine) {
+        received = await this.webMachine.translateRecords(missing, { provider: settings.provider, targetLanguage: settings.targetLanguage,
+          sourceLanguage: settings.machineSourceLanguage || settings.sourceLanguage, signal, log: message => emit?.({ type: "log", message }) });
+      } else {
+        if (this.llm.isWebEngineActive?.(settings)) Object.assign(settings, { provider: "deepseek_web", model: "deepseek-web", engine: "deepseek_web", aiMode: "web" });
+        else Object.assign(settings, await this.llm.ensureConfiguredModel(this.llm.resolveConfig({ ...settings, purpose: "translation", engine: "api", aiMode: "api" }), signal), { engine: "api", aiMode: "api" });
+        received = (await this.translateGroup(missing, "", "", documentID, fingerprint, {
+          ...settings, hasImageTargets: true, fullMarkdownContext: markdown, deferLayoutRetry: true
+        }, 0, 1, emit, signal)).translations;
+      }
+      U.throwIfAborted(signal);
+      const cache = await this.saveImageTranslations(documentID, settings, layout, plan, { ...cached, ...received }, emit);
+      if (!cache) throw new Error("图片译文未能保存，请重试");
+      const completed = LitMTrans.LayoutImages.cachedRecords(plan, cache, fingerprint);
+      return { translatedImages: cache.images.length, remaining: plan.records.filter(record => !completed[record.id]).length, cached: false };
     }
 
     async translateTablesOnly(documentID, options = {}, emit = null, signal = null) {
@@ -3550,7 +3751,9 @@
       ]);
       const bodyRecords = await this.extractRecords(documentID, layout, assetMap);
       const tablePlan = this.tableRequestPlan(layout, bodyRecords, settings, false);
-      const records = [...bodyRecords, ...tablePlan.records];
+      const imagePlan = await this.imageRequestPlan(documentID, layout, [...bodyRecords, ...tablePlan.records], settings, false, signal, emit);
+      const mediaPlan = { ids: new Set([...tablePlan.ids, ...imagePlan.ids]) };
+      const records = [...bodyRecords, ...tablePlan.records, ...imagePlan.records];
       if (!records.length) throw new Error("当前文档没有可翻译的正文。");
       const sourceFingerprint = U.hashString(layout.rawText || "");
       const identity = U.hashString([
@@ -3576,10 +3779,13 @@
         identity
       );
       settings.hasTableTargets = tablePlan.records.length > 0;
+      settings.hasImageTargets = imagePlan.records.length > 0;
       const current = await this.loadTranslations(documentID, settings.targetLanguage);
       const tableCache = await this.storage.readJSON(paths.tables, null);
+      const imageCache = await this.storage.readJSON(paths.images, null);
       const cachedTranslations = { ...current.translations,
-        ...LitMTrans.LayoutTables.cachedRecords(tablePlan, tableCache, sourceFingerprint) };
+        ...LitMTrans.LayoutTables.cachedRecords(tablePlan, tableCache, sourceFingerprint),
+        ...LitMTrans.LayoutImages.cachedRecords(imagePlan, imageCache, sourceFingerprint) };
       if (!options.force && current.meta?.identity === identity && current.meta?.complete) {
         const cacheRetryRecords = recordsNeedingRetry(
           records,
@@ -3587,8 +3793,8 @@
           settings.targetLanguage,
           settings.enableUntranslatedCheck
         );
-        if (!cacheRetryRecords.length) {
-          const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint }, signal, emit);
+        if (!cacheRetryRecords.length && imagePlan.records.every(record => cachedTranslations[record.id])) {
+          const model = await this.buildModel(documentID, current.translations, current.formulaReplacements, { sourceFingerprint, targetLanguage: settings.targetLanguage }, signal, emit);
           emit?.({ type: "layout-translation", translations: current.translations, model, complete: true, cached: true });
           return {
             translations: current.translations,
@@ -3598,7 +3804,7 @@
             cached: true
           };
         }
-        emit?.({
+        if (cacheRetryRecords.length) emit?.({
           type: "warning",
           message: `已保留可用译文，正在校对${cacheRetryRecords.length}处内容。`
         });
@@ -3643,6 +3849,9 @@
         recordsNeedingRetry(records, translations, settings.targetLanguage, settings.enableUntranslatedCheck).map(record => record.id)
       );
       const remaining = records.filter(record => !translations[record.id] || retryIDs.has(record.id));
+      if (!fastMode && remaining.length && remaining.every(record => mediaPlan.ids.has(record.id))) {
+        settings.fullMarkdownContext = stripMarkdownImages(await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), ""));
+      }
       const groups = fastMode
         ? this.fastGroupRecords(remaining, fullMarkdownContext)
         : this.groupRecords(remaining, layoutMaxChars, layoutMaxBlocks);
@@ -3697,7 +3906,7 @@
             formulaReplacements = { ...formulaReplacements, ...result.formulaReplacements };
           }
           completedGroupCount = completedResults.size;
-          await this.storage.writeJSON(activePaths.translations, LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations));
+          await this.storage.writeJSON(activePaths.translations, LitMTrans.LayoutTables.bodyTranslations(mediaPlan, translations));
           await this.storage.writeJSON(activePaths.formulaReplacements, formulaReplacements);
           await this.storage.writeJSON(activePaths.meta, {
             identity,
@@ -3907,7 +4116,7 @@
               translations = { ...translations, ...translated.translations };
               formulaReplacements = { ...formulaReplacements, ...translated.formulaReplacements };
             }
-            await this.storage.writeJSON(activePaths.translations, LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations));
+            await this.storage.writeJSON(activePaths.translations, LitMTrans.LayoutTables.bodyTranslations(mediaPlan, translations));
             await this.storage.writeJSON(activePaths.formulaReplacements, formulaReplacements);
             await this.storage.writeJSON(activePaths.meta, {
               identity,
@@ -4004,8 +4213,10 @@
       for (const record of bodyRecords) {
         if (!translations[record.id]) translations[record.id] = sanitizeModelText(record.text);
       }
-      const savedTables = await this.saveTableTranslations(documentID, settings, layout, tablePlan, translations, emit);
-      const bodyTranslations = LitMTrans.LayoutTables.bodyTranslations(tablePlan, translations);
+      const mediaFiles = options.force ? [] : null;
+      const savedTables = await this.saveTableTranslations(documentID, settings, layout, tablePlan, translations, emit, mediaFiles);
+      const savedImages = await this.saveImageTranslations(documentID, settings, layout, imagePlan, translations, emit, mediaFiles);
+      const bodyTranslations = LitMTrans.LayoutTables.bodyTranslations(mediaPlan, translations);
       const meta = {
         identity,
         sourceFingerprint,
@@ -4027,35 +4238,21 @@
         totalBlocks: bodyRecords.length,
         translatedBlocks: Object.keys(bodyTranslations).length,
         translatedTables: savedTables?.tables.length || 0,
+        translatedImages: savedImages?.images.length || 0,
         completedAt: new Date().toISOString(),
         ...(options.force
           ? { retranslationCount: Number(current.meta?.retranslationCount || 0) + 1 }
           : (current.meta?.retranslationCount ? { retranslationCount: current.meta.retranslationCount } : {}))
       };
       if (options.force) {
-        await this.storage.writeJSON(activePaths.translations, bodyTranslations);
-        await this.storage.writeJSON(activePaths.formulaReplacements, formulaReplacements);
-        await this.storage.writeJSON(activePaths.meta, meta);
-        try {
-          await this.storage.publishFilesAtomically([
-            { source: activePaths.translations, destination: paths.translations },
-            { source: activePaths.formulaReplacements, destination: paths.formulaReplacements },
-            { source: activePaths.meta, destination: paths.meta }
-          ]);
-        }
-        finally {
-          await this.storage.remove(activePaths.translations, false);
-          await this.storage.remove(activePaths.formulaReplacements, false);
-          await this.storage.remove(activePaths.meta, false);
-          if (this.storage.temporaryDir) await this.storage.remove(stagingRoot, true);
-        }
+        await this.publishTranslationResult(paths, bodyTranslations, formulaReplacements, meta, mediaFiles, stagingRoot);
       }
       else {
         await this.storage.writeJSON(paths.translations, bodyTranslations);
         await this.storage.writeJSON(paths.formulaReplacements, formulaReplacements);
         await this.storage.writeJSON(paths.meta, meta);
       }
-      const model = await this.buildModel(documentID, bodyTranslations, formulaReplacements, { sourceFingerprint }, signal, emit);
+      const model = await this.buildModel(documentID, bodyTranslations, formulaReplacements, { sourceFingerprint, targetLanguage: settings.targetLanguage }, signal, emit);
       emit?.({ type: "layout-translation", translations: bodyTranslations, model, complete: true, meta });
       return { translations: bodyTranslations, formulaReplacements, model, meta, cached: false };
     }
@@ -4086,6 +4283,9 @@
     estimateStreamUsedHeight,
     solveUniformStreamStyle,
     inferSingleColumnProfile,
+    collapsedSourceTextLines,
+    recoverCollapsedSourceLines,
+    estimateFirstLineIndent,
     columnRightEdgesFromStreams,
     equationNumberRightForBBox,
     promoteStableSingleColumnItems,

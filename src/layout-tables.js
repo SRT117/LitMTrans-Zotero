@@ -212,7 +212,9 @@
         records.push(...cells.map(cell => ({ id: `${id}c${cell.index}`, page: table.page + 1, type: "table_cell", text: cell.text })));
       } else {
         const items = cells.map(cell => [cell.index, cell.text]);
-        records.push({ id, page: table.page + 1, type: "table_cells", cells: items, caption: table.caption, text: JSON.stringify(items) });
+        let wireID = `T${index + 1}`;
+        while (reserved.has(wireID)) wireID = `_${wireID}`;
+        records.push({ id, wireID, page: table.page + 1, type: "table_cells", cells: items, caption: table.caption, text: JSON.stringify(items) });
       }
     }
     return { tables, records, machine, ids: new Set(records.map(record => record.id)) };
@@ -224,6 +226,10 @@
       try { items = JSON.parse(row.text); } catch (_) { return null; }
     }
     if (!Array.isArray(items) || items.length !== record.cells.length) return null;
+    if (record.wireID && row?.id === record.wireID) {
+      if (items.some(item => !Array.isArray(item) || !Number.isInteger(item[0]) || item[0] < 1 || item[0] > record.cells.length)) return null;
+      items = items.map(([index, text]) => [record.cells[index - 1][0], text]);
+    }
     const wanted = new Map(record.cells), seen = new Set();
     for (const item of items) {
       if (!Array.isArray(item) || item.length !== 2 || !wanted.has(item[0]) || seen.has(item[0]) || typeof item[1] !== "string") return null;
@@ -233,6 +239,17 @@
       seen.add(item[0]);
     }
     return JSON.stringify(items);
+  }
+
+  function wireRecord(record) {
+    return record.wireID ? { id: record.wireID, page: record.page, type: record.type,
+      cells: record.cells.map(([, text], index) => [index + 1, text]) } : record;
+  }
+
+  function recordMap(records) {
+    const map = new Map(records.map(record => [record.id, record]));
+    for (const record of records) if (record.wireID && !map.has(record.wireID)) map.set(record.wireID, record);
+    return map;
   }
 
   function cacheFromRecords(plan, translations, sourceFingerprint, targetLanguage) {
@@ -275,5 +292,5 @@
   }
 
   L.LayoutTables = { restoreLegacyStructure, parseGrid, extract, validText, render, attach, visibleModel, fitColumnWidths,
-    requestPlan, responseCells, cacheFromRecords, cachedRecords, bodyTranslations };
+    requestPlan, responseCells, wireRecord, recordMap, cacheFromRecords, cachedRecords, bodyTranslations };
 })(this);

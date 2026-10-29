@@ -133,6 +133,7 @@
 
   function paint(image) {
     if (!theme || !image.matches(selector)) return;
+    if (image.closest('.layout-image-translation')) { clear(image); return; }
     if (image.closest('.has-themed-pdf-bg [data-pdf-screen-retained="1"]')) {
       clear(image);
       return;

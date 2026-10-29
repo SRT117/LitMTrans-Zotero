@@ -148,7 +148,7 @@
         streamTranslationStale: Boolean(translation.stale),
         streamTranslationUpdatedAt: String(translation.meta?.completedAt || translation.meta?.updatedAt || ""),
         layoutSource: Boolean(snapshot.parsed?.hasLayout),
-        layoutTranslation: Boolean(Object.keys(layout.translations || {}).length || model?.tableTranslationHash),
+        layoutTranslation: Boolean(Object.keys(layout.translations || {}).length || model?.tableTranslationHash || model?.imageTranslationHash),
         layoutTranslationStale: Boolean(layout.stale),
         pageCount: number(model?.pages?.length || snapshot.parsed?.meta?.pageCount),
         blockCount: blocks.length,

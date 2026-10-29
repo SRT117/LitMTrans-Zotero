@@ -490,6 +490,11 @@
       || /(?:token|令牌).{0,24}(?:expired|invalid|过期|失效|无效)/i.test(text);
   }
 
+  function isPaddleTokenCredentialError(error) {
+    const text = typeof error === "string" ? error : String(error?.message || "");
+    return Number(error?.status || 0) === 401 || /\bHTTP\s*401\b/i.test(text);
+  }
+
   function clonePlain(value) {
     if (value === undefined) return undefined;
     return JSON.parse(JSON.stringify(value));
@@ -948,6 +953,7 @@
     escapeAttribute,
     normalizeError,
     isMinerUTokenCredentialError,
+    isPaddleTokenCredentialError,
     clonePlain,
     getPref,
     setPref,

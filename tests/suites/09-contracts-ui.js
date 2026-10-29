@@ -13,6 +13,35 @@ module.exports = function createSuite(env) {
     ChatService, ChatInternals, ControllerInternals, DocumentPipeline
   } = env;
 
+function testLayoutReferencePreviewsAndFigureLinks() {
+  const { parseHTML } = require('linkedom');
+  const { document, Node } = parseHTML('<html><body></body></html>');
+  const workbench = fs.readFileSync(path.join(root, 'src', 'workbench.js'), 'utf8');
+  const source = workbench.slice(workbench.indexOf('  function linkifyLayoutDocument('), workbench.indexOf('  function buildLayoutDocument('));
+  const sandbox = { document, Node, NodeFilter: { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 } };
+  vm.runInNewContext(source + '\nthis.linkify = linkifyLayoutDocument; this.figures = linkifyLayoutFigures; this.previews = setLayoutReferencePreviews;', sandbox);
+  document.body.innerHTML = `<div class="layout-block type-body_text">参见[1–2]、图1、表2和Fig. 3。图9未找到。图1(a)保留。</div>
+    <div class="layout-block type-ref_text">[1] First reference. 2024.</div>
+    <div class="layout-block type-ref_text">[2] Second reference. 2025.</div>
+    <div class="layout-block layout-caption type-image_caption">图1 拉伸试验结果</div>
+    <div class="layout-block layout-caption type-table_caption">表2 试验参数</div>
+    <div class="layout-block layout-caption type-image_caption">Fig. 3. Stress curve</div>`;
+  sandbox.linkify(document.body, 'translation');
+  sandbox.figures(document.body, 'translation');
+  sandbox.previews(document.body);
+  const links = [...document.querySelector('.type-body_text').querySelectorAll('a')];
+  assert.deepEqual(links.map(link => link.textContent), ['1–2', '图1', '表2', 'Fig. 3']);
+  assert.equal(links[0].title, '[1] First reference. 2024.\n\n[2] Second reference. 2025.');
+  assert.equal(links[1].title, '图1 拉伸试验结果');
+  assert.equal(links[2].title, '表2 试验参数');
+  assert.equal(links[3].title, 'Fig. 3. Stress curve');
+  for (const link of links) assert(document.getElementById(link.dataset.layoutReferenceTarget));
+  assert.equal(document.querySelector('.layout-caption a'), null);
+  document.body.innerHTML = '<div class="layout-block">图1 和 Table 2</div><div class="type-image_caption">图1 A</div><div class="type-image_caption">图1 B</div>';
+  sandbox.figures(document.body, 'source');
+  assert.equal(document.querySelector('a'), null, '重复或缺失的目标不能猜测链接');
+}
+
 function testPDFReaderThemeCrossWindowAndFailureIsolation() {
   const controller = Object.create(context.LitMTrans.Controller.prototype);
   const events = [];
@@ -320,7 +349,7 @@ function testWorkbenchChatRecoveryAndFormulaPreview() {
   );
   assert(workbench.includes('function appendReasoningLog(event)'), "process log must render streamed translation reasoning");
   assert(
-    workbench.includes("state.data?.layout?.meta?.complete\n          && (Object.keys(state.data?.layout?.translations || {}).length || state.data?.layout?.model?.tableTranslationHash)"),
+    workbench.includes("state.data?.layout?.meta?.complete\n          && (Object.keys(state.data?.layout?.translations || {}).length || state.data?.layout?.model?.tableTranslationHash || state.data?.layout?.model?.imageTranslationHash)"),
     "a partial layout checkpoint must resume instead of being treated as a forced retranslation"
   );
   assert(xhtml.includes('id="formula-preview-dialog"'));
@@ -1421,6 +1450,7 @@ async function testSettingsAutoSaveIsolationAndFailure() {
 }
 
   return {
+    testLayoutReferencePreviewsAndFigureLinks,
     testPDFReaderThemeCrossWindowAndFailureIsolation,
     testReaderThemeWithoutPreviewAndLegacyContentSwitch,
     testCustomReaderThemeNotificationUpdatesPreviewBeforeEmission,
