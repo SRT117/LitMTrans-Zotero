@@ -44,6 +44,22 @@ module.exports = function (env) {
     return { document, window };
   }
 
+  function sourceOnlyLogosReuseThePDFBackground() {
+    const sandbox = load(["isBackgroundRetainedBlock", "normalizeSourceErasureBox", "registerBlockErasureItem"], {
+      BG_RETAINED_FURNITURE_TYPES: new Set(["header", "footer", "page_number"])
+    });
+    const { document } = dom(), node = document.createElement("div"), erasures = [];
+    const logo = { type: "image_body", kind: "image", bbox: [390, 35, 550, 85], sourceOnly: true };
+    sandbox.registerBlockErasureItem(erasures, logo, node, { width: 600, height: 800 });
+    assert.equal(erasures.length, 0, "标志原 PDF 区域不能被擦除后重画");
+    assert.equal(node.dataset.bgRedundant, "1", "底图就绪后隐藏冗余图片节点");
+    assert.equal(sandbox.isBackgroundRetainedBlock(logo, false), false, "原文侧保留独立渲染能力");
+    const chartNode = document.createElement("div");
+    sandbox.registerBlockErasureItem(erasures, { ...logo, sourceOnly: false, translatedImageLabels: [{ text: "图例" }] }, chartNode, {});
+    assert.equal(erasures.length, 1, "正常译图仍走原有覆盖流程");
+    assert.equal(chartNode.dataset.bgRedundant, undefined);
+  }
+
   function coloredBackgroundsAndUncertainFallback() {
     const sandbox = load(["medianByte", "samplePerimeterColor", "sampleTableBackground", "eraseAndPatchPageBackground"]);
     for (const rgb of [[20, 60, 110], [46, 52, 64], [230, 230, 230], [255, 255, 255]]) {
@@ -429,7 +445,7 @@ module.exports = function (env) {
     assert.deepEqual(Array.from(result.canvas._pixels.slice(0, 4)), [255, 255, 255, 255]);
   }
 
-  return { coloredBackgroundsAndUncertainFallback, translatedTablesUseNativeBackgroundWithoutChangingOtherMedia, nativePDFRenderingSkipsWindowTheme,
+  return { sourceOnlyLogosReuseThePDFBackground, coloredBackgroundsAndUncertainFallback, translatedTablesUseNativeBackgroundWithoutChangingOtherMedia, nativePDFRenderingSkipsWindowTheme,
     screenThemeNeverChangesNativePixels, printSnapshotUsesNativeCompressedBackground,
     offscreenCanvasesAreReleasedAndStaleLoadsCannotPublish, concurrentPrintSnapshotsAreSerialized,
     comparisonUsesOneScaleAndTopAlignment, unexpectedPageCountCannotDiscardRealPages,

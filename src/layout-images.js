@@ -5,10 +5,17 @@
   const validBox = box => Array.isArray(box) && box.length === 4 && box.every(Number.isFinite) && box[2] > box[0] && box[3] > box[1];
   const fingerprint = layout => U.hashString(layout.rawText || "");
 
+  function isPageFurniture(block) {
+    const source = block?.original || block;
+    const roles = [source?.type, source?.parser?.semanticRole, source?.parser?.source?.label];
+    return roles.some(role => ["header", "footer", "header_image", "footer_image", "page_number"].includes(role));
+  }
+
   function extract(layout) {
     const figures = [];
     for (const [page, data] of layout.pages.entries()) {
       const visit = (block, path) => {
+        if (isPageFurniture(block)) return;
         if (["table", "table_body"].includes(block.type)) return;
         if (["image_body", "chart_body"].includes(block.type) && validBox(block.bbox)) {
           const asset = block.image_path || (block.lines || []).flatMap(line => line.spans || []).find(span => span.image_path)?.image_path;
@@ -56,24 +63,32 @@
     });
   }
 
-  const MINERU_IMAGE_STRATEGY = "shared-text-crops-v2";
+  const MINERU_IMAGE_STRATEGY = "shared-gray-crops-v3";
+
+  function imageOCRProgressEmitter(emit) {
+    return event => emit?.({ ...event, phase: "image-ocr-poll", message: String(event.message || "")
+      .replace(/^(MinerU|Paddle)解析/, "$1图片文字识别")
+      .replace(/^(等待MinerU返回|正在等待Paddle)解析结果/, "$1图片文字识别结果") });
+  }
 
   function planImageOCRSheets(inputs) {
     const sheets = [];
-    let sheet, column = 0, top = 24;
-    for (let index = 0; index < inputs.length; index++) {
-      for (const row of inputs[index].packing.mapping) {
-        const width = row.packed[2] - row.packed[0], height = row.packed[3] - row.packed[1];
-        if (!(width > 0 && height > 0) || width > 664 || height > 1752) continue;
-        if (!sheet || top + height > 1776) {
-          if (sheet && column === 0) { column = 1; top = 24; }
-          else { sheet = { size: [1400, 0], cells: [] }; sheets.push(sheet); column = 0; top = 24; }
-        }
-        const left = 24 + column * 688;
-        sheet.cells.push({ input: index, source: row.source, from: row.packed, packed: [left, top, left + width, top + height] });
-        sheet.size[1] = Math.max(sheet.size[1], top + height + 24);
-        top += height + 24;
+    const cells = inputs.flatMap((input, index) => input.packing.mapping.map(row => ({
+      input: index, source: row.source, from: row.packed,
+      width: row.packed[2] - row.packed[0], height: row.packed[3] - row.packed[1]
+    }))).filter(cell => cell.width > 0 && cell.height > 0 && cell.width <= 664 && cell.height <= 952)
+      .sort((a, b) => b.height - a.height || b.width - a.width);
+    let sheet, left = 24, top = 24, rowHeight = 0;
+    for (const cell of cells) {
+      if (left + cell.width > 688) { left = 24;top += rowHeight + 32;rowHeight = 0; }
+      if (!sheet || top + cell.height > 976) {
+        sheet = { size: [200, 0], cells: [] };sheets.push(sheet);left = top = 24;rowHeight = 0;
       }
+      sheet.cells.push({ input: cell.input, source: cell.source, from: cell.from,
+        packed: [left, top, left + cell.width, top + cell.height] });
+      sheet.size[0] = Math.max(sheet.size[0], left + cell.width + 24);
+      sheet.size[1] = Math.max(sheet.size[1], top + cell.height + 24);
+      left += cell.width + 64;rowHeight = Math.max(rowHeight, cell.height);
     }
     return sheets;
   }
@@ -173,7 +188,12 @@
       }
       const w = right - left, h = bottom - top;
       if (w < 15 || h < 9 || h > Math.max(70, height * .15) || w < h * 1.5) return;
-      boxes.push([Math.max(0, left - 3), Math.max(0, top - 3), Math.min(width, right + 3), Math.min(height, bottom + 3)]);
+      const box = [Math.max(0, left - 3), Math.max(0, top - 3), Math.min(width, right + 3), Math.min(height, bottom + 3)];
+      let inkCount = 0;
+      for (let y = box[1]; y < box[3]; y++) for (let x = box[0]; x < box[2]; x++) inkCount += mask[y * width + x];
+      // 稀疏网格残片不排入文字页，避免版面检测继续把整页识别成图形。
+      if (inkCount / ((box[2] - box[0]) * (box[3] - box[1])) < .12) return;
+      boxes.push(box);
     });
     return { boxes: boxes.sort((a, b) => a[1] - b[1] || a[0] - b[0]).slice(0, 80), mask };
   }
@@ -213,6 +233,59 @@
     return lines;
   }
 
+  function repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background) {
+    const values = new Float32Array(w * h * 3), holes = [];
+    const ink = [[], [], []];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, source = ((top + y) * width + left + x) * 4;
+      if (accepted[i]) holes.push(i);
+      if (chosen[i]) for (let c = 0; c < 3; c++) ink[c].push(pixels[source + c]);
+      for (let c = 0; c < 3; c++) values[i * 3 + c] = accepted[i] ? background[i * 3 + c] : pixels[source + c];
+    }
+    const inkColor = ink.map(channel => { channel.sort((a, b) => a - b);return channel[Math.floor(channel.length / 2)]; });
+    const blocked = new Uint8Array(foreground);
+    for (let i = 0; i < w * h; i++) {
+      if (!accepted[i] && Math.max(...inkColor.map((value, c) => Math.abs(values[i * 3 + c] - value))) < 38) blocked[i] = 1;
+    }
+    // 从可用背景向笔画内部逐层初始化，避免旧的单列取样污染迭代初值。
+    const ready = new Uint8Array(w * h), queue = new Uint32Array(w * h);
+    let head = 0, tail = 0;
+    for (let i = 0; i < ready.length; i++) if (!accepted[i] && !blocked[i]) { ready[i] = 1;queue[tail++] = i; }
+    while (head < tail) {
+      const i = queue[head++], x = i % w, y = Math.floor(i / w);
+      for (let direction = 0; direction < 4; direction++) {
+        const next = direction === 0 ? (x > 0 ? i - 1 : -1) : direction === 1 ? (x + 1 < w ? i + 1 : -1)
+          : direction === 2 ? (y > 0 ? i - w : -1) : (y + 1 < h ? i + w : -1);
+        if (next < 0 || ready[next] || !accepted[next]) continue;
+        ready[next] = 1;queue[tail++] = next;
+        for (let c = 0; c < 3; c++) values[next * 3 + c] = values[i * 3 + c];
+      }
+    }
+    // 在原有文字掩膜内求二维调和补色；未遮挡背景固定，其他前景不参与取色。
+    for (let pass = 0; pass < 160; pass++) {
+      let change = 0;
+      for (const i of holes) {
+        const x = i % w, y = Math.floor(i / w);
+        let red = 0, green = 0, blue = 0, count = 0;
+        for (let direction = 0; direction < 4; direction++) {
+          const next = direction === 0 ? (x > 0 ? i - 1 : -1) : direction === 1 ? (x + 1 < w ? i + 1 : -1)
+            : direction === 2 ? (y > 0 ? i - w : -1) : (y + 1 < h ? i + w : -1);
+          if (next < 0 || (!accepted[next] && blocked[next])) continue;
+          red += values[next * 3];green += values[next * 3 + 1];blue += values[next * 3 + 2];
+          count++;
+        }
+        if (!count) continue;
+        for (let c = 0; c < 3; c++) {
+          const value = (c === 0 ? red : c === 1 ? green : blue) / count;
+          change = Math.max(change, Math.abs(value - values[i * 3 + c]));
+          values[i * 3 + c] = value;
+        }
+      }
+      if (change < .08) break;
+    }
+    for (const i of holes) for (let c = 0; c < 3; c++) background[i * 3 + c] = values[i * 3 + c];
+  }
+
   function restoreImageLabel(pixels, width, height, box, protectedBoxes = [], sourceText = "") {
     if (!validBox(box) || protectedBoxes.some(other => validBox(other) && imageLineOverlap(box, other) > .02)) return null;
     const expected = (box[3] - box[1]) * height, pad = Math.max(3, Math.ceil(expected * .18));
@@ -242,6 +315,7 @@
       if (difference > 38 && !protectedPixel(left + x, top + y)) { mask[index] = 1; totalInk++; }
     }
     if (!totalInk || totalInk / size > .5) return null;
+    const foreground = new Uint8Array(mask);
     const components = [], fragments = [];
     for (let start = 0; start < size; start++) {
       if (!mask[start]) continue;
@@ -291,6 +365,7 @@
     const x0 = Math.max(0, Math.min(...components.map(b => b[0])) - 3), y0 = Math.max(0, Math.min(...components.map(b => b[1])) - 3);
     const x1 = Math.min(w, Math.max(...components.map(b => b[2])) + 3), y1 = Math.min(h, Math.max(...components.map(b => b[3])) + 3);
     if (x1 <= x0 || y1 <= y0) return null;
+    repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background);
     const patch = new Uint8ClampedArray((x1 - x0) * (y1 - y0) * 4), colors = [[], [], []];
     let changed = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
@@ -307,7 +382,9 @@
   function requestPlan(ocr, layout, machine = false, reserved = new Set()) {
     const images = [], records = [];
     if (ocr?.version !== 1 || ocr.sourceFingerprint !== fingerprint(layout) || !Array.isArray(ocr.images)) return { images, records, ids: new Set(), machine };
+    const allowed = Array.isArray(layout.pages) ? new Set(extract(layout).map(figure => figure.id)) : null;
     for (const [index, figure] of ocr.images.entries()) {
+      if (allowed && !allowed.has(figure?.id)) continue;
       if (!validBox(figure?.bbox) || !Array.isArray(figure.lines)
         || figure.lines.some(line => typeof line?.text !== "string" || !validBox(line.bbox))) continue;
       const html = `<table>${figure.lines.map(line => `<tr><td>${U.escapeHTML(line.text)}</td></tr>`).join("")}</table>`;
@@ -342,14 +419,26 @@
     return L.LayoutTables.cachedRecords({ ...plan, tables: plan.images }, cache ? { ...cache, tables: cache.images } : null, sourceFingerprint);
   }
 
-  function attach(model, cache, parseRevisionID = "") {
+  function attach(model, cache, parseRevisionID = "", layout = null) {
     if (!model?.pages) return model;
+    // 旧编译模型不保留解析分类；从现有布局恢复保留区域，不改写旧模型缓存。
+    const furniture = (layout?.pages || []).map(page => {
+      const boxes = new Set();
+      const visit = (block, inherited = false) => {
+        const retained = inherited || isPageFurniture(block);
+        if (retained && validBox(block.bbox)) boxes.add(JSON.stringify(block.bbox));
+        for (const child of block.blocks || []) visit(child, retained);
+      };
+      for (const block of page.preproc_blocks || []) visit(block);
+      return boxes;
+    });
     const active = cache?.version === 1 && cache.sourceFingerprint === model.sourceFingerprint
       && (cache.parseRevisionID || "") === parseRevisionID && Array.isArray(cache.images) && cache.images.length;
-    if (!active && !model.imageTranslationHash) return model;
+    if (!active && !model.imageTranslationHash && !furniture.some(boxes => boxes.size)) return model;
     const { imageTranslationHash: _previous, ...base } = model;
     const apply = (block, page) => {
       const { translatedImageLabels: _labels, imageProtectedBoxes: _protected, ...clean } = block;
+      if (isPageFurniture(block) || furniture[page]?.has(JSON.stringify(block.bbox))) return { ...clean, sourceOnly: true };
       if (!active || !["image", "image_body", "chart", "chart_body"].includes(block.type)) return clean;
       const matches = cache.images.filter(image => image?.page === page && JSON.stringify(image.bbox) === JSON.stringify(block.bbox));
       if (matches.length !== 1) return clean;
@@ -365,7 +454,7 @@
         return { ...clean, translatedImageLabels: labels, imageProtectedBoxes: image.cells.filter(cell => !cell.translate).map(cell => image.lines[cell.index].bbox) };
       } catch (_) { return clean; }
     };
-    return { ...base, ...(active ? { imageTranslationHash: U.hashString(`image-render-v2|${JSON.stringify(cache)}`) } : {}), pages: model.pages.map((page, index) => ({
+    return { ...base, ...(active ? { imageTranslationHash: U.hashString(`image-render-centered-v10|${JSON.stringify(cache)}`) } : {}), pages: model.pages.map((page, index) => ({
       ...page, blocks: (page.blocks || []).map(block => apply(block, index)), restoration: page.restoration ? {
         ...page.restoration, absoluteBlocks: (page.restoration.absoluteBlocks || []).map(block => apply(block, index))
       } : page.restoration
@@ -374,6 +463,19 @@
 
   class ImageTranslationService {
     constructor(storage, paddle, mineru = null) { this.storage = storage; this.paddle = paddle; this.mineru = mineru; this.pending = new Map(); }
+
+    async paddleImageRequests(pdf, sheets, maxBytes = 200 * 1024 * 1024, maxPages = 1000) {
+      const bytes = await pdf.save();
+      if (bytes.length <= maxBytes && sheets.length <= maxPages) return [{ bytes, sheets }];
+      if (sheets.length <= 1) throw new Error("单页图片识别文件超过Paddle上传限制，已保留原图");
+      const middle = Math.ceil(sheets.length / 2), requests = [];
+      for (const [start, end] of [[0, middle], [middle, sheets.length]]) {
+        const part = await global.PDFLib.PDFDocument.create();
+        for (const page of await part.copyPages(pdf, Array.from({ length: end - start }, (_, i) => start + i))) part.addPage(page);
+        requests.push(...await this.paddleImageRequests(part, sheets.slice(start, end), maxBytes, maxPages));
+      }
+      return requests;
+    }
 
     async packImageText(bytes, png, signal) {
       U.throwIfAborted(signal);
@@ -400,20 +502,24 @@
         const width = Math.max(1, Math.round(image.naturalWidth * scale)), height = Math.max(1, Math.round(image.naturalHeight * scale));
         const source = canvas(width, height), ctx = source.getContext("2d");
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, width, height); ctx.drawImage(image, 0, 0, width, height);
-        const { boxes, mask } = imageTextCandidates(ctx.getImageData(0, 0, width, height).data, width, height);
+        const ink = ctx.getImageData(0, 0, width, height);
+        const { boxes } = imageTextCandidates(ink.data, width, height);
         if (!boxes.length) return null;
-        const ink = ctx.createImageData(width, height);
-        for (let i = 0; i < mask.length; i++) {
-          ink.data[i * 4] = ink.data[i * 4 + 1] = ink.data[i * 4 + 2] = mask[i] ? 0 : 255;
-          ink.data[i * 4 + 3] = 255;
+        // 掩膜只用于定位；识别副本保留原始灰度笔画，避免连在线上的字母被一起删除。
+        for (let i = 0; i < ink.data.length; i += 4) {
+          const gray = Math.round(ink.data[i] * .299 + ink.data[i + 1] * .587 + ink.data[i + 2] * .114);
+          ink.data[i] = ink.data[i + 1] = ink.data[i + 2] = gray;
         }
         ctx.putImageData(ink, 0, 0);
         const mapping = [];
         let top = 16;
         for (const box of boxes) {
-          const h = box[3] - box[1], w = box[2] - box[0];
+          const h = box[3] - box[1];
+          // 定位掩膜可能丢掉与图线相连的词首，识别裁片按字高补足横向上下文。
+          const sourceBox = [Math.max(0, box[0] - h), box[1], Math.min(width, box[2] + h), box[3]];
+          const w = sourceBox[2] - sourceBox[0];
           if (top + h + 16 > 2400) break;
-          mapping.push({ source: box, packed: [20, top, 20 + w, top + h] }); top += h + 20;
+          mapping.push({ source: sourceBox, packed: [20, top, 20 + w, top + h] }); top += h + 20;
         }
         if (!mapping.length) return null;
         const packed = canvas(Math.max(200, ...mapping.map(row => row.packed[2] + 20)), top);
@@ -428,21 +534,30 @@
     async recognizeMinerU(bytes, count, token, signal, emit) {
       const root = this.storage.temporaryDir("imageocr");
       await this.storage.ensureDir(root);
+      const diagnostics = this.diagnosticsDirectory
+        ? PathUtils.join(this.diagnosticsDirectory, U.randomID("image-ocr")) : null;
       try {
+        if (diagnostics) {
+          await this.storage.ensureDir(diagnostics);
+          await this.storage.writeBytes(PathUtils.join(diagnostics, "input.pdf"), bytes);
+        }
         const file = PathUtils.join(root, "images.pdf");
         await this.storage.writeBytes(file, bytes);
         const options = { modelVersion: "pipeline", isOCR: true, enableFormula: false, enableTable: false, timeoutSeconds: 600 };
         const task = await this.mineru.submit(file, options, token, signal);
         await this.mineru.upload(task.uploadURL, file, signal);
-        const item = await this.mineru.poll(task.batchID, options, token, signal, emit);
+        const item = await this.mineru.poll(task.batchID, options, token, signal, imageOCRProgressEmitter(emit));
         const { zipPath } = await this.mineru.downloadResult(item, root, signal);
         const extracted = PathUtils.join(root, "result");
         await this.mineru.extractZip(zipPath, extracted);
         const located = await this.mineru.locateResultFiles(extracted);
         const pages = located.model ? await this.storage.readJSON(located.model, null) : null;
+        if (diagnostics) await this.storage.writeJSON(PathUtils.join(diagnostics, "raw-model.json"), pages);
         if (!Array.isArray(pages) || pages.length !== count
           || pages.some((page, index) => page?.page_info?.page_no !== index)) throw new Error("MinerU 图片 OCR 返回页数或顺序不兼容");
-        return pages.map(linesFromMinerU);
+        const lines = pages.map(linesFromMinerU);
+        if (diagnostics) await this.storage.writeJSON(PathUtils.join(diagnostics, "accepted-lines.json"), lines);
+        return lines;
       }
       finally { await this.storage.remove(root, true); }
     }
@@ -465,7 +580,7 @@
             page.pushOperators(global.PDFLib.popGraphicsState());
           }
         }
-        emit?.({ type: "status", message: `正在识别图片文字：${inputs.length} 张图片，共 ${sheets.length} 页文字裁片` });
+        emit?.({ type: "status", message: `正在识别图片文字：${inputs.length} 张图片，当前 ${offset + 1}–${offset + group.length}/${sheets.length} 页文字裁片` });
         const pages = await this.recognizeMinerU(await pdf.save(), group.length, token, signal, emit);
         for (let page = 0; page < group.length; page++) {
           const sheet = group[page];
@@ -478,12 +593,13 @@
       return result;
     }
 
-    async collectMinerUFigures(documentID, figures, assets, cached, token, signal, emit) {
+    async collectMinerUFigures(documentID, figures, assets, cached, token, signal, emit, missingOnly = false) {
       const inputs = [], images = [];
       for (const figure of figures) {
         U.throwIfAborted(signal);
         const previous = cached?.images.find(item => item.id === figure.id && JSON.stringify(item.bbox) === JSON.stringify(figure.bbox));
         images.push({ ...figure, lines: previous?.lines || [] });
+        if (missingOnly && previous?.lines?.length) continue;
         const relative = String(assets[figure.asset] || figure.asset).replace(/\\/g, "/");
         if (/^(?:[a-z]+:|\/)/i.test(relative) || relative.split("/").includes("..") || !/\.(?:png|jpe?g)$/i.test(relative)) continue;
         try {
@@ -503,7 +619,7 @@
 
     async ensure(documentID, layout, signal, emit, options = {}) {
       const meta = await this.storage.getDocumentMeta(documentID);
-      const provider = String(meta?.parseProvider || options.parseProvider || U.getPref("parseProvider", "mineru"));
+      const provider = String(options.parseProvider || meta?.parseProvider || U.getPref("parseProvider", "mineru"));
       const key = `${documentID}:${fingerprint(layout)}:${provider}`;
       if (this.pending.has(key)) return this.pending.get(key);
       const task = this.collect(documentID, layout, signal, emit, { parseProvider: provider }).finally(() => this.pending.delete(key));
@@ -519,24 +635,31 @@
         && (cached.parseRevisionID || "") === parseRevisionID && Array.isArray(cached.images);
       const canPack = Boolean(Zotero.getMainWindow?.()?.Image);
       const provider = options.parseProvider || "mineru";
+      const providerModel = provider === "paddle" ? "PP-OCRv6" : "mineru-pipeline";
+      const supplement = validCache && cached.model !== providerModel && cached.images.some(image => !image.lines?.length);
       const mineruToken = provider === "mineru" ? this.mineru?.secrets?.getMinerUToken() : "";
-      const upgrade = provider === "mineru" && validCache && cached.model === "mineru-pipeline" && !cached.strategy && mineruToken && canPack;
-      if (validCache && !upgrade) return cached;
-      const figures = extract(layout), result = { version: 1, sourceFingerprint, parseRevisionID, model: provider === "paddle" ? "PP-OCRv6" : "mineru-pipeline", images: [] };
+      const missingOnly = validCache && ["text-crops-v1", "shared-text-crops-v2"].includes(cached.strategy)
+        && cached.images.some(image => !image.lines?.length);
+      const upgrade = provider === "mineru" && validCache && cached.model === "mineru-pipeline"
+        && (!cached.strategy || missingOnly) && mineruToken && canPack;
+      if (validCache && !upgrade && !supplement) return cached;
+      const figures = extract(layout), result = { version: 1, sourceFingerprint, parseRevisionID, model: providerModel, images: [] };
       if (!figures.length) return result;
       const token = provider === "paddle" ? this.paddle?.secrets?.getPaddleToken() : "";
-      if (!token && !mineruToken) { emit?.({ type: "log", message: `当前解析服务${provider === "paddle" ? " Paddle" : " MinerU"}未配置令牌，图片文字保持原文。` }); return result; }
+      if (!token && !mineruToken) { emit?.({ type: "log", message: `当前解析服务${provider === "paddle" ? " Paddle" : " MinerU"}未配置令牌，图片文字保持原文。` }); return validCache ? cached : result; }
       const assets = await this.storage.readJSON(this.storage.path(documentID, "asset-map.json"), {});
       if (!token) {
-        try { result.images = await this.collectMinerUFigures(documentID, figures, assets, validCache ? cached : null, mineruToken, signal, emit); }
+        try { result.images = await this.collectMinerUFigures(documentID, figures, assets, validCache ? cached : null, mineruToken, signal, emit, missingOnly || supplement); }
         catch (error) { U.throwIfAborted(signal); if (error.cancelled || !validCache) throw error; return cached; }
         if (canPack) result.strategy = MINERU_IMAGE_STRATEGY;
       }
-      const batchSize = 20;
-      for (let offset = 0; token && offset < figures.length; offset += batchSize) {
+      if (token) {
         U.throwIfAborted(signal);
         const pdf = await global.PDFLib.PDFDocument.create(), batch = [], inputs = [];
-        for (const figure of figures.slice(offset, offset + batchSize)) {
+        for (const figure of figures) {
+          U.throwIfAborted(signal);
+          const previous = supplement && cached.images.find(image => image.id === figure.id && JSON.stringify(image.bbox) === JSON.stringify(figure.bbox));
+          if (previous?.lines?.length) { result.images.push(previous);continue; }
           const relative = String(assets[figure.asset] || figure.asset).replace(/\\/g, "/");
           if (/^(?:[a-z]+:|\/)/i.test(relative) || relative.split("/").includes("..") || !/\.(?:png|jpe?g)$/i.test(relative)) continue;
           const bytes = global.Uint8Array.from(await this.storage.readBytes(this.storage.path(documentID, ...relative.split("/"))));
@@ -546,9 +669,13 @@
           const image = png ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
           inputs.push({ image, width: image.width, height: image.height });batch.push(figure);
         }
-        if (!batch.length) continue;
-        const sheets = planPaddleImageSheets(inputs);
-        if (!sheets.length) continue;
+        const sheets = [];
+        // 保留原页内布局，只合并云任务，避免为减少请求额外改变识别结果。
+        for (let start = 0; start < inputs.length; start += 20) {
+          sheets.push(...planPaddleImageSheets(inputs.slice(start, start + 20)).map(sheet => ({
+            ...sheet, cells: sheet.cells.map(cell => ({ ...cell, input: cell.input + start }))
+          })));
+        }
         for (const sheet of sheets) {
           const page = pdf.addPage(sheet.size.map(value => value * .5));
           for (const { input, box } of sheet.cells) {
@@ -557,25 +684,30 @@
               width: (box[2] - box[0]) * .5, height: (box[3] - box[1]) * .5 });
           }
         }
-        emit?.({ type: "status", message: `正在识别图片文字 ${offset + 1}–${Math.min(figures.length, offset + batchSize)}/${figures.length}，本批 ${sheets.length} 页` });
-        const task = await this.paddle.submit(await pdf.save(), "PP-OCRv6", token, signal,
-          { useDocOrientationClassify: false, useDocUnwarping: false, useTextlineOrientation: false,
-            textDetLimitSideLen: 2000, textDetLimitType: "max", visualize: false });
-        const url = await this.paddle.poll(task, token, async () => {}, { timeoutSeconds: 600 }, emit, signal);
-        const bytes = await L.HTTP.requestBytes(url, { timeout: 90000, maxBytes: 64 * 1024 * 1024, signal });
-        const rows = new TextDecoder().decode(bytes).split(/\r?\n/).filter(line => line.trim()).flatMap(line => {
-          const response = JSON.parse(line);
-          if (!Array.isArray(response.result?.ocrResults)) throw new Error("图片 OCR 返回结构不兼容");
-          return response.result.ocrResults.map((item, index) => ({ item, info: response.result.dataInfo?.pages?.[index] }));
-        });
-        if (rows.length !== sheets.length) throw new Error("图片 OCR 返回页数不完整");
         const recognized = batch.map(() => []);
-        rows.forEach((row, index) => {
-          for (const [input, lines] of mapPaddleSheetLines(linesFromOCR(row.item, row.info), sheets[index])) recognized[input].push(...lines);
-        });
+        const requests = sheets.length ? await this.paddleImageRequests(pdf, sheets) : [];
+        for (const [index, request] of requests.entries()) {
+          U.throwIfAborted(signal);
+          emit?.({ type: "status", message: `正在识别图片文字：${batch.length} 张图片，共 ${sheets.length} 页${requests.length > 1 ? `，第 ${index + 1}/${requests.length} 个任务` : ""}` });
+          const task = await this.paddle.submit(request.bytes, "PP-OCRv6", token, signal,
+            { useDocOrientationClassify: false, useDocUnwarping: false, useTextlineOrientation: false,
+              textDetLimitSideLen: 2000, textDetLimitType: "max", visualize: false });
+          const url = await this.paddle.poll(task, token, async () => {}, { timeoutSeconds: 600 }, imageOCRProgressEmitter(emit), signal);
+          const bytes = await L.HTTP.requestBytes(url, { timeout: 90000, maxBytes: 64 * 1024 * 1024, signal });
+          const rows = new TextDecoder().decode(bytes).split(/\r?\n/).filter(line => line.trim()).flatMap(line => {
+            const response = JSON.parse(line);
+            if (!Array.isArray(response.result?.ocrResults)) throw new Error("图片 OCR 返回结构不兼容");
+            return response.result.ocrResults.map((item, index) => ({ item, info: response.result.dataInfo?.pages?.[index] }));
+          });
+          if (rows.length !== request.sheets.length) throw new Error("图片 OCR 返回页数不完整");
+          rows.forEach((row, index) => {
+            for (const [input, lines] of mapPaddleSheetLines(linesFromOCR(row.item, row.info), request.sheets[index])) recognized[input].push(...lines);
+          });
+        }
         batch.forEach((figure, index) => result.images.push({ ...figure, lines: recognized[index] }));
       }
       if (token) result.strategy = "full-image-sheets-v1";
+      result.images.sort((a, b) => figures.findIndex(figure => figure.id === a.id) - figures.findIndex(figure => figure.id === b.id));
       U.throwIfAborted(signal);
       if (U.hashString(await this.storage.readText(this.storage.path(documentID, "layout.json"), "")) !== sourceFingerprint) return null;
       if (((await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "") !== parseRevisionID) return null;

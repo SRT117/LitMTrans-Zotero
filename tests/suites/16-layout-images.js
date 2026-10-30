@@ -46,6 +46,60 @@ module.exports = function (env) {
     assert.equal(I.linesFromOCR({ prunedResult: { rec_texts: ["Text"] } }, { width: 100, height: 100 }).length, 0);
   }
 
+  async function pageFurnitureSkipsOCRTranslationAndCachedOverlay() {
+    const body = { type: "image_body", bbox: [100, 200, 300, 350], image_path: "images/chart.png",
+      parser: { semanticRole: "image", translatable: false } };
+    const header = { type: "image", bbox: [390, 35, 550, 85], parser: { semanticRole: "header_image", translatable: false },
+      blocks: [{ type: "image_body", bbox: [390, 35, 550, 85], image_path: "images/logo.png", parser: { semanticRole: "header_image" } }] };
+    const footer = { type: "footer", bbox: [30, 750, 120, 780], blocks: [{ type: "image_body", bbox: [30, 750, 120, 780], image_path: "images/footer.png" }] };
+    const layout = { pages: [{ preproc_blocks: [header, body, footer] }] };
+    layout.rawText = JSON.stringify(layout.pages);
+    const sourceFingerprint = U.hashString(layout.rawText), before = JSON.stringify(layout);
+    assert.deepEqual(I.extract(layout).map(figure => figure.asset), ["images/chart.png"], "遵守页眉页脚分类；普通图片的 translatable:false 不应禁用图内翻译");
+    const ocr = { version: 1, sourceFingerprint, images: [
+      { id: "image:0:0.0", page: 0, bbox: header.bbox, lines: [lines[0]] },
+      { ...I.extract(layout)[0], lines: [lines[0]] }
+    ] };
+    context.DOMParser = DOMParser;
+    try {
+      const plan = I.requestPlan(ocr, layout);
+      assert.equal(plan.images.length, 1, "旧 OCR 缓存中的页眉也不能生成翻译请求");
+      const cache = I.cacheFromRecords(plan, { [plan.records[0].id]: JSON.stringify([[0, "图内文字"]]) }, sourceFingerprint, "简体中文");
+      const image = cache.images[0];
+      cache.images.push({ ...image, bbox: header.bbox });
+      const model = { sourceFingerprint, pages: [{ blocks: [
+        { type: "image", bbox: header.bbox, original: header, translatedImageLabels: [{ text: "旧标志译文" }] },
+        { type: "image_body", bbox: header.bbox, original: header.blocks[0] },
+        { type: "image_body", bbox: body.bbox, original: body }
+      ] }] };
+      const cacheBefore = JSON.stringify(cache), attached = I.attach(model, cache);
+      assert.equal(attached.pages[0].blocks[0].translatedImageLabels, undefined);
+      assert.equal(attached.pages[0].blocks[1].translatedImageLabels, undefined);
+      assert(attached.pages[0].blocks[2].translatedImageLabels?.length, "普通图表旧译文继续显示");
+      assert.equal(JSON.stringify(cache), cacheBefore, "筛选展示不能删除原缓存");
+      assert.equal(JSON.stringify(layout), before);
+      assert(model.pages[0].blocks[0].translatedImageLabels.length, "不能修改输入模型");
+      const { service, storage, documentID } = fixture();
+      const legacy = { ...model, pages: [{ blocks: model.pages[0].blocks.map(({ original, ...block }) => block),
+        restoration: { streams: [], absoluteBlocks: model.pages[0].blocks.map(({ original, ...block }) => block) } }] };
+      service.buildBaseModel = async () => legacy;
+      storage.getDocumentMeta = async () => ({ parseRevisionID: "", parseProvider: "paddle" });
+      await storage.writeText(storage.path(documentID, "layout.json"), JSON.stringify({ pdf_info: layout.pages }));
+      await storage.writeJSON(service.paths(documentID, "简体中文").images, cache);
+      const restored = await service.buildModel(documentID);
+      for (const blocks of [restored.pages[0].blocks, restored.pages[0].restoration.absoluteBlocks]) {
+        assert.equal(blocks[0].sourceOnly, true, "无原始分类的旧模型应复用原 PDF 底图");
+        assert.equal(blocks[1].sourceOnly, true);
+        assert.equal(blocks[0].translatedImageLabels, undefined);
+        assert.equal(blocks[1].translatedImageLabels, undefined);
+        assert(blocks[2].translatedImageLabels?.length);
+      }
+      const withoutCache = I.attach(legacy, null, "", layout);
+      assert.equal(withoutCache.pages[0].blocks[0].sourceOnly, true, "尚未生成图片译文时也应沿用原 PDF 底图");
+      assert.equal(legacy.pages[0].blocks[0].sourceOnly, undefined, "兼容处理不得改写旧模型");
+    } finally { delete context.DOMParser; }
+  }
+
   async function sharedBatchCacheAndImageOnlyCompletion() {
     context.DOMParser = DOMParser;
     try {
@@ -243,7 +297,57 @@ module.exports = function (env) {
     } finally { delete context.DOMParser; }
   }
 
-  async function imageOCRUsesOnlyTheDocumentParser() {
+  async function paddleImagesShareOneMultipageRequest() {
+    const { storage, documentID, service } = fixture();
+    storage.getDocumentMeta = async () => ({ parseProvider: "paddle" });
+    const raw = JSON.stringify({ pdf_info: [{ page_size: [600, 800], preproc_blocks: Array.from({ length: 62 }, (_, i) => ({
+      type: "image_body", bbox: [10, 10 + i, 100, 100 + i], image_path: `images/${i}.jpg`
+    })) }] });
+    storage.text.set(storage.path(documentID, "layout.json"), raw);
+    storage.readBytes = async () => new Uint8Array([255, 216, 255]);
+    const originalPDF = context.PDFLib, originalRequest = context.LitMTrans.HTTP.requestBytes;
+    let requests = 0, pages = 0;
+    context.PDFLib = { PDFDocument: { create: async () => ({
+      embedJpg: async () => ({ width: 1000, height: 1000 }), addPage: () => { pages++;return { drawImage() {} }; },
+      save: async () => new Uint8Array([1])
+    }) } };
+    context.LitMTrans.HTTP.requestBytes = async () => new TextEncoder().encode(JSON.stringify({ result: {
+      ocrResults: Array.from({ length: 62 }, (_, i) => ({ prunedResult: { rec_texts: [`Label ${i}`], rec_scores: [1],
+        rec_polys: [[[42, 42], [142, 42], [142, 62], [42, 62]]] } })),
+      dataInfo: { pages: Array.from({ length: 62 }, () => ({ width: 1064, height: 1064 })) }
+    } }));
+    const paddle = { secrets: { getPaddleToken: () => "fixture" }, submit: async () => { requests++;return {}; }, poll: async () => "https://example.test/result" };
+    try {
+      const ocr = new context.LitMTrans.ImageTranslationService(storage, paddle);
+      const result = await ocr.ensure(documentID, await service.loadLayout(documentID));
+      assert.equal(requests, 1, "超过20张图片的多页PDF仍只提交一次");
+      assert.equal(pages, 62);
+      for (let i = 0; i < 62; i++) assert.equal(result.images[i].lines[0].text, `Label ${i}`, "返回页必须映射到对应原图");
+      await ocr.ensure(documentID, await service.loadLayout(documentID));assert.equal(requests, 1);
+    } finally { context.PDFLib = originalPDF;context.LitMTrans.HTTP.requestBytes = originalRequest; }
+  }
+
+  async function paddleRequestSplitsOnlyAtDocumentLimits() {
+    const originalPDF = context.PDFLib, P = require("pdf-lib");
+    context.PDFLib = { ...P, PDFDocument: { create: async () => {
+      const doc = await P.PDFDocument.create(), copy = doc.copyPages.bind(doc);
+      doc.copyPages = (source, indices) => copy(source, Array.from(indices));
+      return doc;
+    } } };
+    try {
+      const pdf = await P.PDFDocument.create();
+      for (let i = 0; i < 5; i++) pdf.addPage([100, 100]);
+      const sheets = Array.from({ length: 5 }, (_, i) => ({ id: i }));
+      const ocr = new context.LitMTrans.ImageTranslationService(new MemoryStorage(), null);
+      const requests = await ocr.paddleImageRequests(pdf, sheets, 200 * 1024 * 1024, 2);
+      assert.deepEqual(requests.flatMap(r => r.sheets.map(s => s.id)), [0, 1, 2, 3, 4]);
+      for (const request of requests) assert((await P.PDFDocument.load(request.bytes)).getPageCount() <= 2);
+      const one = await P.PDFDocument.create();one.addPage([100, 100]);
+      await assert.rejects(ocr.paddleImageRequests(one, [{}], 1), /上传限制/);
+    } finally { context.PDFLib = originalPDF; }
+  }
+
+  async function imageOCRUsesTheSelectedParserWithoutCrossServiceFallback() {
     const oldPDF = context.PDFLib, request = context.LitMTrans.HTTP.requestBytes;
     context.PDFLib = { PDFDocument: { create: async () => ({ embedJpg: async () => ({ width: 100, height: 100 }),
       addPage: () => ({ drawImage() {} }), save: async () => new Uint8Array([1]) }) } };
@@ -261,13 +365,13 @@ module.exports = function (env) {
         const mineru = { secrets: { getMinerUToken: () => { muReads++;return mineruToken; } } };
         const ocr = new context.LitMTrans.ImageTranslationService(storage, paddle, mineru);
         ocr.collectMinerUFigures = async () => { mu++;return [{ ...I.extract(layout)[0], lines }]; };
-        const hint = provider === "paddle" ? "mineru" : "paddle", selected = provider || hint;
+        const hint = provider === "paddle" ? "mineru" : "paddle", selected = hint;
         const result = await ocr.ensure(documentID, layout, null, null, { parseProvider: hint });
         assert.equal(pp, selected === "paddle" && Boolean(paddleToken) ? 1 : 0);
         assert.equal(mu, selected === "mineru" && Boolean(mineruToken) ? 1 : 0);
         assert.equal(selected === "mineru" ? ppReads : muReads, 0, "不能读取或调用另一家已保存的令牌");
         assert.equal(result.model, selected === "paddle" ? "PP-OCRv6" : "mineru-pipeline");
-        if (!paddleToken || !mineruToken) assert.equal(result.images.length, 0, "所选服务缺少令牌时保留原图，不跨服务兜底");
+        if (!(selected === "paddle" ? paddleToken : mineruToken)) assert.equal(result.images.length, 0, "所选服务缺少令牌时保留原图，不跨服务兜底");
         const cache = { version: 1, sourceFingerprint, parseRevisionID: "", model: "PP-OCRv6", images: [{ ...I.extract(layout)[0], lines }] };
         await storage.writeJSON(storage.path(documentID, "image-ocr.v1.json"), cache);
         const before = pp + mu;
@@ -275,6 +379,44 @@ module.exports = function (env) {
         assert.equal(pp + mu, before, "已有 OCR 缓存不因分离服务而强制重识别");
       }
     } finally { context.PDFLib = oldPDF;context.LitMTrans.HTTP.requestBytes = request; }
+  }
+
+  async function switchingOCRServiceSupplementsOnlyEmptyImages() {
+    const { storage, documentID, service, settings } = fixture();
+    const raw = JSON.parse(await storage.readText(storage.path(documentID, "layout.json")));
+    raw.pdf_info[0].preproc_blocks.push({ type: "image_body", bbox: [40, 450, 300, 600], image_path: "images/empty.jpg" });
+    await storage.writeText(storage.path(documentID, "layout.json"), JSON.stringify(raw));
+    const layout = await service.loadLayout(documentID), figures = I.extract(layout);
+    storage.getDocumentMeta = async () => ({ parseProvider: "mineru", parseRevisionID: "" });
+    storage.readBytes = async () => new Uint8Array([255, 216, 255]);
+    const prior = { version: 1, sourceFingerprint: U.hashString(layout.rawText), parseRevisionID: "", model: "mineru-pipeline", strategy: "shared-gray-crops-v3",
+      images: [{ ...figures[0], lines }, { ...figures[1], lines: [] }] };
+    const cachePath = storage.path(documentID, "image-ocr.v1.json");
+    await storage.writeJSON(cachePath, prior);
+    const originalPDF = context.PDFLib, originalRequest = context.LitMTrans.HTTP.requestBytes;
+    let requests = 0, embedded = 0, token = "fixture";
+    context.PDFLib = { PDFDocument: { create: async () => ({ embedJpg: async () => { embedded++;return { width: 100, height: 100 }; },
+      addPage: () => ({ drawImage() {} }), save: async () => new Uint8Array([1]) }) } };
+    context.LitMTrans.HTTP.requestBytes = async () => new TextEncoder().encode(JSON.stringify({ result: {
+      ocrResults: [{ prunedResult: { rec_texts: [], rec_scores: [], rec_polys: [] } }], dataInfo: { pages: [{ width: 164, height: 164 }] }
+    } }));
+    const paddle = { secrets: { getPaddleToken: () => token }, submit: async () => { requests++;return {}; }, poll: async () => "https://example.test/result" };
+    const ocr = new context.LitMTrans.ImageTranslationService(storage, paddle, { secrets: { getMinerUToken: () => assert.fail("不能读取旧解析服务的令牌") } });
+    try {
+      settings.parseProvider = "paddle";
+      assert.equal((await service.imageTranslationInput(documentID)).needsOCR, true);
+      token = "";
+      assert.deepEqual(await ocr.ensure(documentID, layout, null, null, { parseProvider: "paddle" }), prior, "没有所选令牌时保留旧结果");
+      token = "fixture";
+      const result = await ocr.ensure(documentID, layout, null, null, { parseProvider: "paddle" });
+      assert.equal(requests, 1);assert.equal(embedded, 1, "只提交旧结果为空的图片");
+      assert.equal(result.model, "PP-OCRv6");
+      assert.deepEqual(result.images[0], prior.images[0], "已成功的 OCR 行和顺序必须完整保留");
+      assert.equal(result.images[1].id, figures[1].id);
+      await ocr.ensure(documentID, layout, null, null, { parseProvider: "paddle" });
+      assert.equal(requests, 1, "所选服务仍返回空结果也不重复请求");
+      assert.equal((await service.imageTranslationInput(documentID)).needsOCR, false);
+    } finally { context.PDFLib = originalPDF;context.LitMTrans.HTTP.requestBytes = originalRequest; }
   }
 
   async function mineruOnlyOCRAndTemporaryCleanup() {
@@ -358,12 +500,40 @@ module.exports = function (env) {
     assert.equal(I.imageTextCandidates(pixels, 4000, 3000).boxes.length, 0);
   }
 
+  async function imageOCRPackingPreservesOriginalStrokes() {
+    const pixels = new Uint8ClampedArray(400 * 300 * 4).fill(255);
+    const rect = (left, top, w, h) => {
+      for (let y = top; y < top + h; y++) for (let x = left; x < left + w; x++) pixels.set([40, 80, 120, 255], (y * 400 + x) * 4);
+    };
+    rect(10, 20, 80, 100);
+    for (let x = 160; x < 240; x += 10) rect(x, 50, 5, 14);
+    const before = new Uint8ClampedArray(pixels), oldWindow = context.Zotero.getMainWindow;
+    let written;
+    context.Zotero.getMainWindow = () => ({ Image: class {
+      constructor() { this.naturalWidth = 400;this.naturalHeight = 300; }
+      set src(value) { if (value) this.onload?.(); }
+    }, document: { createElementNS: () => ({ width: 0, height: 0,
+      getContext: () => ({ fillRect() {}, drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray(pixels) }),
+        putImageData: image => { written = image.data; } }), toDataURL: () => "data:image/png;base64,AA=="
+    }) } });
+    try {
+      const ocr = new context.LitMTrans.ImageTranslationService(new MemoryStorage(), null);
+      const result = await ocr.packImageText(new Uint8Array([1]), true);
+      assert(result.mapping.length > 0);
+      assert.equal(I.imageTextCandidates(before, 400, 300).mask[30 * 400 + 20], 0);
+      assert.equal(written[(30 * 400 + 20) * 4], 73, "被定位掩膜剔除的连通笔画仍须保留在灰度识别副本中");
+      assert.equal(written[(50 * 400 + 160) * 4], 73);
+      assert.deepEqual(pixels, before, "原始图片像素不可修改");
+    } finally { context.Zotero.getMainWindow = oldWindow; }
+  }
+
   function sharedSheetsKeepImageOwnershipAndBudget() {
     const inputs = Array.from({ length: 12 }, () => ({ packing: { sourceSize: [500, 300], mapping: [
       { source: [10, 20, 130, 40], packed: [20, 20, 140, 40] }, { source: [10, 80, 110, 100], packed: [20, 70, 120, 90] }
     ] } }));
     const sheets = I.planImageOCRSheets(inputs);
     assert.equal(sheets.length, 1, "十二张图片的短标签共用一页，不上传十二张原图");
+    assert(sheets[0].size[0] <= 712 && sheets[0].size[1] <= 1000, "裁片原尺寸并排摆放，控制单页尺寸");
     assert.equal(sheets[0].cells.length, 24);
     for (let index = 0; index < inputs.length; index++) {
       const cells = sheets[0].cells.filter(cell => cell.input === index);
@@ -378,6 +548,10 @@ module.exports = function (env) {
     assert(large.length > 1);assert.equal(large.flatMap(sheet => sheet.cells).length, 200);
     for (const sheet of large) for (const cell of sheet.cells) {
       assert(cell.packed[2] <= sheet.size[0] && cell.packed[3] <= sheet.size[1]);
+      for (const other of sheet.cells) if (other !== cell) {
+        assert(Math.min(cell.packed[2], other.packed[2]) <= Math.max(cell.packed[0], other.packed[0])
+          || Math.min(cell.packed[3], other.packed[3]) <= Math.max(cell.packed[1], other.packed[1]), "共享页中的裁片不能重叠");
+      }
     }
   }
 
@@ -424,6 +598,54 @@ module.exports = function (env) {
     assert.equal(I.restoreImageLabel(pixels, width, height, [0, .35, .8, .68], [], "LABEL"), null, "透明背景不能填成不透明色块");
   }
 
+  function twoDimensionalRepairPreservesLocalBackground() {
+    const width = 240, height = 100;
+    const base = new Uint8ClampedArray(width * height * 4);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const glow = 35 * Math.exp(-((x - 100) ** 2 + (y - 50) ** 2) / 3000);
+      base.set([250, 250 - glow, 245 - glow, 255], (y * width + x) * 4);
+    }
+    const pixels = new Uint8ClampedArray(base);
+    const paint = (x0, y0, w, h) => {
+      for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) pixels.set([15, 15, 15, 255], (y * width + x) * 4);
+    };
+    for (const x of [70, 100, 130, 160]) paint(x, 40, 7, 20);
+    paint(60, 62, 125, 2);
+    const before = new Uint8ClampedArray(pixels);
+    const result = I.restoreImageLabel(pixels, width, height, [.2, .35, .85, .65], [], "LABEL");
+    assert(result && result.changed > 0);
+    let repaired = 0, worstError = 0;
+    for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
+      const gx = result.box[0] + x, gy = result.box[1] + y, src = (gy * width + gx) * 4, dst = (y * result.width + x) * 4;
+      if (gy >= 62 && gy < 64) {
+        assert.deepEqual([...result.pixels.slice(dst, dst + 4)], [...before.slice(src, src + 4)], "相邻引线必须保持原像素");
+      } else if (before[src] === 15 && result.pixels[dst] > 200) {
+        repaired++;
+        for (let c = 0; c < 3; c++) worstError = Math.max(worstError, Math.abs(result.pixels[dst + c] - base[src + c]));
+      } else if (before[src] !== 15) {
+        assert.deepEqual([...result.pixels.slice(dst, dst + 4)], [...before.slice(src, src + 4)], "未遮挡的二维渐变不得重绘");
+      }
+    }
+    assert(repaired > 100, "必须确实修复文字笔画");
+    assert(worstError <= 4, `曲面背景补色误差过大：${worstError}`);
+    assert.deepEqual(pixels, before);
+  }
+
+  function twoDimensionalRepairDoesNotSpreadNeighboringInk() {
+    const width = 240, height = 100, pixels = new Uint8ClampedArray(width * height * 4).fill(255);
+    const paint = (x0, y0, w, h) => {
+      for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) pixels.set([20, 20, 20, 255], (y * width + x) * 4);
+    };
+    paint(90, 20, 15, 6);
+    for (let x = 70; x < 190; x += 18) paint(x, 36, 8, 18);
+    const result = I.restoreImageLabel(pixels, width, height, [.2, .3, .9, .6], [], "Ultrasonic anemometer");
+    assert(result && result.changed > 0);
+    for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
+      const source = ((result.box[1] + y) * width + result.box[0] + x) * 4, at = (y * result.width + x) * 4;
+      if (pixels[source] === 255) assert.equal(result.pixels[at], 255, "相邻文字不可扩散成黑条");
+    }
+  }
+
   async function packedMinerUBatchingCacheUpgradeAndFailure() {
     const { storage, documentID, service } = fixture();
     const layout = await service.loadLayout(documentID), oldPDF = context.PDFLib, oldWindow = context.Zotero.getMainWindow;
@@ -438,7 +660,7 @@ module.exports = function (env) {
     const ocr = new context.LitMTrans.ImageTranslationService(storage, paddle, mineru);
     ocr.packImageText = async () => ({ bytes: new Uint8Array([1]), size: [100, 100], sourceSize: [100, 100],
       mapping: [{ source: [50, 50, 90, 70], packed: [10, 10, 50, 30] }] });
-    ocr.recognizeMinerU = async (_bytes, count) => { requests++;assert.equal(count, 1);return [[{ text: "New label", bbox: [24 / 1400, 24 / 68, 64 / 1400, 44 / 68], score: 1 }]]; };
+    ocr.recognizeMinerU = async (_bytes, count) => { requests++;assert.equal(count, 1);return [[{ text: "New label", bbox: [24 / 200, 24 / 68, 64 / 200, 44 / 68], score: 1 }]]; };
     const cached = { version: 1, model: "mineru-pipeline", sourceFingerprint: U.hashString(layout.rawText), parseRevisionID: "",
       images: [{ ...I.extract(layout)[0], lines: [original] }] };
     const cachePath = storage.path(documentID, "image-ocr.v1.json");
@@ -446,12 +668,19 @@ module.exports = function (env) {
       await storage.writeJSON(cachePath, cached);
       const before = await storage.readText(storage.path(documentID, "layout.json"));
       const result = await ocr.ensure(documentID, layout);
-      assert.equal(result.strategy, "shared-text-crops-v2");assert.equal(result.images[0].lines.length, 2);
+      assert.equal(result.strategy, "shared-gray-crops-v3");assert.equal(result.images[0].lines.length, 2);
       assert.equal(result.images[0].lines[0].text, "Old label");
       assert.equal(requests, 1);assert.equal(pagesAdded, 1, "临时 PDF 只放文字裁片");
       await ocr.ensure(documentID, layout);assert.equal(requests, 1);
       await storage.writeJSON(cachePath, { ...cached, strategy: "text-crops-v1" });
       await ocr.ensure(documentID, layout);assert.equal(requests, 1, "旧裁片识别缓存不因拼页方式改变而重新请求");
+      await storage.writeJSON(cachePath, { ...cached, strategy: "shared-text-crops-v2", images: [{ ...cached.images[0], lines: [] }] });
+      ocr.recognizeMinerU = async () => { requests++;return [[]]; };
+      const retried = await ocr.ensure(documentID, layout);
+      assert.equal(retried.strategy, "shared-gray-crops-v3");
+      assert.equal(retried.images[0].lines.length, 0);
+      assert.equal(requests, 2, "旧掩膜结果中无文字的图片可补识别一次");
+      await ocr.ensure(documentID, layout);assert.equal(requests, 2, "新版空结果也不能反复消耗 OCR 额度");
       assert.equal(await storage.readText(storage.path(documentID, "layout.json")), before);
       await storage.writeJSON(cachePath, cached);
       ocr.recognizeMinerU = async () => { throw new Error("service unavailable"); };
@@ -593,12 +822,15 @@ module.exports = function (env) {
     } finally { delete context.DOMParser; }
   }
 
-  return { OCRCoordinatesAndUncertainInput, sharedBatchCacheAndImageOnlyCompletion, missingImageResponseRetainsBodyAndPriorImageCache,
+  return { OCRCoordinatesAndUncertainInput, pageFurnitureSkipsOCRTranslationAndCachedOverlay, sharedBatchCacheAndImageOnlyCompletion, missingImageResponseRetainsBodyAndPriorImageCache,
+    paddleImagesShareOneMultipageRequest, paddleRequestSplitsOnlyAtDocumentLimits,
     taskLanguageKeepsMediaCacheAligned,
     imagePreferenceSkipsOCRAndSupplementsOnlyImages,
-    imageOCRUsesOnlyTheDocumentParser,
-    packedMinerUCoordinatesAndOverlapProtection, imageTextCandidatesExcludeLargeGraphics, packedMinerUBatchingCacheUpgradeAndFailure,
+    imageOCRUsesTheSelectedParserWithoutCrossServiceFallback,
+    switchingOCRServiceSupplementsOnlyEmptyImages,
+    packedMinerUCoordinatesAndOverlapProtection, imageTextCandidatesExcludeLargeGraphics, imageOCRPackingPreservesOriginalStrokes, packedMinerUBatchingCacheUpgradeAndFailure,
     sharedSheetsKeepImageOwnershipAndBudget, strokeRestorationPreservesLinesColorsAndProtectedValues,
+    twoDimensionalRepairPreservesLocalBackground, twoDimensionalRepairDoesNotSpreadNeighboringInk,
     paddleWholeImagesSharePagesWithoutShrinking,
     shortIDsDenseIndicesAndManualTaskBinding, OCRSniffsImageContentAndReusesSidecar, mineruOnlyOCRAndTemporaryCleanup, imageLabelsFitActualFontAndRejectMixedBackground,
     publicationRestoresOldFilesOnDiskFailure, translationChainsStageMediaWithoutExtraRequests };

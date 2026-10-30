@@ -10499,7 +10499,7 @@
       // Parsing is an implementation prerequisite, not a separate reading
       // action. The visible control remains one unambiguous "翻译" button.
       if (!state.data?.parsed?.markdown) {
-        const parsed = await runAction("parse", {}, { success: "解析完成，开始翻译" });
+        const parsed = await runAction("parse");
         if (!parsed) return;
       }
       if (state.mode === "layout") {

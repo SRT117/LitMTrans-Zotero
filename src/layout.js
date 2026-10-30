@@ -2247,10 +2247,18 @@
       const model = await this.buildBaseModel(documentID, translations, formulaReplacements, knownRevision, signal, emit);
       if (!LitMTrans.LayoutTables) return model;
       const paths = this.paths(documentID, knownRevision?.targetLanguage || this.llm.getSettings().targetLanguage);
-      const cache = await this.storage.readJSON(paths.tables, null);
-      const imageCache = await this.storage.readJSON(paths.images, null);
-      const parseRevisionID = imageCache ? (await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "" : "";
-      return LitMTrans.LayoutImages.attach(LitMTrans.LayoutTables.attach(model, cache), imageCache, parseRevisionID);
+      const [cache, imageCache, documentMeta] = await Promise.all([
+        this.storage.readJSON(paths.tables, null),
+        this.storage.readJSON(paths.images, null),
+        this.storage.getDocumentMeta?.(documentID)
+      ]);
+      let sourceLayout = null;
+      if (documentMeta?.parseProvider === "paddle") {
+        const rawLayout = await this.storage.readText(this.storage.path(documentID, "layout.json"), "");
+        try { sourceLayout = { pages: JSON.parse(rawLayout).pdf_info }; } catch (_) {}
+      }
+      const parseRevisionID = documentMeta?.parseRevisionID || "";
+      return LitMTrans.LayoutImages.attach(LitMTrans.LayoutTables.attach(model, cache), imageCache, parseRevisionID, sourceLayout);
     }
 
     async buildBaseModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null, emit = null) {
@@ -3581,7 +3589,11 @@
       const missing = plan.records.filter(record => !cached[record.id]);
       const total = LitMTrans.LayoutImages.extract(layout).length;
       const revision = (await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "";
-      const needsOCR = !ocr || ocr.version !== 1 || !Array.isArray(ocr.images) || ocr.sourceFingerprint !== fingerprint || (ocr.parseRevisionID || "") !== revision;
+      const needsOCR = !ocr || ocr.version !== 1 || !Array.isArray(ocr.images) || ocr.sourceFingerprint !== fingerprint || (ocr.parseRevisionID || "") !== revision
+        || (settings.parseProvider && ocr.model !== (settings.parseProvider === "paddle" ? "PP-OCRv6" : "mineru-pipeline")
+          && ocr.images.some(image => !image.lines?.length))
+        || (ocr.model === "mineru-pipeline" && ["text-crops-v1", "shared-text-crops-v2"].includes(ocr.strategy)
+          && ocr.images.some(image => !image.lines?.length));
       const markdown = options.includeMarkdown === false ? "" : await this.storage.readText(this.storage.path(documentID, "full.cleaned.md"), "");
       return { settings, layout, fingerprint, plan, cached, missing, markdown, total, needsOCR };
     }
