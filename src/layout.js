@@ -214,7 +214,8 @@
 
   const TOC_ENTRY_RE = /^\s*(\d+(?:\.\d+)*\.?)\s+(.+?)\s*(?:\.{2,}|…{2,}|·{2,}|-{3,})\s*(\d+|[ivxlcdm]+)\s*$/i;
 
-  function parseTocLogicalLines(logicalLines) {
+  function parseTocLogicalLines(logicalLines, contentsContext = false) {
+    if (typeof P.parseTocLogicalLines === "function") return P.parseTocLogicalLines(logicalLines, contentsContext);
     const entries = [];
     let nonblank = 0;
     for (const rawLine of logicalLines || []) {
@@ -245,8 +246,8 @@
     return parseTocLogicalLines(layoutLogicalLines(lines));
   }
 
-  function parseTocTextRows(text) {
-    return parseTocLogicalLines(String(text || "").replace(/\r\n?/g, "\n").split("\n"));
+  function parseTocTextRows(text, contentsContext = false) {
+    return parseTocLogicalLines(String(text || "").replace(/\r\n?/g, "\n").split("\n"), contentsContext);
   }
 
 
@@ -286,6 +287,21 @@
     }).join("");
   }
 
+  function symbolGlossaryRowColumns(line) {
+    const spans = (Array.isArray(line?.spans) ? line.spans : []).filter(span => span && spanText(span).trim());
+    const first = spans[0];
+    const type = String(first?.type || "").toLowerCase();
+    const symbol = spanText(first).trim();
+    const symbolBox = validBBox(first?.bbox);
+    const formula = /(?:equation|formula)/.test(type) && symbol.length <= 64;
+    const plainSymbol = type === "text" && /^[A-Za-z\u0391-\u03c9]$/.test(symbol);
+    if (!symbolBox || !(formula || plainSymbol)) return null;
+    const definition = spans.slice(1).find(span => String(span.type || "").toLowerCase() === "text" && validBBox(span.bbox));
+    const definitionBox = validBBox(definition?.bbox);
+    if (!definitionBox || definitionBox[0] - symbolBox[0] < 16 || definitionBox[0] < symbolBox[2]) return null;
+    return [symbolBox[0], definitionBox[0]];
+  }
+
   function isSymbolGlossaryBlock(block) {
     if (!block || String(block.type || "").toLowerCase() !== "text") return false;
     if (block._layout_symbol_glossary === true) return true;
@@ -297,14 +313,8 @@
       const spans = (Array.isArray(line.spans) ? line.spans : []).filter(span => span && typeof span === "object" && spanText(span).trim());
       if (!spans.length) continue;
       nonempty++;
-      const first = spans[0];
-      const type = String(first.type || "").toLowerCase();
-      const symbolBox = validBBox(first.bbox);
-      if (!/(?:equation|formula)/.test(type) || !symbolBox || spanText(first).trim().length > 64) continue;
-      const definition = spans.slice(1).find(span => String(span.type || "").toLowerCase() === "text" && validBBox(span.bbox));
-      const definitionBox = validBBox(definition?.bbox);
-      if (!definitionBox || definitionBox[0] - symbolBox[0] < 16) continue;
-      matched.push([symbolBox[0], definitionBox[0]]);
+      const columns = symbolGlossaryRowColumns(line);
+      if (columns) matched.push(columns);
     }
     if (nonempty < 8 || matched.length * 5 < nonempty * 4) return false;
     const symbolLeft = matched.map(row => row[0]);
@@ -360,19 +370,28 @@
 
   function symbolGlossaryParagraphs(item) {
     if (!item?.symbolGlossary || !String(item.translatedText || "").trim()) return [];
-    const translatedRows = String(item.translatedText).split(/\r?\n\s*\r?\n+/).map(row => row.trim()).filter(Boolean);
+    const translatedRows = String(item.translatedText).split(/\r?\n+/).map(row => row.trim()).filter(Boolean);
     if (translatedRows.length < 2) return [];
     const sourceHTMLRows = String(item.html || "").split(/<br\s*\/?\s*>/i).map(row => row.trim()).filter(Boolean);
     const sourceTextRows = String(item.text || "").split(/\r?\n/).map(row => row.trim()).filter(Boolean);
     return translatedRows.map((translatedText, index) => ({
       parts: [{
         ...item,
-        html: sourceHTMLRows[index] || "",
-        text: sourceTextRows[index] || "",
+        html: item.sourceRows?.[index]?.html ?? sourceHTMLRows[index] ?? "",
+        text: item.sourceRows?.[index]?.text ?? sourceTextRows[index] ?? "",
         translatedText
       }],
       indent: 0
     }));
+  }
+
+  function symbolGlossarySourceRows(block) {
+    const rows = [];
+    for (const line of block.lines || []) {
+      if (symbolGlossaryRowColumns(line) || !rows.length) rows.push([]);
+      rows[rows.length - 1].push(line);
+    }
+    return rows.map(lines => ({ html: layoutLinesToHTML(lines), text: lines.map(lineText).join(" ") }));
   }
 
   function normalizeCompareText(text) {
@@ -1492,6 +1511,7 @@
         symbolGlossary,
         paragraphs: symbolGlossaryParagraphs({
           symbolGlossary,
+          sourceRows: symbolGlossary ? symbolGlossarySourceRows(block) : null,
           html,
           text,
           translatedText: String(record?.translatedText || "")
@@ -2307,6 +2327,8 @@
             cached &&
             cached.version === 13 &&
             cached.keywordLineBreaksVersion === 1 &&
+            cached.symbolGlossaryVersion === 1 &&
+            cached.tocRulesVersion === 1 &&
             String(cached.geometryHash || "") === geometryHash &&
             cached.translationsHash === translationsHash &&
             currentFingerprint &&
@@ -2555,6 +2577,8 @@
         if (!recoveredSourceLines) await this.storage.writeJSON(geometry || preserveCompiledModel ? upgradedCompiledPath : compiledPath, {
           // 第 13 版在排版迭代前补回页眉页脚，旧缓存原样保留。
           version: 13,
+          symbolGlossaryVersion: 1,
+          tocRulesVersion: 1,
           keywordLineBreaksVersion: 1,
           sourceFingerprint,
           assetMapHash,

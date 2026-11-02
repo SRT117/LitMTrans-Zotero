@@ -1542,6 +1542,9 @@
     return equation.body;
   }
 
+  // 默认按内容类型保留换行；仅实验时开启模型换行全量保留。
+  const LAYOUT_PRESERVE_MODEL_LINE_BREAKS = false;
+
   function renderLayoutTranslatedText(text, preserveLineBreaks = false) {
     // Layout translations are stored as plain text blocks.  Models can retain
     // TeX but omit its delimiters (for example `\\sigma _ { t }`), which
@@ -1559,6 +1562,9 @@
     const repaired = Markdown.normalizeBareTeXFragments
       ? Markdown.normalizeBareTeXFragments(normalized)
       : normalized;
+    if (LAYOUT_PRESERVE_MODEL_LINE_BREAKS) {
+      return Markdown.renderInline(repaired, { resolveImage: imageResolver, preserveLineBreaks: true });
+    }
     return Markdown.renderInline(preserveLineBreaks ? repaired.replace(/\r\n?|\n/g, "<br />") : repaired, { resolveImage: imageResolver });
   }
 
@@ -1761,7 +1767,7 @@
       .filter(Boolean)
       .join("\n");
     const tocRows = useTranslation
-      ? (Layout?.parseTocTextRows?.(translatedTocText) || null)
+      ? (Layout?.parseTocTextRows?.(translatedTocText, sourceTocRows.length > 0) || null)
       : (sourceTocRows.length ? sourceTocRows : null);
     const isToc = Boolean(sourceTocRows.length && tocRows?.length);
     if (isToc) node.classList.add("toc-stream");
@@ -1770,6 +1776,7 @@
     const paragraphCount = (stream.items || []).reduce((sum, item) =>
       sum + (Array.isArray(item.paragraphs) && item.paragraphs.length ? item.paragraphs.length : 1), 0);
     const originalLines = isToc || (stream.items || []).length > 1 || paragraphCount > 1 || originalLineCount > 1
+      || (useTranslation && LAYOUT_PRESERVE_MODEL_LINE_BREAKS && /[\r\n]/.test(translatedTocText))
       || hasStackedSourceTextLines(stream, page) ? "multi" : "single";
     const [left, , right] = stream.bbox || [0, 0, 0, 0];
     const symmetry = Math.abs(left - (page.width - right)) / Math.max(1, right - left) <= .07;
@@ -1848,7 +1855,8 @@
     const baseFont = Math.max(4, Number(block.fontSize || 8));
     // The fitter uses this metadata for multi-line absolute text; without it,
     // those blocks silently bypass collision and backoff iteration.
-    const originalLineCount = Math.max(1, Number(block.lineCount || 1));
+    const originalLineCount = Math.max(1, Number(block.lineCount || 1),
+      LAYOUT_PRESERVE_MODEL_LINE_BREAKS && /[\r\n]/.test(translatedText) ? 2 : 1);
     node.dataset.baseFont = String(baseFont);
     node.dataset.baseLineRatio = String(Math.max(1, Number(block.lineHeight || 1.12)));
     node.dataset.lineRatio = node.dataset.baseLineRatio;
@@ -2620,7 +2628,7 @@
   // The result is deterministic for one translated-layout identity, viewport
   // width and body-font choice, so retain the solved inline styles instead of
   // repeating the measurement whenever the user switches reading modes.
-  const LAYOUT_FIT_SNAPSHOT_VERSION = 23;
+  const LAYOUT_FIT_SNAPSHOT_VERSION = 25;
   const layoutFitSnapshots = new Map();
   function layoutFitSnapshotKey(pane = "translation") {
     const documentID = String(state.data?.item?.documentID || "");

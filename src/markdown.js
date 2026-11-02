@@ -901,6 +901,9 @@
       .replace(/(?<!_)_([^_\n]+)_(?!_)/g, "<em>$1</em>")
       .replace(/\\([\\`*{}\[\]()#+.!_>\-])/g, "$1");
 
+    // 数学与代码已保护，显式换行只作用于普通文本。
+    if (options.preserveLineBreaks) value = value.replace(/\r\n?|\n/g, "<br />");
+
     value = value.replace(/@@LitMTrans(\d{5})@@/g, (match, index) => placeholders[Number(index)] ?? match);
     return value;
   }

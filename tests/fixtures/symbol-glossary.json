@@ -1,0 +1,564 @@
+{
+  "block": {
+    "bbox": [
+      41,
+      489,
+      285,
+      710
+    ],
+    "type": "text",
+    "lines": [
+      {
+        "bbox": [
+          44,
+          489,
+          101,
+          500
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              489,
+              51,
+              498
+            ],
+            "type": "text",
+            "content": "P"
+          },
+          {
+            "bbox": [
+              65,
+              489,
+              101,
+              500
+            ],
+            "type": "text",
+            "content": "Pressure"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          500,
+          132,
+          511
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              500,
+              52,
+              510
+            ],
+            "type": "text",
+            "content": "V"
+          },
+          {
+            "bbox": [
+              66,
+              500,
+              132,
+              511
+            ],
+            "type": "text",
+            "content": "Relative volume"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          512,
+          129,
+          523
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              512,
+              52,
+              522
+            ],
+            "type": "text",
+            "content": "E"
+          },
+          {
+            "bbox": [
+              65,
+              512,
+              129,
+              523
+            ],
+            "type": "text",
+            "content": "Internal energy"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          43,
+          523,
+          120,
+          534
+        ],
+        "spans": [
+          {
+            "bbox": [
+              43,
+              523,
+              51,
+              534
+            ],
+            "type": "text",
+            "content": "l"
+          },
+          {
+            "bbox": [
+              66,
+              525,
+              120,
+              534
+            ],
+            "type": "text",
+            "content": "Reaction rate"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          536,
+          88,
+          547
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              537,
+              49,
+              545
+            ],
+            "type": "text",
+            "content": "t"
+          },
+          {
+            "bbox": [
+              66,
+              536,
+              88,
+              547
+            ],
+            "type": "text",
+            "content": "Time"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          43,
+          548,
+          121,
+          559
+        ],
+        "spans": [
+          {
+            "bbox": [
+              43,
+              549,
+              54,
+              559
+            ],
+            "type": "inline_equation",
+            "content": "\\rho _ { 0 }"
+          },
+          {
+            "bbox": [
+              66,
+              548,
+              121,
+              558
+            ],
+            "type": "text",
+            "content": "Initial density"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          43,
+          559,
+          131,
+          571
+        ],
+        "spans": [
+          {
+            "bbox": [
+              43,
+              561,
+              52,
+              571
+            ],
+            "type": "inline_equation",
+            "content": "\\rho"
+          },
+          {
+            "bbox": [
+              66,
+              559,
+              131,
+              570
+            ],
+            "type": "text",
+            "content": "Product density"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          43,
+          571,
+          215,
+          581
+        ],
+        "spans": [
+          {
+            "bbox": [
+              43,
+              571,
+              52,
+              580
+            ],
+            "type": "inline_equation",
+            "content": "d"
+          },
+          {
+            "bbox": [
+              66,
+              571,
+              215,
+              581
+            ],
+            "type": "text",
+            "content": "Charge diameter for donor explosive"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          582,
+          206,
+          593
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              582,
+              52,
+              592
+            ],
+            "type": "inline_equation",
+            "content": "H"
+          },
+          {
+            "bbox": [
+              66,
+              583,
+              206,
+              593
+            ],
+            "type": "text",
+            "content": "Charge height for donor explosive"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          594,
+          196,
+          605
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              595,
+              60,
+              605
+            ],
+            "type": "inline_equation",
+            "content": "P _ { \\mathtt { q u a } }"
+          },
+          {
+            "bbox": [
+              66,
+              594,
+              196,
+              605
+            ],
+            "type": "text",
+            "content": "Pressure at the quadruple point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          605,
+          183,
+          617
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              607,
+              60,
+              617
+            ],
+            "type": "inline_equation",
+            "content": "P _ { \\mathrm { d o u } }"
+          },
+          {
+            "bbox": [
+              66,
+              605,
+              183,
+              616
+            ],
+            "type": "text",
+            "content": "Pressure at the double point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          618,
+          193,
+          629
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              618,
+              59,
+              629
+            ],
+            "type": "inline_equation",
+            "content": "P _ { \\mathrm { i n d } }"
+          },
+          {
+            "bbox": [
+              66,
+              618,
+              193,
+              628
+            ],
+            "type": "text",
+            "content": "Pressure at the individual point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          629,
+          208,
+          641
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              631,
+              58,
+              641
+            ],
+            "type": "inline_equation",
+            "content": " { t _ { \\mathrm { q u a } } }"
+          },
+          {
+            "bbox": [
+              66,
+              629,
+              208,
+              640
+            ],
+            "type": "text",
+            "content": "Arrival time at the quadruple point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          641,
+          195,
+          653
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              643,
+              58,
+              653
+            ],
+            "type": "inline_equation",
+            "content": " { t _ { \\mathrm { d o u } } }"
+          },
+          {
+            "bbox": [
+              66,
+              641,
+              195,
+              651
+            ],
+            "type": "text",
+            "content": "Arrival time at the double point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          653,
+          207,
+          664
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              654,
+              57,
+              664
+            ],
+            "type": "inline_equation",
+            "content": "t _ { \\mathrm { i n d } }"
+          },
+          {
+            "bbox": [
+              66,
+              653,
+              207,
+              663
+            ],
+            "type": "text",
+            "content": "Arrival time at the individual point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          665,
+          268,
+          676
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              665,
+              63,
+              676
+            ],
+            "type": "inline_equation",
+            "content": "\\Delta \\mathfrak { t } _ { 1 , 2 }"
+          },
+          {
+            "bbox": [
+              67,
+              665,
+              268,
+              673
+            ],
+            "type": "text",
+            "content": "Arrival time interval between individual point and"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          66,
+          677,
+          120,
+          686
+        ],
+        "spans": [
+          {
+            "bbox": [
+              66,
+              677,
+              120,
+              686
+            ],
+            "type": "text",
+            "content": "double point"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          44,
+          688,
+          283,
+          699
+        ],
+        "spans": [
+          {
+            "bbox": [
+              44,
+              688,
+              63,
+              699
+            ],
+            "type": "inline_equation",
+            "content": "\\Delta \\mathfrak { t } _ { 2 , 4 }"
+          },
+          {
+            "bbox": [
+              66,
+              688,
+              283,
+              698
+            ],
+            "type": "text",
+            "content": "Arrival time interval between double point and quad-"
+          }
+        ]
+      },
+      {
+        "bbox": [
+          66,
+          699,
+          113,
+          710
+        ],
+        "spans": [
+          {
+            "bbox": [
+              66,
+              699,
+              113,
+              710
+            ],
+            "type": "text",
+            "content": "ruple point"
+          }
+        ]
+      }
+    ]
+  },
+  "translation": "P 压力\nV 相对体积\nE 内能\nl 反应率\nt 时间\n\\(\\rho _ { 0 }\\)初始密度\n\\(\\rho\\)产物密度\n\\(d\\)施主炸药药柱直径\n\\(H\\)施主炸药药柱高度\n\\(P _ { \\mathtt { q u a } }\\)四重点压力\n\\(P _ { \\mathrm { d o u } }\\)双重点压力\n\\(P _ { \\mathrm { i n d } }\\)单点压力\n\\({ t _ { \\mathrm { q u a } } }\\)四重点到达时间\n\\({ t _ { \\mathrm { d o u } } }\\)双重点到达时间\n\\(t _ { \\mathrm { i n d } }\\)单点到达时间\n\\(\\Delta \\mathfrak { t } _ { 1 , 2 }\\)单点与双重点之间的到达时间间隔\n\\(\\Delta \\mathfrak { t } _ { 2 , 4 }\\)双重点与四重点之间的到达时间间隔"
+}

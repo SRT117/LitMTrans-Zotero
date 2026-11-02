@@ -800,11 +800,11 @@ var LitMTransPort;
         return output;
     }
     LitMTransPort.layoutLogicalLines = layoutLogicalLines;
-    function parseTocRows(lines) {
+    function parseTocLogicalLines(logicalLines, contentsContext = false) {
         const entries = [];
         let nonblank = 0;
         const pattern = /^\s*(\d+(?:\.\d+)*\.?)\s+(.+?)\s*(?:\.{2,}|…{2,}|·{2,}|-{3,})\s*(\d+|[ivxlcdm]+)\s*$/i;
-        for (const rawLine of layoutLogicalLines(lines)) {
+        for (const rawLine of logicalLines) {
             const text = String(rawLine || "").replace(/\s+/g, " ").trim();
             if (!text) {
                 entries.push({ gap: true });
@@ -825,7 +825,53 @@ var LitMTransPort;
             });
         }
         const matched = entries.filter(entry => entry.page).length;
-        return matched >= 6 && matched / Math.max(1, nonblank) >= .70 ? entries : null;
+        if (matched >= 6 && matched / Math.max(1, nonblank) >= .70)
+            return entries;
+        const heading = /^(?:table\s+of\s+contents|contents|目\s*录)\s*[:：]?$/i;
+        const hasHeading = logicalLines.some(line => heading.test(line.trim()));
+        const context = contentsContext || hasHeading;
+        const expanded = [];
+        let candidates = 0;
+        let contentLines = 0;
+        let previousPage = -1;
+        for (const rawLine of logicalLines) {
+            const text = rawLine.replace(/\s+/g, " ").trim();
+            if (!text || heading.test(text)) {
+                expanded.push(text ? { text } : { gap: true });
+                continue;
+            }
+            contentLines++;
+            // 无引导线时必须已有目录上下文，不能仅凭行尾数字猜测。
+            const match = text.match(/^(.+?)\s*(?:\.{2,}|…+|·{2,}|-{3,})\s*(\d+|[ivxlcdm]+)$/i)
+                || (context ? text.match(/^(.+?)\s+(\d+|[ivxlcdm]+)$/i) : null);
+            if (!match || /^[\[【]/.test(text) || /(?:https?:|doi:)/i.test(text)) {
+                expanded.push({ text });
+                continue;
+            }
+            const label = match[1].trim();
+            const numbered = label.match(/^(\d+(?:\.\d+)*\.?)\s+(.+)$/);
+            const title = (numbered ? numbered[2] : label).trim();
+            if (title.length > 160 || !/[A-Za-z\u4e00-\u9fff]/.test(title) || /[.!?。！？;；]$/.test(title)) {
+                expanded.push({ text });
+                continue;
+            }
+            const page = match[2];
+            if (/^\d+$/.test(page)) {
+                const numericPage = Number(page);
+                if (numericPage < previousPage)
+                    return null;
+                previousPage = numericPage;
+            }
+            const number = numbered?.[1] || "";
+            expanded.push({ number, title, page,
+                level: number ? Math.max(0, number.replace(/\.$/, "").split(".").length - 1) : 0 });
+            candidates++;
+        }
+        return candidates >= (context ? 2 : 3) && candidates / Math.max(1, contentLines) >= .80 ? expanded : null;
+    }
+    LitMTransPort.parseTocLogicalLines = parseTocLogicalLines;
+    function parseTocRows(lines) {
+        return parseTocLogicalLines(layoutLogicalLines(lines));
     }
     LitMTransPort.parseTocRows = parseTocRows;
     function codeTextFromLayoutBlock(raw) {

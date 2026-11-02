@@ -485,6 +485,7 @@
           "--no-default-browser-check",
           "--disable-extensions",
           "--disable-background-mode",
+          "--no-sandbox",
           U.fileURI(page)
         ],
         stderr: "ignore"
@@ -545,9 +546,11 @@
       const options = JSON.stringify({ sourceLanguage: this.sourceCode, targetLanguage: this.targetCode });
       const button = await this.evaluate(
         "(()=>{const old=document.getElementById('litmtrans-download-model');if(old)old.remove();"
-        + "const b=document.createElement('button');b.id='litmtrans-download-model';b.textContent='Download';document.body.appendChild(b);"
+        + "const b=document.createElement('button');b.id='litmtrans-download-model';b.textContent='Download';"
+        + "b.style.cssText='position:fixed;top:10px;left:10px;width:100px;height:40px;z-index:999999;';"
+        + "document.body.appendChild(b);"
         + "window.__litmtransDownloadState={done:false,error:'',loaded:0,total:0};"
-        + `b.onclick=async()=>{try{const s=await Translator.create({...${options},monitor:m=>m.addEventListener('downloadprogress',e=>{window.__litmtransDownloadState.loaded=e.loaded;window.__litmtransDownloadState.total=e.total})});s.destroy();window.__litmtransDownloadState.done=true}catch(e){window.__litmtransDownloadState.error=e.name+': '+e.message}};`
+        + `b.onclick=async()=>{try{const s=await Translator.create({...${options},monitor:m=>m.addEventListener('downloadprogress',e=>{window.__litmtransDownloadState.loaded=e.loaded;window.__litmtransDownloadState.total=e.total})});window.__litmtransEdgeTranslator=s;window.__litmtransDownloadState.done=true}catch(e){window.__litmtransDownloadState.error=e.name+': '+e.message}};`
         + "const r=b.getBoundingClientRect();return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2})})()",
         { signal }
       );
@@ -577,6 +580,11 @@
       if (availability === "available") return;
       if (availability === "downloadable" && allowDownload) {
         await this.downloadModel(signal, reportDownloadProgress);
+        const hasTranslator = await this.evaluate("Boolean(window.__litmtransEdgeTranslator)", { signal });
+        if (hasTranslator) {
+          this.sessionCreated = true;
+          return;
+        }
         return this.ensureAvailable(signal, false, reportDownloadProgress);
       }
       // The original implementation deliberately closes this first probe and
@@ -611,6 +619,10 @@
           this.log?.("用户已同意，正在下载Edge本地翻译语言模型…");
           await this.ensureAvailable(signal, true, true);
         }
+      }
+      if (this.sessionCreated) {
+        this.log?.("Edge本地翻译语言模型已就绪。");
+        return;
       }
       const options = JSON.stringify({ sourceLanguage: this.sourceCode, targetLanguage: this.targetCode });
       await this.evaluate(`(async()=>{window.__litmtransEdgeTranslator=await Translator.create(${options});return true})()`, { signal });

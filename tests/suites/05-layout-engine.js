@@ -253,7 +253,7 @@ async function testCollapsedSourceLinesRuntimeRecovery() {
   const service = new LayoutTranslationService(storage, { getSettings: () => ({ targetLanguage: '简体中文' }) });
   const translations = { p001_b0003: '实验结果与数值计算相符。', p001_b0005: '数值模拟与实验结果一致。' };
   const revision = { sourceFingerprint: U.hashString(JSON.stringify(payload)), assetMapHash: U.hashString('{}') };
-  const cached = { version: 13, keywordLineBreaksVersion: 1, ...revision,
+  const cached = { version: 13, keywordLineBreaksVersion: 1, symbolGlossaryVersion: 1, tocRulesVersion: 1, ...revision,
     translationsHash: U.hashString(JSON.stringify(translations) + '|{}'), geometryHash: '',
     model: { pages: payload.pdf_info.map((page, index) => ({ index: index + 1, width: 600, height: 800,
       blocks: page.preproc_blocks.map(b => ({ type: b.type, bbox: b.bbox, text: b.lines[0].spans[0].content, lineCount: 1 })),
@@ -428,6 +428,35 @@ function testEquationNumberAnchorUsesLocalColumns() {
   );
 }
 
+function testTocContextAndBoundaryDetection() {
+  const positives = [
+    ['Introduction .... 1', 'Methods .... 3', 'References .... 12'],
+    ['1 Introduction .... 1', '2 Methods .... 3', '3 Results .... 5'],
+    ['目录', '引言 1', '方法 3'],
+    ['Contents', '1 Introduction 1', '1.1 Background 2', '2 Methods 5'],
+    ['Contents', 'Preface … iv', 'Introduction … 1', 'Methods … 3']
+  ];
+  for (const lines of positives) {
+    const parserLines = [{ spans: [{ type: 'text', content: lines.join('\n') }] }];
+    const runtime = LayoutHelpers.parseTocRows(parserLines);
+    assert(runtime?.filter(row => row.page).length >= 2, 'short, unnumbered or explicitly titled contents must be recognized');
+    assert.equal(JSON.stringify(runtime), JSON.stringify(context.LitMTransPort.parseTocRows(parserLines)), 'typed and runtime contents detection must agree');
+  }
+  const translated = '引言 1\n方法 3';
+  assert.equal(LayoutHelpers.parseTocTextRows(translated), null, 'page-like endings alone do not prove a contents block');
+  assert.equal(LayoutHelpers.parseTocTextRows(translated, true).length, 2, 'an identified source contents block supplies context when its translation omits leaders');
+  for (const lines of [
+    ['1 First item', '2 Second item', '3 Third item'],
+    ['Experiment A 1', 'Experiment B 2', 'Experiment C 3'],
+    ['[1] Author, Title .... 1', '[2] Author, Title .... 3', '[3] Author, Title .... 5'],
+    ['Introduction .... 8', 'Methods .... 3', 'Results .... 5'],
+    ['1 .... 1', '2 .... 2', '3 .... 3'],
+    ['Text with an ellipsis ... 1', 'This is ordinary prose.', 'Another paragraph.', 'More prose.']
+  ]) {
+    assert.equal(LayoutHelpers.parseTocTextRows(lines.join('\n')), null, 'ordinary lists, references, descending pages, numeric tables and sparse matches must not become contents');
+  }
+}
+
 async function testLayoutCodeAndContentsRules() {
   const contents = [
     "1 Introduction ........ 1",
@@ -584,6 +613,42 @@ async function testLayoutCodeAndContentsRules() {
       && controllerSource.includes('button.id = "litmtrans-reader-toolbar-button";'),
     "Reader toolbar rendering must deduplicate the LitMTrans entry point after host redraws"
   );
+}
+
+async function testMixedSymbolGlossaryLayout() {
+  const fixture = JSON.parse(fs.readFileSync(path.join(root, "tests/fixtures/symbol-glossary.json"), "utf8"));
+  const payload = { pdf_info: [{ page_size: [600, 800], preproc_blocks: [fixture.block] }] };
+  const storage = new MemoryStorage();
+  await storage.writeText(storage.path("glossary", "layout.json"), JSON.stringify(payload));
+  const service = new LayoutTranslationService(storage, { getSettings: () => ({ targetLanguage: "简体中文" }) });
+  const translations = { p001_b0001: fixture.translation };
+  const revision = { sourceFingerprint: U.hashString(JSON.stringify(payload)), assetMapHash: U.hashString("{}") };
+  // 旧编译缓存不应挡住结构修复，解析与译文始终复用。
+  const oldCache = { version: 13, keywordLineBreaksVersion: 1, ...revision,
+    translationsHash: U.hashString(JSON.stringify(translations) + "|{}"), model: { pages: [{ old: true }] } };
+  await storage.writeJSON(storage.path("glossary", "compiled-model.json"), oldCache);
+  const before = JSON.stringify(payload);
+  const model = await service.buildBaseModel("glossary", translations, {}, revision);
+  const item = model.pages[0].restoration.streams.flatMap(stream => stream.items).find(item => item.id === "p001_b0001");
+  assert(item.symbolGlossary, "mixed plain-text and formula symbols with aligned definitions must remain a glossary");
+  assert.equal(item.paragraphs.length, 17, "single-newline cached translations must retain all 17 entries");
+  assert.equal(item.paragraphs[16].parts[0].translatedText, fixture.translation.split("\n")[16]);
+  assert(item.paragraphs[15].parts[0].text.includes("double point"), "wrapped definitions must stay with their symbol");
+  assert(item.paragraphs[16].parts[0].text.includes("ruple point"));
+  assert.equal(JSON.stringify(payload), before);
+  assert.equal(JSON.stringify(await storage.readJSON(storage.path("glossary", "compiled-model.json"))), JSON.stringify(oldCache));
+  const cached = await service.buildBaseModel("glossary", translations, {}, revision);
+  assert.equal(cached.pages[0].restoration.streams[0].items[0].paragraphs.length, 17);
+  for (const mutate of [
+    block => { block.type = "ref_text"; },
+    block => { block.lines.forEach(line => { line.spans[0].type = "text"; line.spans[0].content = "Sentence"; }); },
+    block => { block.lines.forEach((line, i) => { if (line.spans[1]) line.spans[1].bbox[0] += i * 10; }); }
+  ]) {
+    const block = JSON.parse(JSON.stringify(fixture.block));
+    mutate(block);
+    const paragraphs = LayoutHelpers.plainBlockText(block);
+    assert(!paragraphs.includes("\n\n"), "references, ordinary prose and unaligned columns must keep their existing path");
+  }
 }
 
 function testLayoutTranslationValidation() {
@@ -2709,11 +2774,21 @@ function testKeywordLineBreaks() {
   assert(!LayoutHelpers.isKeywordListText('Keywords: Wind; lidar'));
   assert(!LayoutHelpers.isKeywordListText('Normal prose wraps\nonto another source line.'));
   const source = fs.readFileSync(path.join(root, 'src/workbench.js'), 'utf8');
-  const helper = source.slice(source.indexOf('  function renderLayoutTranslatedText('), source.indexOf('  function renderLayoutTocRows('));
-  const render = vm.runInNewContext(`${helper}\nrenderLayoutTranslatedText`, { Markdown: M, imageResolver: () => '' });
+  const helper = source.slice(source.indexOf('  const LAYOUT_PRESERVE_MODEL_LINE_BREAKS'), source.indexOf('  function renderLayoutTocRows('));
+  assert(helper.includes('LAYOUT_PRESERVE_MODEL_LINE_BREAKS = false'), '默认关闭全量保留模型换行，避免正文物理折行破坏排版');
+  const render = vm.runInNewContext(`${helper.replace('LAYOUT_PRESERVE_MODEL_LINE_BREAKS = false', 'LAYOUT_PRESERVE_MODEL_LINE_BREAKS = true')}\nrenderLayoutTranslatedText`, { Markdown: M, imageResolver: () => '' });
   const translated = '关键词：铝颗粒\n激波速度\n当量比\n脉动激波\n均相反应\n非均相反应';
   assert.equal((render(translated, true).match(/<br \/>/g) || []).length, 5);
-  assert(!render('正文的物理折行\n仍由栏宽决定').includes('<br'), '正文不按源 PDF 的物理行强制换行');
+  assert.equal(render('模型返回的第一行\n模型返回的第二行'), '模型返回的第一行<br />模型返回的第二行');
+  assert.equal(render('第一段\r\n\r\n第二段\r第三行'), '第一段<br /><br />第二段<br />第三行', '模型返回的空行和不同换行格式均须保留');
+  assert.equal(render('第一条\n第二条\n第三条', false), '第一条<br />第二条<br />第三条', '未知内容类型也须保留模型换行');
+  assert(!M.renderInline('源 PDF 的物理折行\n仍由栏宽决定').includes('<br'), '通用原文渲染保持原有重排行为');
+  const math = '\\[\\begin{aligned}a&=b\\\\\nc&=d\\end{aligned}\\]';
+  assert.equal(render(math), M.renderInline(math), '公式内部换行不能转换为 HTML 换行');
+  assert.equal(render('公式：\n' + math + '\n结束'), '公式：<br />' + M.renderInline(math) + '<br />结束');
+  const legacyRender = vm.runInNewContext(`${helper}\nrenderLayoutTranslatedText`, { Markdown: M, imageResolver: () => '' });
+  assert(!legacyRender('普通正文\n第二行').includes('<br'), '关闭内部开关后恢复旧的普通正文重排');
+  assert.equal(legacyRender(translated, true), render(translated), '关闭开关后仍保留旧的关键词换行策略');
   assert.equal(render('关键词：铝颗粒激波速度当量比', true), '关键词：铝颗粒激波速度当量比', '旧译文没有边界时不猜测切分');
   assert(render('<script>alert(1)</script>\n激波', true).includes('&lt;script&gt;'), '保留换行仍须转义不可信 HTML');
 }
@@ -2923,6 +2998,8 @@ async function testDocumentCleanupRemovesGeneratedPDFsAndFontOnly() {
 }
 
   return {
+    testTocContextAndBoundaryDetection,
+    testMixedSymbolGlossaryLayout,
     testDocumentCleanupRemovesGeneratedPDFsAndFontOnly,
     testKeywordLineBreaks,
     testLayoutDOIWrapBoundaries,
