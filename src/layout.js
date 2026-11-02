@@ -1364,13 +1364,14 @@
       for (const item of sorted.slice(1)) {
         const currentBox = bboxUnion(current.map(part => part.bbox));
         const gap = item.bbox[1] - currentBox[3];
+        // PDF 坐标单位为 pt，纵向留白超过 1.5 厘米不合并。
+        const maxGap = 1.5 / 2.54 * 72;
         const tolerance = Math.max(18, bboxWidth(currentBox) * .10);
-        const normal = gap <= Math.max(18, Math.min(bboxHeight(currentBox), bboxHeight(item.bbox)) * 2)
-          && (Math.abs(item.bbox[0] - currentBox[0]) <= tolerance
+        const normal = (Math.abs(item.bbox[0] - currentBox[0]) <= tolerance
             || Math.abs(item.bbox[2] - currentBox[2]) <= tolerance
             || horizontalOverlapRatio(currentBox, item.bbox) >= .55);
         const adjacent = singleLineBodyItemsAreAdjacent(current[current.length - 1], item);
-        if ((normal || adjacent)
+        if (gap <= maxGap && (normal || adjacent)
           && !bodyMergeBlockedByBarrier(currentBox, item.bbox, barriers, blockers)
           && !bodyMergeCreatesBarrierIntrusion(current, item.bbox, barriers)) current.push(item);
         else {
@@ -2191,7 +2192,12 @@
         if (!block || typeof block !== "object") return;
         if (block.parser?.source?.provider === "paddle" && block.parser.source.label === "aside_text") return;
         const bbox = validBBox(block.bbox);
-        const type = String(block.type || "unknown").toLowerCase();
+        // 旧版 Paddle 缓存中的图表附注在内存中补回语义，无需重新解析。
+        const legacyVisionFootnote = block.type === "unknown"
+          && block.parser?.schema === "litmtrans-document-v1"
+          && block.parser?.source?.provider === "paddle"
+          && block.parser.source.label === "vision_footnote";
+        const type = legacyVisionFootnote ? "image_footnote" : String(block.type || "unknown").toLowerCase();
         if (bbox) {
           viewSequence++;
           // Use formula-preserving text for translation. `blockText()` remains
@@ -2220,7 +2226,8 @@
           // visuals; otherwise a prose block could be left untranslated.
           const parserMetadata = block.parser?.schema === "litmtrans-document-v1" ? block.parser : null;
           const lines = block._layout_original_line_count || parserMetadata?.estimatedLineCount || (Array.isArray(block.lines) ? block.lines.length : 1);
-          const translatable = kind !== "formula" && C.TRANSLATABLE_LAYOUT_TYPES.has(type) && parserMetadata?.translatable !== false && Boolean(text);
+          const translatable = kind !== "formula" && C.TRANSLATABLE_LAYOUT_TYPES.has(type)
+            && (legacyVisionFootnote || parserMetadata?.translatable !== false) && Boolean(text);
           if (translatable) translationSequence++;
           const id = parserMetadata?.id || (translatable
             ? `p${String(pageIndex + 1).padStart(3, "0")}_${depth ? "c" : "b"}${String(translationSequence).padStart(4, "0")}`
@@ -2329,6 +2336,7 @@
             cached.keywordLineBreaksVersion === 1 &&
             cached.symbolGlossaryVersion === 1 &&
             cached.tocRulesVersion === 1 &&
+            cached.bodyMergeVersion === 2 &&
             String(cached.geometryHash || "") === geometryHash &&
             cached.translationsHash === translationsHash &&
             currentFingerprint &&
@@ -2579,6 +2587,7 @@
           version: 13,
           symbolGlossaryVersion: 1,
           tocRulesVersion: 1,
+          bodyMergeVersion: 2,
           keywordLineBreaksVersion: 1,
           sourceFingerprint,
           assetMapHash,

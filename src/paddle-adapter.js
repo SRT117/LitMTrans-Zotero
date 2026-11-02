@@ -11,6 +11,7 @@
     formula_number: ["formula_number", "formula_number", false],
     image: ["image", "image", false], chart: ["image", "image", false], table: ["table", "table", false],
     figure_title: ["caption", "image_caption", true], table_title: ["table_caption", "table_caption", true],
+    vision_footnote: ["footnote", "image_footnote", true],
     header: ["header", "header", false], footer: ["footer", "footer", false],
     number: ["page_number", "page_number", false], footnote: ["footnote", "page_footnote", false],
     header_image: ["header_image", "image", false], footer_image: ["footer_image", "image", false]

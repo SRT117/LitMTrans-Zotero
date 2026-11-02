@@ -2628,7 +2628,7 @@
   // The result is deterministic for one translated-layout identity, viewport
   // width and body-font choice, so retain the solved inline styles instead of
   // repeating the measurement whenever the user switches reading modes.
-  const LAYOUT_FIT_SNAPSHOT_VERSION = 25;
+  const LAYOUT_FIT_SNAPSHOT_VERSION = 26;
   const layoutFitSnapshots = new Map();
   function layoutFitSnapshotKey(pane = "translation") {
     const documentID = String(state.data?.item?.documentID || "");
@@ -10670,13 +10670,8 @@
       document.body.classList.toggle("layout-debug", active);
       if (els["debug-boxes-check"]) els["debug-boxes-check"].checked = active;
       if (state.settings) state.settings.layoutDevelopmentMode = active;
-      if (state.mode === "layout") {
-        const pages = [...document.querySelectorAll(".layout-page")];
-        fitLayoutPages(pages);
-        const translatedPages = pages.filter(page => page.closest('#translation-layout'));
-        finalizeLayoutTypography(translatedPages);
-        publishCompactLayoutDebugLabels();
-      }
+      // 调试开关仅控制标记显示，不改变已有排版结果。
+      if (state.mode === "layout") publishCompactLayoutDebugLabels();
     };
     els["clean-reader-ai-button"].addEventListener("click", () => exitCleanReader({ focusChat: true }));
     document.addEventListener("keydown", event => {
@@ -14499,6 +14494,18 @@
         maxBorrowPx: 18,
         maxWidthRatio: 1.35,
       });
+      // 先收敛参考文献，避免其初始溢出误压邻近日期块及全篇正文的统一字号。
+      tuneGroup('.layout-flow-stream[data-flow-kind="ref_text"]', {
+        step: 0.25,
+        minFont: 4.8,
+        maxFont: 12,
+        lineStep: 0.025,
+        minLineRatio: 1.1,
+        maxLineRatio: 1.65,
+        allowOverflow: false,
+        avoidBlockOverlap: true,
+        showLimiter: debugMode
+      });
       const bodyFitOptions = {
         step: 0.5,
         minFont: collisionFirstTextFit ? 4.8 : undefined,
@@ -14611,17 +14618,6 @@
       tuneCaptionGroup('.layout-block.type-chart_caption');
       tuneCaptionGroup('.layout-block.type-image_caption');
       tuneCaptionGroup('.layout-block.type-image_footnote');
-      tuneGroup('.layout-flow-stream[data-flow-kind="ref_text"]', {
-        step: 0.25,
-        minFont: 4.8,
-        maxFont: 12,
-        lineStep: 0.025,
-        minLineRatio: 1.1,
-        maxLineRatio: 1.65,
-        allowOverflow: false,
-        avoidBlockOverlap: true,
-        showLimiter: debugMode
-      });
       clampTranslatedOverflow();
       clampTranslatedCodeOverflow();
       enforceFinalTextCollisionSafety();

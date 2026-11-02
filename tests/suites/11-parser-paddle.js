@@ -89,6 +89,33 @@ module.exports = function createSuite(env) {
     assert.deepEqual(tokens.filter(t => t.kind === "math").map(t => t.tex), ["x^2", "y"]);
   }
 
+  async function testPaddleVisionFootnotesAndLegacyCache() {
+    const input = fixture();
+    input.result.layoutParsingResults[0].prunedResult.parsing_res_list = [
+      { block_label: "vision_footnote", block_bbox: [100, 400, 1000, 480], block_content: "a) Distance from charge center to plate surface in mm." },
+      { block_label: "footnote", block_bbox: [100, 600, 1000, 660], block_content: "Author affiliation" },
+      { block_label: "new_vendor_type", block_bbox: [100, 700, 1000, 760], block_content: "Unknown source" }
+    ];
+    const document = PaddleAdapter.normalize(PaddleAdapter.decodeResults(JSON.stringify(input)), sizes);
+    assert.equal(document.pages[0].blocks[0].type, "image_footnote");
+    assert.equal(document.pages[0].blocks[0].translatable, true);
+    const service = new LayoutTranslationService(new MemoryStorage(), {});
+    const projected = ParserModel.projectLayout(document);
+    const records = () => service.extractRecordsFromLayout({ pages: projected.pdf_info }, "test");
+    assert.deepEqual(records().map(record => record.id), ["p001-s0001"]);
+    const legacy = projected.pdf_info[0].preproc_blocks[0];
+    legacy.type = "unknown";
+    legacy.parser.semanticRole = "unknown";
+    legacy.parser.translatable = false;
+    const original = JSON.stringify(projected);
+    const restored = records();
+    assert.equal(restored[0].type, "image_footnote");
+    assert.deepEqual(restored.map(record => record.id), ["p001-s0001"]);
+    assert.equal(JSON.stringify(projected), original, "legacy parser data must remain unchanged");
+    legacy.parser.source.provider = "mineru";
+    assert.equal(records().length, 0, "recovery must stay within the known Paddle label");
+  }
+
   async function testPaddleTaskFailureAndResume() {
     const storage = new ParserStorage();
     const service = new PaddleService(storage, { getPaddleToken: () => "test" });
@@ -632,7 +659,7 @@ module.exports = function createSuite(env) {
 
   return { testWholeDocumentCleanupRunsAttachmentRemovalUnderLock, testGeneratedPDFsReplaceAcrossParsersAndDeduplicate,
     testGeneratedPDFsPreserveLegacyAnnotationsAndNotes, testPaddleStructureAndSemanticBoundaries, testPaddleAbstractReferencesUnknownAndMalformedPages,
-    testPaddleTaskFailureAndResume, testParserCacheIgnoresProviderAndCredentials,
+    testPaddleTaskFailureAndResume, testPaddleVisionFootnotesAndLegacyCache, testParserCacheIgnoresProviderAndCredentials,
     testParserFailureRestoresWholeOldGeneration, testMinerUReparsePublishesWithCleanupProtection, testParserRecoversAfterRestartAndBlocksConcurrentParse,
     testRecoveryPrecedesTranslationReads,
     testPaddlePrepareThroughPublication, testPaddleMultiPageResourceNamesAndOrder,

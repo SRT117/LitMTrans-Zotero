@@ -193,6 +193,27 @@ async function testLayout() {
   assert(records[1].formulas.includes("\\(x+y\\)"));
 }
 
+function testBodyMergeDistanceBoundary() {
+  const merge = LayoutHelpers.mergeVerticalBodyItems;
+  const block = (id, top, bottom, columnKey = 'column-1') => ({
+    id, kind: 'text', debugRole: 'body_candidate', columnKey, side: 'right',
+    bbox: [310, top, 560, bottom], text: id, originalLineCount: 8
+  });
+  const abstract = block('abstract', 250, 410);
+  const body = block('body', 485, 535);
+  const source = JSON.stringify([abstract, body]);
+  const separated = merge([abstract, body], []);
+  assert.equal(separated.length, 2, 'a large blank gap must separate abstract and body even without a same-column barrier');
+  assert.equal(JSON.stringify([abstract, body]), source, 'merging must leave the cached source items intact');
+  assert.equal(merge([abstract, block('nearby', 422, 470)], []).length, 1, 'nearby body paragraphs must still merge');
+  const boundary = 410 + 1.5 / 2.54 * 72;
+  assert.equal(merge([abstract, block('boundary', boundary, 510)], []).length, 1, 'a gap of exactly 1.5 cm remains supported');
+  assert.equal(merge([abstract, block('distant', boundary + .01, 510)], []).length, 2, 'a gap exceeding 1.5 cm must not merge');
+  const singleLine = { ...block('single', 485, 565), originalLineCount: 1 };
+  assert.equal(merge([abstract, singleLine], []).length, 2, 'the single-line adjacency path must obey the same cap');
+  assert.equal(merge([abstract, block('other-column', 422, 470, 'column-0')], []).length, 2, 'different columns must remain separate');
+}
+
 async function testLayoutEquationBarrier() {
   const prose = "This paragraph contains enough ordinary academic prose to be promoted as body text and to exercise the restored-column merge logic. It deliberately has multiple sentences and sufficient length for the body classifier to accept it.";
   const payload = {
@@ -253,7 +274,7 @@ async function testCollapsedSourceLinesRuntimeRecovery() {
   const service = new LayoutTranslationService(storage, { getSettings: () => ({ targetLanguage: '简体中文' }) });
   const translations = { p001_b0003: '实验结果与数值计算相符。', p001_b0005: '数值模拟与实验结果一致。' };
   const revision = { sourceFingerprint: U.hashString(JSON.stringify(payload)), assetMapHash: U.hashString('{}') };
-  const cached = { version: 13, keywordLineBreaksVersion: 1, symbolGlossaryVersion: 1, tocRulesVersion: 1, ...revision,
+  const cached = { version: 13, keywordLineBreaksVersion: 1, symbolGlossaryVersion: 1, tocRulesVersion: 1, bodyMergeVersion: 2, ...revision,
     translationsHash: U.hashString(JSON.stringify(translations) + '|{}'), geometryHash: '',
     model: { pages: payload.pdf_info.map((page, index) => ({ index: index + 1, width: 600, height: 800,
       blocks: page.preproc_blocks.map(b => ({ type: b.type, bbox: b.bbox, text: b.lines[0].spans[0].content, lineCount: 1 })),
@@ -3023,6 +3044,7 @@ async function testDocumentCleanupRemovesGeneratedPDFsAndFontOnly() {
     testStackedSourceTextLineEvidence,
     testLayout,
     testLayoutEquationBarrier,
+    testBodyMergeDistanceBoundary,
     testCollapsedSourceLinesRuntimeRecovery,
     testTwoLineFirstLineIndent,
     testSingleColumnBodyPromotion,
