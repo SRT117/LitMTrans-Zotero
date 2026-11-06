@@ -875,27 +875,22 @@
     return output;
   }
 
-  function collapsedSourceTextLines(block, ocrBoxes, pageWidth) {
+  function collapsedSourceTextLines(block, ocrBoxes) {
     const box = validBBox(block?.bbox);
-    if (block?.type !== "text" || block.parser || !box || !(pageWidth > 0)
-        || bboxWidth(box) < pageWidth * .18
+    if (block?.type !== "text" || !box
         || Number(block._layout_original_line_count || block.lineCount || block.lines?.length || 0) !== 1) return [];
-    const text = String(block.text || blockText(block) || "");
-    if (isLayoutMetadataText(text) || affiliationLikeText(text) || authorBylineLikeText(text)
-        || bibliographyLikeText(text) || isSymbolGlossaryBlock(block)) return [];
-    const candidates = (ocrBoxes || []).filter(line => validBBox(line)
-      && bboxWidth(line) >= bboxWidth(box) * .25 && bboxHeight(line) <= bboxHeight(box) * .65
-      && line[0] >= box[0] - 2 && line[2] <= box[2] + 2
-      && line[1] >= box[1] - 2 && line[3] <= box[3] + 2).sort((a, b) => a[1] - b[1]);
+    const candidates = (ocrBoxes || []).filter(line => {
+      const row = validBBox(line);
+      if (!row) return false;
+      const [x, y] = bboxCenter(row);
+      return x >= box[0] && x <= box[2] && y >= box[1] && y <= box[3];
+    }).sort((a, b) => (a[1] + a[3]) - (b[1] + b[3]));
     const rows = [];
     for (const line of candidates) {
-      const previous = rows[rows.length - 1];
-      if (previous && line[1] - previous[3] < Math.min(bboxHeight(previous), bboxHeight(line)) * .1) continue;
-      if (previous && (horizontalOverlapRatio(previous, line) < .5
-          || line[1] - previous[3] > Math.max(bboxHeight(previous), bboxHeight(line)) * 1.5)) return [];
-      rows.push(line);
+      const center = (line[1] + line[3]) / 2;
+      if (!rows.some(row => center >= row[1] && center <= row[3])) rows.push(line);
     }
-    return rows.length >= 2 && rows[rows.length - 1][3] - rows[0][1] >= bboxHeight(box) * .6 ? rows : [];
+    return rows.length > 1 ? rows : [];
   }
 
   function recoverCollapsedSourceLines(pages, modelPages) {
@@ -904,9 +899,6 @@
       const [width, height] = normalizePageSize(page, page.preproc_blocks || []);
       const boxes = collectModelOCRBoxes(modelPages[index], width, height);
       for (const block of page.preproc_blocks || []) {
-        const lineBox = validBBox(block.lines?.[0]?.bbox);
-        const box = validBBox(block.bbox);
-        if (!box || !lineBox || box.some((value, i) => Math.abs(value - lineBox[i]) > 2)) continue;
         const rows = collapsedSourceTextLines(block, boxes, width);
         if (!rows.length) continue;
         // 只补内存中的行数证据；原文字、行结构与磁盘解析结果保持完整。

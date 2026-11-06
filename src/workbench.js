@@ -1732,25 +1732,9 @@
         || stream.bodyInherited || stream.textRegion || stream.items?.length !== 1) return false;
     const item = stream.items[0];
     if (item.type !== "text" || item.fromList || item.symbolGlossary) return false;
-    const box = stream.bbox;
-    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) return false;
-    const width = box[2] - box[0];
-    const height = box[3] - box[1];
-    if (!(width > 0 && height > 0)) return false;
-    // 只用段内宽行框证明多行；排除整段框、同一行碎片和上下标小框。
-    const lines = (page.restoration?.ocrBoxes || []).filter(line => {
-      if (!Array.isArray(line) || line.length !== 4 || !line.every(Number.isFinite)) return false;
-      const lineHeight = line[3] - line[1];
-      return line[2] - line[0] >= width * .25 && lineHeight > 0 && lineHeight <= height * .65
-        && line[0] >= box[0] - 2 && line[2] <= box[2] + 2
-        && line[1] >= box[1] - 2 && line[3] <= box[3] + 2;
-    }).sort((a, b) => a[1] - b[1]);
-    return lines.some((upper, index) => lines.slice(index + 1).some(lower => {
-      const overlap = Math.min(upper[2], lower[2]) - Math.max(upper[0], lower[0]);
-      return overlap >= Math.min(upper[2] - upper[0], lower[2] - lower[0]) * .5
-        && lower[1] - upper[3] >= Math.min(upper[3] - upper[1], lower[3] - lower[1]) * .1
-        && lower[3] - upper[1] >= height * .6;
-    }));
+    return Boolean(Layout?.collapsedSourceTextLines({
+      type: "text", bbox: stream.bbox, lineCount: item.originalLineCount || 1
+    }, page.restoration?.ocrBoxes).length);
   }
 
   function buildFlowStreamNode(stream, page, useTranslation) {
