@@ -286,7 +286,7 @@
     for (const i of holes) for (let c = 0; c < 3; c++) background[i * 3 + c] = values[i * 3 + c];
   }
 
-  function restoreImageLabel(pixels, width, height, box, protectedBoxes = [], sourceText = "") {
+  function restoreImageLabel(pixels, width, height, box, protectedBoxes = [], sourceText = "", neighborBoxes = []) {
     if (!validBox(box) || protectedBoxes.some(other => validBox(other) && imageLineOverlap(box, other) > .02)) return null;
     const expected = (box[3] - box[1]) * height, pad = Math.max(3, Math.ceil(expected * .18));
     const left = Math.max(0, Math.floor(box[0] * width) - pad), top = Math.max(0, Math.floor(box[1] * height) - pad);
@@ -306,13 +306,14 @@
     const upper = edge(top - 2), lower = edge(bottom + 1);
     const background = new Uint8ClampedArray(size * 3), mask = new Uint8Array(size), chosen = new Uint8Array(size), graphics = new Uint8Array(size), queue = new Uint32Array(size);
     const protectedPixel = (x, y) => protectedBoxes.some(b => x >= b[0] * width - 1 && x <= b[2] * width + 1 && y >= b[1] * height - 1 && y <= b[3] * height + 1);
+    const neighborPixel = (x, y) => neighborBoxes.some(b => validBox(b) && x >= b[0] * width && x < b[2] * width && y >= b[1] * height && y < b[3] * height);
     let totalInk = 0;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       if (pixels[((top + y) * width + left + x) * 4 + 3] < 250) return null;
       const index = y * w + x, rgb = sample(left + x, top + y), t = (y + 1) / (h + 1);
       let difference = 0;
       for (let c = 0; c < 3; c++) { const value = upper[x][c] * (1 - t) + lower[x][c] * t; background[index * 3 + c] = value; difference = Math.max(difference, Math.abs(rgb[c] - value)); }
-      if (difference > 38 && !protectedPixel(left + x, top + y)) { mask[index] = 1; totalInk++; }
+      if (difference > 38 && !protectedPixel(left + x, top + y) && !neighborPixel(left + x, top + y)) { mask[index] = 1; totalInk++; }
     }
     if (!totalInk || totalInk / size > .5) return null;
     const foreground = new Uint8Array(mask);
@@ -357,15 +358,38 @@
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       if (!chosen[y * w + x]) continue;
       for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
-        if (x + dx < 0 || x + dx >= w || y + dy < 0 || y + dy >= h || protectedPixel(left + x + dx, top + y + dy)) continue;
+        if (x + dx < 0 || x + dx >= w || y + dy < 0 || y + dy >= h || protectedPixel(left + x + dx, top + y + dy) || neighborPixel(left + x + dx, top + y + dy)) continue;
         const i = (y + dy) * w + x + dx, rgb = sample(left + x + dx, top + y + dy);
         if (!graphics[i] && rgb.some((value, channel) => Math.abs(value - background[i * 3 + channel]) > 8)) accepted[i] = 1;
       }
     }
-    const x0 = Math.max(0, Math.min(...components.map(b => b[0])) - 3), y0 = Math.max(0, Math.min(...components.map(b => b[1])) - 3);
-    const x1 = Math.min(w, Math.max(...components.map(b => b[2])) + 3), y1 = Math.min(h, Math.max(...components.map(b => b[3])) + 3);
+    let x0 = Math.max(0, Math.min(...components.map(b => b[0])) - 3), y0 = Math.max(0, Math.min(...components.map(b => b[1])) - 3);
+    let x1 = Math.min(w, Math.max(...components.map(b => b[2])) + 3), y1 = Math.min(h, Math.max(...components.map(b => b[3])) + 3);
     if (x1 <= x0 || y1 <= y0) return null;
     repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background);
+    // 白底图中文字行相邻时，上下边缘可能采到另一行，优先用邻近的白色原生背景。
+    const white = [[], [], []];
+    let sampled = 0;
+    for (let y = Math.max(0, top - pad); y < Math.min(height, bottom + pad); y++) for (let x = left; x < right; x++) {
+      if ((x >= box[0] * width && x < box[2] * width && y >= box[1] * height && y < box[3] * height)
+        || neighborPixel(x, y) || protectedPixel(x, y)) continue;
+      sampled++;
+      const rgb = sample(x, y);
+      if (rgb.every(value => value >= 245)) for (let c = 0; c < 3; c++) white[c].push(rgb[c]);
+    }
+    if (sampled && white[0].length >= 30 && white[0].length / sampled >= .8) {
+      const color = white.map(median);
+      // 白底下清理 OCR 框内遗漏的浅色抗锯齿，同时保留相邻行和已识别的图形。
+      const bx0 = Math.max(0, Math.floor(box[0] * width) - left), by0 = Math.max(0, Math.floor(box[1] * height) - top);
+      const bx1 = Math.min(w, Math.ceil(box[2] * width) - left), by1 = Math.min(h, Math.ceil(box[3] * height) - top);
+      for (let y = by0; y < by1; y++) for (let x = bx0; x < bx1; x++) {
+        const i = y * w + x;
+        if (!graphics[i] && !neighborPixel(left + x, top + y) && !protectedPixel(left + x, top + y)
+          && sample(left + x, top + y).some((value, c) => value < color[c] - 4)) accepted[i] = 1;
+      }
+      x0 = Math.min(x0, bx0);y0 = Math.min(y0, by0);x1 = Math.max(x1, bx1);y1 = Math.max(y1, by1);
+      for (let i = 0; i < size; i++) if (accepted[i]) for (let c = 0; c < 3; c++) background[i * 3 + c] = color[c];
+    }
     const patch = new Uint8ClampedArray((x1 - x0) * (y1 - y0) * 4), colors = [[], [], []];
     let changed = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {

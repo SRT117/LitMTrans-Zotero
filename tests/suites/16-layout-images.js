@@ -646,6 +646,23 @@ module.exports = function (env) {
     }
   }
 
+  function adjacentImageLabelsKeepWhiteBackground() {
+    const width = 180, height = 80, pixels = new Uint8ClampedArray(width * height * 4).fill(255);
+    const paint = (x, y) => {
+      for (let dy = 0; dy < 10; dy++) for (let dx = 0; dx < 5; dx++) pixels.set([25, 25, 25, 255], ((y + dy) * width + x + dx) * 4);
+    };
+    for (let x = 25; x < 120; x += 12) { paint(x, 24);paint(x, 36); }
+    const first = [20 / width, 22 / height, 125 / width, 35 / height];
+    const second = [20 / width, 35 / height, 125 / width, 48 / height];
+    const result = I.restoreImageLabel(pixels, width, height, second, [], "second line", [first]);
+    assert(result && result.changed > 0);
+    for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
+      const gx = result.box[0] + x, gy = result.box[1] + y, source = (gy * width + gx) * 4, at = (y * result.width + x) * 4;
+      if (gy < 35) assert.deepEqual([...result.pixels.slice(at, at + 4)], [...pixels.slice(source, source + 4)], "相邻文字行不得被擦除");
+      if (gy >= 36 && gy < 46 && pixels[source] === 25) assert(result.pixels[at] >= 245, "白底不应被相邻文字染灰");
+    }
+  }
+
   async function packedMinerUBatchingCacheUpgradeAndFailure() {
     const { storage, documentID, service } = fixture();
     const layout = await service.loadLayout(documentID), oldPDF = context.PDFLib, oldWindow = context.Zotero.getMainWindow;
@@ -721,18 +738,65 @@ module.exports = function (env) {
       state,
       window: { LitMTrans: { LayoutImages: { restoreImageLabel: () => mixed ? null : { pixels: [], width: 40, height: 20, box: [10, 20, 50, 40], color: [20, 20, 20] } } } } });
     fit([page]);assert.equal(label.hidden, false);
+    assert.equal(image.style.visibility, "hidden", "文字修复后应显示原图尺寸合成的底图");
+    assert.equal(host._litmtransCleanedImage.hidden, false);
     assert(parseFloat(label.style.fontSize) < 19, "actual CJK font overflow must shrink the label before falling back");
     assert(label.scrollHeight <= label.clientHeight + 1);
     fractional = true;fit([page]);
     assert(Math.abs(parseFloat(label.style.left) - 10.24) < .001, "使用实际小数尺寸，避免擦除层偏移后露出英文细边");
     mixed = true;delete host._litmtransImageLabelFit;fit([page]);
     assert.equal(label.hidden, true, "uncertain image backgrounds must keep the original text pixels");
+    assert.equal(image.style.visibility, "", "无法修复时必须恢复原图");
+    assert.equal(host._litmtransCleanedImage.hidden, true);
     mixed = false;loaded = false;fit([page]);
     state.settings.translateImages = false;fit([page]);
+    assert.equal(image.style.visibility, "", "关闭图片翻译时显示原图");
+    assert.equal(host._litmtransCleanedImage.hidden, true);
     loaded = true;image.dispatchEvent(new Event("load"));
     assert.equal(label.hidden, true, "关闭图片翻译后，已注册的加载回调不能重新显示译文");
     state.settings.translateImages = true;fit([page]);
     assert.equal(label.hidden, false, "重新开启后应正常显示已有译文");
+  }
+
+  function translatedImageHostOpensOriginalPreview() {
+    const { document, Event } = require("linkedom").parseHTML('<html><body><div id="translation-pane"><div class="layout-block layout-image" data-block-id="image-1"><div class="layout-image-translation"><img src="original.png"><span class="layout-image-label">译文</span><img class="layout-image-cleaned" src="data:image/png;base64,cleaned"></div></div></div></body></html>');
+    const host = document.querySelector(".layout-image-translation"), pane = document.getElementById("translation-pane");
+    let preview;
+    const ts = require("typescript"), code = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
+    const ast = ts.createSourceFile("workbench.js", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    let fn;
+    function visit(node) { if (ts.isFunctionDeclaration(node) && node.name?.text === "bindLayoutInteractions") fn = node.getText(ast);ts.forEachChild(node, visit); }
+    visit(ast);
+    const bind = vm.runInNewContext(fn + "\nbindLayoutInteractions", { document, state: { settings: {} },
+      readerPaneForTarget: () => pane, layoutFormulaTarget: () => null, inferImageMimeType: () => "image/png",
+      readerImageQuote: () => null, translatedImagePreviewDataURL: () => "data:image/png;base64,translated", openImagePreview: value => { preview = value; } });
+    bind();
+    const event = new Event("click", { bubbles: true });event.button = 0;host.dispatchEvent(event);
+    assert.equal(preview.url, "original.png", "点击译图外层应打开原图而不是内部修复副本");
+    assert.equal(preview.displayURL, "data:image/png;base64,translated", "预览应优先显示译图，同时保留原图引用");
+    assert.equal(preview.name, "image-1.png");
+  }
+
+  async function translatedPreviewKeepsOriginalForChat() {
+    const ts = require("typescript"), code = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
+    const ast = ts.createSourceFile("workbench.js", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS), functions = [];
+    function visit(node) { if (ts.isFunctionDeclaration(node) && ["openImagePreview", "reusePreviewImage"].includes(node.name?.text)) functions.push(node.getText(ast));ts.forEachChild(node, visit); }
+    visit(ast);
+    const state = {}, els = {
+      "image-preview-original": { hidden: false }, "image-preview-image": {},
+      "image-preview-compare": { setAttribute() {} }, "image-preview-dialog": { showModal() {}, close() {} }
+    };
+    let added;
+    const api = vm.runInNewContext(functions.join("\n") + "\n({openImagePreview,reusePreviewImage})", {
+      state, els, normalizeReferenceQuote: value => value, setPreviewTableMode() {}, syncDeepSeekWebBounds() {},
+      addImageDescriptorToComposer: async image => { added = image; }, toast() {}
+    });
+    api.openImagePreview({ url: "original.png", displayURL: "data:image/png;base64,translated", name: "figure.png" });
+    assert.equal(els["image-preview-image"].src, "data:image/png;base64,translated");
+    assert.equal(els["image-preview-original"].src, "original.png");
+    assert.equal(els["image-preview-original"].hidden, true, "默认仅显示译图");
+    await api.reusePreviewImage();
+    assert.equal(added.url, "original.png", "添加到对话必须继续使用原图");
   }
 
   async function publicationRestoresOldFilesOnDiskFailure() {
@@ -830,8 +894,8 @@ module.exports = function (env) {
     switchingOCRServiceSupplementsOnlyEmptyImages,
     packedMinerUCoordinatesAndOverlapProtection, imageTextCandidatesExcludeLargeGraphics, imageOCRPackingPreservesOriginalStrokes, packedMinerUBatchingCacheUpgradeAndFailure,
     sharedSheetsKeepImageOwnershipAndBudget, strokeRestorationPreservesLinesColorsAndProtectedValues,
-    twoDimensionalRepairPreservesLocalBackground, twoDimensionalRepairDoesNotSpreadNeighboringInk,
+    twoDimensionalRepairPreservesLocalBackground, twoDimensionalRepairDoesNotSpreadNeighboringInk, adjacentImageLabelsKeepWhiteBackground,
     paddleWholeImagesSharePagesWithoutShrinking,
-    shortIDsDenseIndicesAndManualTaskBinding, OCRSniffsImageContentAndReusesSidecar, mineruOnlyOCRAndTemporaryCleanup, imageLabelsFitActualFontAndRejectMixedBackground,
+    shortIDsDenseIndicesAndManualTaskBinding, OCRSniffsImageContentAndReusesSidecar, mineruOnlyOCRAndTemporaryCleanup, imageLabelsFitActualFontAndRejectMixedBackground, translatedImageHostOpensOriginalPreview, translatedPreviewKeepsOriginalForChat,
     publicationRestoresOldFilesOnDiskFailure, translationChainsStageMediaWithoutExtraRequests };
 };

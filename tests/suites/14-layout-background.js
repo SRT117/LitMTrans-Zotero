@@ -445,10 +445,70 @@ module.exports = function (env) {
     assert.deepEqual(Array.from(result.canvas._pixels.slice(0, 4)), [255, 255, 255, 255]);
   }
 
+  function translatedImagesFollowReaderTheme() {
+    const { document, window } = dom();
+    vm.runInNewContext(fs.readFileSync(path.join(root, "src/reader-images.js"), "utf8"), { window, document, MutationObserver: class { observe() {} } });
+    const host = document.createElement("div");host.className = "layout-image-translation";
+    const original = document.createElement("img"), cleaned = document.createElement("img");
+    original.src = "original.png";cleaned.src = "cleaned.png";cleaned.className = "layout-image-cleaned";
+    for (const image of [original, cleaned]) {
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 24 }, naturalHeight: { value: 24 } });
+      image._pixels = pixels([255, 255, 255]);image._pixels.set([0, 0, 0, 255], 4);
+    }
+    original.style.visibility = "hidden";host.append(original, cleaned);document.getElementById("translation-layout").append(host);
+    const api = window.LitMTrans.ReaderImages;
+    api.setTheme({ background: "#2E3440", foreground: "#D8DEE9" });
+    assert.equal(host.querySelectorAll(".reader-image-overlay").length, 1);
+    assert(cleaned.classList.contains("reader-color-image"));
+    assert(!original.classList.contains("reader-color-image"));
+    const overlay = host.querySelector(".reader-image-overlay");
+    assert.equal(overlay._pixels[3], 0, "白色背景应显示阅读主题底色");
+    assert.deepEqual(Array.from(overlay._pixels.slice(4, 8)), [216, 222, 233, 255], "中性图线应使用主题文字色");
+    cleaned.hidden = true;original.style.visibility = "";api.refreshImageHost(host);
+    assert(original.classList.contains("reader-color-image"));
+    assert(!cleaned.classList.contains("reader-color-image"));
+    api.setTheme({ background: "#ffffff", foreground: "#111111" });
+    assert.equal(host.querySelectorAll(".reader-image-overlay").length, 0);
+    assert(!original.classList.contains("reader-color-image"));
+  }
+
+  async function translatedImageMemoryAndPrintRestore() {
+    const { document, window } = dom();
+    const container = document.getElementById("translation-layout"), wrap = document.createElement("div");
+    wrap.className = "layout-page-wrap";
+    wrap.innerHTML = '<div class="layout-page"><div class="layout-block layout-image"><div class="layout-image-translation"><img src="original.png"><span class="layout-image-label">译文</span></div></div></div>';
+    container.appendChild(wrap);
+    const host = wrap.querySelector(".layout-image-translation"), image = host.querySelector("img"), label = host.querySelector("span");
+    Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 24 } });
+    const addCleaned = () => {
+      const cleaned = document.createElement("img");cleaned.className = "layout-image-cleaned";cleaned.src = "data:image/png;base64,fixture";
+      cleaned.decode = async () => { decoded++; };host.appendChild(cleaned);host._litmtransCleanedImage = cleaned;image.style.visibility = "hidden";
+    };
+    let decoded = 0, notify, scheduled, fits = 0;
+    addCleaned();host._litmtransImageLabelFit = "cached";
+    const sandbox = load(["installLayoutImageMemoryManager"], {
+      window: { LitMTrans: { ReaderImages: { refreshImageHost() {} } } },
+      IntersectionObserver: class { constructor(callback) { notify = callback; } observe() {} disconnect() {} },
+      setTimeout: callback => { scheduled = callback;return 1; }, clearTimeout() {},
+      fitLayoutImageLabels: () => { fits++;addCleaned();label.hidden = false; }
+    });
+    sandbox.installLayoutImageMemoryManager(container, null);
+    notify([{ target: wrap, isIntersecting: false }]);scheduled();
+    assert.equal(image.getAttribute("src"), null);
+    assert.equal(host._litmtransCleanedImage, null, "离屏时释放额外修复图");
+    assert.equal(label.hidden, true);
+    notify([{ target: wrap, isIntersecting: true }]);
+    image.dispatchEvent(new window.Event("load"));
+    assert.equal(fits, 1, "恢复原图后重建译图");
+    assert.equal(image.getAttribute("src"), "original.png");
+    await container._litmtransImageMemoryManager.prepareForPrint();
+    assert.equal(decoded, 1, "打印前等待修复图解码");
+  }
+
   return { sourceOnlyLogosReuseThePDFBackground, coloredBackgroundsAndUncertainFallback, translatedTablesUseNativeBackgroundWithoutChangingOtherMedia, nativePDFRenderingSkipsWindowTheme,
     screenThemeNeverChangesNativePixels, printSnapshotUsesNativeCompressedBackground,
     offscreenCanvasesAreReleasedAndStaleLoadsCannotPublish, concurrentPrintSnapshotsAreSerialized,
     comparisonUsesOneScaleAndTopAlignment, unexpectedPageCountCannotDiscardRealPages,
     nativeThemeBackgroundDropsObsoleteResults, nativeFigureGroupsAndTableProtection,
-    displayBackgroundRequestsRawFigureColors };
+    displayBackgroundRequestsRawFigureColors, translatedImagesFollowReaderTheme, translatedImageMemoryAndPrintRestore };
 };

@@ -723,7 +723,7 @@
 
   <dialog id="image-preview-dialog" class="image-preview-dialog" aria-label="图片预览">
     <div class="image-preview-stage">
-      <img id="image-preview-image" alt="对话图片预览" draggable="false" />
+      <div id="image-preview-images" class="image-preview-images"><img id="image-preview-original" alt="原图" draggable="false" hidden="hidden" /><img id="image-preview-image" alt="图片预览" draggable="false" /></div>
       <div id="table-preview-content" hidden="hidden"><div id="table-preview-body"></div></div>
     </div>
     <div class="image-preview-toolbar" role="toolbar" aria-label="图片操作">
@@ -731,6 +731,7 @@
       <output id="image-preview-scale">100%</output>
       <button id="image-preview-zoom-in" class="button" type="button" title="放大">＋</button>
       <button id="image-preview-fit" class="button" type="button">适合窗口</button>
+      <button id="image-preview-compare" class="button" type="button" aria-pressed="false" hidden="hidden">对照</button>
       <span class="modal-spacer"></span>
       <button id="image-preview-reuse" class="button" type="button">在对话中提问</button>
       <button id="image-preview-copy" class="button" type="button">复制图片</button>

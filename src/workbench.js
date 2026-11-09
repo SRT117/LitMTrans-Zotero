@@ -230,7 +230,7 @@
       "provider-cards-dialog", "close-provider-cards", "done-provider-cards", "provider-card-list", "new-provider-card",
       "delete-provider-card", "provider-card-name", "provider-card-provider", "provider-card-base-url", "provider-card-api-key", "provider-card-api-key-state",
       "save-provider-card", "apply-provider-card",
-      "image-preview-dialog", "image-preview-image", "image-preview-scale", "image-preview-zoom-out", "image-preview-zoom-in",
+      "image-preview-dialog", "image-preview-images", "image-preview-original", "image-preview-image", "image-preview-compare", "image-preview-scale", "image-preview-zoom-out", "image-preview-zoom-in",
       "image-preview-fit", "image-preview-reuse", "image-preview-copy", "image-preview-save", "image-preview-close",
       "table-preview-content", "table-preview-body", "table-preview-copy", "table-preview-save-html",
       "prompt-library-dialog", "prompt-library-close", "prompt-library-done", "prompt-library-list", "prompt-library-new",
@@ -1930,7 +1930,8 @@
   }
 
   function setPreviewTableMode(enabled) {
-    els["image-preview-image"].hidden = enabled;
+    els["image-preview-images"].hidden = enabled;
+    els["image-preview-compare"].hidden = enabled || !state.previewImage?.displayURL;
     els["table-preview-content"].hidden = !enabled;
     els["image-preview-copy"].hidden = enabled;
     els["image-preview-save"].hidden = enabled;
@@ -2042,12 +2043,15 @@
 
   function fitLayoutImageLabels(pages) {
     for (const page of pages) for (const host of page.querySelectorAll(".layout-image-translation")) {
+      const image = host.querySelector("img");
       if (state.settings?.translateImages === false) {
         host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; });
+        image.style.visibility = "";
+        if (host._litmtransCleanedImage) host._litmtransCleanedImage.hidden = true;
+        window.LitMTrans?.ReaderImages?.refreshImageHost(host);
         delete host._litmtransImageLabelFit;
         continue;
       }
-      const image = host.querySelector("img");
       const paint = () => {
         if (state.settings?.translateImages === false || !host.isConnected || !image.naturalWidth || !host.clientWidth || !host.clientHeight) return;
         const hostStyle = getComputedStyle(host);
@@ -2059,24 +2063,25 @@
         try {
           const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
           const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          const combined = ctx.createImageData(canvas.width, canvas.height);
+          combined.data.set(pixels);
+          let hasLabels = false;
           const scale = Math.min(hostWidth / canvas.width, hostHeight / canvas.height);
           const offsetX = (hostWidth - canvas.width * scale) / 2, offsetY = (hostHeight - canvas.height * scale) / 2;
           const protectedBoxes = JSON.parse(host.dataset.protectedBoxes || '[]');
-          for (const label of host.querySelectorAll(".layout-image-label")) {
+          const labels = [...host.querySelectorAll(".layout-image-label")];
+          const labelBoxes = labels.map(label => JSON.parse(label.dataset.box));
+          for (const [index, label] of labels.entries()) {
             label.hidden = true;
-            const box = JSON.parse(label.dataset.box);
-            const restored = window.LitMTrans.LayoutImages.restoreImageLabel(pixels, canvas.width, canvas.height, box, protectedBoxes, label.dataset.sourceText);
+            const box = labelBoxes[index];
+            const restored = window.LitMTrans.LayoutImages.restoreImageLabel(pixels, canvas.width, canvas.height, box, protectedBoxes, label.dataset.sourceText,
+              labelBoxes.filter((_, other) => other !== index));
             if (!restored) continue;
             const [x0, y0, x1, y1] = restored.box;
-            const patch = document.createElement("canvas"); patch.width = restored.width; patch.height = restored.height;
-            let background;
-            try {
-              const paint = patch.getContext("2d"), data = paint.createImageData(patch.width, patch.height);
-              data.data.set(restored.pixels); paint.putImageData(data, 0, 0); background = patch.toDataURL("image/png");
-            } finally { patch.width = patch.height = 1; }
-            label.style.cssText = `left:${offsetX + x0 * scale}px;top:${offsetY + y0 * scale}px;width:${(x1 - x0) * scale}px;height:${(y1 - y0) * scale}px;background-image:url("${background}");background-size:100% 100%;color:rgb(${restored.color.join(",")})`;
+            label.style.cssText = `left:${offsetX + x0 * scale}px;top:${offsetY + y0 * scale}px;width:${(x1 - x0) * scale}px;height:${(y1 - y0) * scale}px;color:rgb(${restored.color.join(",")})`;
+            label.dataset.neutralInk = Math.max(...restored.color) - Math.min(...restored.color) <= 25 ? "1" : "0";
             const font = getComputedStyle(host).fontFamily;
-            let size = (y1 - y0) * scale * .9;
+            let size = Math.min(y1 - y0, (box[3] - box[1]) * canvas.height) * scale * .8;
             ctx.font = `${size}px ${font}`;
             size *= Math.min(1, (x1 - x0) * scale / Math.max(1, ctx.measureText(label.textContent).width));
             const minimum = 3 * host.closest(".layout-block").clientWidth / Math.max(1, Number(host.closest(".layout-block").dataset.imageSourceWidth));
@@ -2088,9 +2093,27 @@
               label.style.fontSize = `${size}px`;
             }
             if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.hidden = true;
+            if (label.hidden) continue;
+            hasLabels = true;
+            for (let y = 0; y < restored.height; y++) for (let x = 0; x < restored.width; x++) {
+              const at = (y * restored.width + x) * 4, target = ((y0 + y) * canvas.width + x0 + x) * 4;
+              if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
+                && restored.pixels[at + 2] === pixels[target + 2]) continue;
+              for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+            }
           }
+          if (hasLabels) {
+            ctx.putImageData(combined, 0, 0);
+            const cleaned = host._litmtransCleanedImage || document.createElement("img");
+            if (!host._litmtransCleanedImage) { cleaned.className = "layout-image-cleaned";cleaned.alt = "";host.appendChild(cleaned);host._litmtransCleanedImage = cleaned; }
+            cleaned.src = canvas.toDataURL("image/png");cleaned.hidden = false;image.style.visibility = "hidden";
+          } else {
+            image.style.visibility = "";
+            if (host._litmtransCleanedImage) host._litmtransCleanedImage.hidden = true;
+          }
+          window.LitMTrans?.ReaderImages?.refreshImageHost(host);
           host._litmtransImageLabelFit = key;
-        } catch (_) { host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; }); }
+        } catch (_) { host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; });image.style.visibility = "";if (host._litmtransCleanedImage) host._litmtransCleanedImage.hidden = true;window.LitMTrans?.ReaderImages?.refreshImageHost(host); }
         finally { canvas.width = canvas.height = 1; }
       };
       if (image.complete) paint();
@@ -3674,13 +3697,13 @@
 
   function installLayoutImageMemoryManager(container, scroll) {
     try { container._litmtransImageMemoryManager?.disconnect(); } catch (_) {}
-    const images = [...container.querySelectorAll(".layout-block.layout-image img")];
+    const images = [...container.querySelectorAll(".layout-block.layout-image img:not(.layout-image-cleaned)")];
     if (!images.length || typeof IntersectionObserver !== "function") return;
     const timers = new Set();
     const pageImages = new Map();
     let paused = false;
     for (const wrap of container.querySelectorAll(".layout-page-wrap")) {
-      const rows = [...wrap.querySelectorAll(".layout-block.layout-image img")];
+      const rows = [...wrap.querySelectorAll(".layout-block.layout-image img:not(.layout-image-cleaned)")];
       if (!rows.length) continue;
       pageImages.set(wrap, rows);
       for (const image of rows) {
@@ -3696,6 +3719,15 @@
       timers.delete(image._litmtransUnloadTimer);
       image._litmtransUnloadTimer = null;
     };
+    const restoreImage = image => {
+      const source = image.dataset.layoutImageSrc;
+      if (!source || image.getAttribute("src")) return;
+      if (image.closest(".layout-image-translation")) image.addEventListener("load", () => {
+        const page = image.closest(".layout-page");
+        if (page) fitLayoutImageLabels([page]);
+      }, { once: true });
+      image.setAttribute("src", source);
+    };
     const observer = new IntersectionObserver(entries => {
       if (paused) return;
       for (const entry of entries) {
@@ -3703,8 +3735,7 @@
         for (const image of rows) {
           cancelUnload(image);
           if (entry.isIntersecting) {
-            const source = image.dataset.layoutImageSrc;
-            if (source && !image.getAttribute("src")) image.setAttribute("src", source);
+            restoreImage(image);
             image.classList.remove("layout-image-unloaded");
             continue;
           }
@@ -3716,6 +3747,16 @@
             if (source) image.dataset.layoutImageSrc = source;
             image.removeAttribute("src");
             image.classList.add("layout-image-unloaded");
+            const host = image.closest(".layout-image-translation");
+            if (host?._litmtransCleanedImage) {
+              host._litmtransCleanedImage.hidden = true;
+              image.style.visibility = "";
+              window.LitMTrans?.ReaderImages?.refreshImageHost(host);
+              host._litmtransCleanedImage.remove();
+              host._litmtransCleanedImage = null;
+              host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; });
+              delete host._litmtransImageLabelFit;
+            }
           }, 750);
           image._litmtransUnloadTimer = timer;
           timers.add(timer);
@@ -3735,8 +3776,7 @@
       for (const rows of pageImages.values()) {
         for (const image of rows) {
           cancelUnload(image);
-          const source = image.dataset.layoutImageSrc;
-          if (source && !image.getAttribute("src")) image.setAttribute("src", source);
+          restoreImage(image);
           image.classList.remove("layout-image-unloaded");
           image.loading = "eager";
         }
@@ -3768,6 +3808,8 @@
       async prepareForPrint() {
         restoreAll();
         await waitForImages();
+        await Promise.all([...container.querySelectorAll(".layout-image-cleaned:not([hidden])")].map(image =>
+          typeof image.decode === "function" ? image.decode().catch(() => {}) : Promise.resolve()));
       },
       restoreForPrintEvent() {
         // `beforeprint` is synchronous. Restore sources immediately; the
@@ -4704,8 +4746,9 @@
       blob = await response.blob();
     }
     catch (fetchErr) {
-      const previewImg = els["image-preview-image"];
-      if (previewImg && (previewImg.src === url || previewImg.currentSrc === url) && previewImg.naturalWidth) {
+      const previewImg = [els["image-preview-original"], els["image-preview-image"]].find(image =>
+        image && (image.src === url || image.currentSrc === url) && image.naturalWidth);
+      if (previewImg) {
         const canvas = document.createElement("canvas");
         canvas.width = previewImg.naturalWidth;
         canvas.height = previewImg.naturalHeight;
@@ -4763,6 +4806,10 @@
     state.previewScale = Math.max(.1, Math.min(8, Number(scale) || 1));
     image.style.width = `${Math.max(1, Math.round(naturalWidth * state.previewScale))}px`;
     image.style.height = `${Math.max(1, Math.round(naturalHeight * state.previewScale))}px`;
+    if (!state.previewTable && !els["image-preview-original"].hidden) {
+      els["image-preview-original"].style.width = image.style.width;
+      els["image-preview-original"].style.height = image.style.height;
+    }
     if (state.previewTable) els["table-preview-body"].style.transform = `scale(${state.previewScale})`;
     els["image-preview-scale"].textContent = `${Math.round(state.previewScale * 100)}%`;
     if (anchor && stage && stageRect) {
@@ -4780,7 +4827,7 @@
     if (!width || !height || !stage) return;
     const scale = Math.min(
       1,
-      Math.max(.1, (stage.clientWidth - 34) / width),
+      Math.max(.1, (stage.clientWidth - 34 - (!state.previewTable && !els["image-preview-original"].hidden ? 16 : 0)) / (width * (!state.previewTable && !els["image-preview-original"].hidden ? 2 : 1))),
       state.previewTable ? 1 : Math.max(.1, (stage.clientHeight - 34) / height)
     );
     applyPreviewScale(scale);
@@ -4788,19 +4835,50 @@
     stage.scrollTop = 0;
   }
 
+  function translatedImagePreviewDataURL(host) {
+    const source = host?._litmtransCleanedImage;
+    if (!source || source.hidden || !source.complete || !source.naturalWidth || !host.clientWidth || !host.clientHeight) return "";
+    const width = source.naturalWidth, height = source.naturalHeight;
+    const style = getComputedStyle(host), hostWidth = parseFloat(style.width) || host.clientWidth, hostHeight = parseFloat(style.height) || host.clientHeight;
+    const scale = Math.min(hostWidth / width, hostHeight / height);
+    const offsetX = (hostWidth - width * scale) / 2, offsetY = (hostHeight - height * scale) / 2;
+    const canvas = document.createElement("canvas");canvas.width = width;canvas.height = height;
+    try {
+      const ctx = canvas.getContext("2d");ctx.drawImage(source, 0, 0);
+      ctx.textAlign = "center";ctx.textBaseline = "middle";
+      for (const label of host.querySelectorAll(".layout-image-label")) {
+        if (label.hidden) continue;
+        const left = parseFloat(label.style.left), top = parseFloat(label.style.top), w = parseFloat(label.style.width), h = parseFloat(label.style.height);
+        const size = parseFloat(label.style.fontSize);
+        if (![left, top, w, h, size].every(Number.isFinite) || size <= 0) continue;
+        const textStyle = getComputedStyle(label);
+        ctx.font = `${textStyle.fontWeight || "normal"} ${size / scale}px ${textStyle.fontFamily}`;
+        ctx.fillStyle = label.style.color || "#111";
+        ctx.fillText(label.textContent, (left + w / 2 - offsetX) / scale, (top + h / 2 - offsetY) / scale, w / scale);
+      }
+      return canvas.toDataURL("image/png");
+    } catch (_) { return ""; }
+    finally { canvas.width = canvas.height = 1; }
+  }
+
   function openImagePreview(image) {
     if (!image) return;
     state.previewTable = null;
-    setPreviewTableMode(false);
     state.previewImage = {
       name: String(image.name || "image.png"),
       mimeType: String(image.mimeType || "image/png"),
       size: Number(image.size || 0),
       url: String(image.dataURL || image.url || ""),
       dataURL: String(image.dataURL || ""),
-      quote: normalizeReferenceQuote(image.quote)
+      quote: normalizeReferenceQuote(image.quote),
+      displayURL: String(image.displayURL || "")
     };
-    els["image-preview-image"].src = state.previewImage.url;
+    setPreviewTableMode(false);
+    els["image-preview-original"].hidden = true;
+    if (state.previewImage.displayURL) els["image-preview-original"].src = state.previewImage.url;
+    else els["image-preview-original"].removeAttribute("src");
+    els["image-preview-compare"].setAttribute("aria-pressed", "false");
+    els["image-preview-image"].src = state.previewImage.displayURL || state.previewImage.url;
     els["image-preview-image"].alt = state.previewImage.name;
     els["image-preview-dialog"].showModal();
     syncDeepSeekWebBounds();
@@ -4864,7 +4942,7 @@
   async function copyPreviewImage() {
     if (!state.previewImage) return;
     try {
-      const dataURL = await imageDescriptorDataURL(state.previewImage);
+      const dataURL = state.previewImage.displayURL || await imageDescriptorDataURL(state.previewImage);
       try {
         await hostCall("copy-image", { dataURL });
         toast("图片已复制");
@@ -4889,10 +4967,10 @@
   async function savePreviewImage() {
     if (!state.previewImage) return;
     try {
-      const dataURL = await imageDescriptorDataURL(state.previewImage);
+      const dataURL = state.previewImage.displayURL || await imageDescriptorDataURL(state.previewImage);
       const result = await hostCall("save-image", {
         dataURL,
-        name: state.previewImage.name || "generated_image.png"
+        name: state.previewImage.displayURL ? `${String(state.previewImage.name || "image").replace(/\.[^.]+$/, "")}-translation.png` : (state.previewImage.name || "generated_image.png")
       });
       if (!result?.cancelled) toast(`图片已保存：${result.path}`);
     }
@@ -8100,7 +8178,8 @@
         openLayoutFormulaViewer(formula);
         return;
       }
-      const image = event.target?.closest?.(".layout-block.layout-image img, #source-content img, #translation-content img");
+      const image = event.target?.closest?.(".layout-block.layout-image img, #source-content img, #translation-content img")
+        || event.target?.closest?.(".layout-image-translation")?.querySelector("img:not(.layout-image-cleaned)");
       if (image) {
         event.preventDefault();
         const pane = readerPaneForTarget(image);
@@ -8114,6 +8193,7 @@
           name,
           mimeType,
           url: srcUrl,
+          displayURL: state.settings?.translateImages !== false ? translatedImagePreviewDataURL(image.closest(".layout-image-translation")) : "",
           quote: pane ? readerImageQuote(image, pane) : null
         });
       }
@@ -8127,7 +8207,8 @@
       menu = document.createElement("div");
       menu.className = "layout-formula-menu";
       const paneName = pane.id === "translation-pane" ? "translation" : "source";
-      const image = event.target?.closest?.("img");
+      const image = event.target?.closest?.("img")
+        || event.target?.closest?.(".layout-image-translation")?.querySelector("img:not(.layout-image-cleaned)");
       const selectionQuote = readerSelectionQuote(pane, event.target);
       const imageQuote = readerImageQuote(image, pane);
       const addAction = (label, action, disabled = false) => {
@@ -11256,6 +11337,12 @@
     els["image-preview-zoom-in"].addEventListener("click", () => applyPreviewScale(state.previewScale * 1.2));
     els["image-preview-zoom-out"].addEventListener("click", () => applyPreviewScale(state.previewScale / 1.2));
     els["image-preview-fit"].addEventListener("click", fitPreviewImage);
+    els["image-preview-compare"].addEventListener("click", () => {
+      const original = els["image-preview-original"];
+      original.hidden = !original.hidden;
+      els["image-preview-compare"].setAttribute("aria-pressed", String(!original.hidden));
+      fitPreviewImage();
+    });
     els["image-preview-reuse"].addEventListener("click", reusePreviewImage);
     els["image-preview-copy"].addEventListener("click", copyPreviewImage);
     els["image-preview-save"].addEventListener("click", savePreviewImage);
@@ -11264,6 +11351,9 @@
     els["image-preview-close"].addEventListener("click", () => els["image-preview-dialog"].close());
     els["image-preview-dialog"].addEventListener("close", () => {
       els["image-preview-image"].removeAttribute("src");
+      els["image-preview-original"].removeAttribute("src");
+      els["image-preview-original"].hidden = true;
+      els["image-preview-compare"].setAttribute("aria-pressed", "false");
       state.previewImage = null;
       state.previewTable = null;
       els["table-preview-body"].replaceChildren();

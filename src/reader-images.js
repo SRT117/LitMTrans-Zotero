@@ -133,7 +133,7 @@
 
   function paint(image) {
     if (!theme || !image.matches(selector)) return;
-    if (image.closest('.layout-image-translation')) { clear(image); return; }
+    if (image.closest('.layout-image-translation') && (image.hidden || image.style.visibility === 'hidden')) { clear(image); return; }
     if (image.closest('.has-themed-pdf-bg [data-pdf-screen-retained="1"]')) {
       clear(image);
       return;
@@ -221,5 +221,12 @@
   }
 
   window.LitMTrans = window.LitMTrans || {};
-  window.LitMTrans.ReaderImages = { setTheme, paintBackground, clearBackground };
+  function refreshImageHost(host) {
+    host.querySelectorAll('img').forEach(image => {
+      if (image.hidden || image.style.visibility === 'hidden') clear(image);
+      else paint(image);
+    });
+  }
+
+  window.LitMTrans.ReaderImages = { setTheme, paintBackground, clearBackground, refreshImageHost };
 })();

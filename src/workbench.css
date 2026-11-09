@@ -330,6 +330,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     object-fit: contain;
     pointer-events: none;
   }
+  :root[data-reader-theme] #translation-layout .layout-page:not(.layout-print-source) .layout-image-label[data-neutral-ink="1"] { color: var(--reader-ink) !important; }
   :root[data-reader-theme] #translation-layout .layout-page:not(.layout-print-source) {
     --layout-paper: var(--reader-paper);
     --layout-ink: var(--reader-ink);
@@ -480,8 +481,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-block.layout-caption { font-style: normal; }
 .layout-block.layout-formula { display: grid; place-items: center; overflow: visible; text-align: center; }
 .layout-block.layout-image img { width: 100%; height: 100%; object-fit: contain; }
-.layout-image-translation { position: relative; width: 100%; height: 100%; }
-.layout-image-label { position: absolute; display: flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 0; line-height: 1; white-space: nowrap; overflow: hidden; text-align: center; pointer-events: none; }
+.layout-image-translation { position: relative; width: 100%; height: 100%; cursor: zoom-in; }
+.layout-image-cleaned { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.layout-image-label { position: absolute; z-index: 1; display: flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 0; line-height: 1; white-space: nowrap; overflow: hidden; text-align: center; pointer-events: none; }
 .layout-image-label[hidden] { display: none !important; }
 .layout-block.layout-table { overflow: auto; }
 .layout-block .layout-table-wrap { width: 100%; height: 100%; overflow: auto; }
@@ -1041,6 +1043,9 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 .image-preview-dialog::backdrop { background: rgba(0, 0, 0, .78); }
 .image-preview-stage { position: relative; height: calc(100% - 52px); overflow: auto; display: grid; place-items: center; cursor: grab; overscroll-behavior: contain; }
 .image-preview-stage.dragging { cursor: grabbing; }
+.image-preview-images { display: flex; align-items: center; justify-content: center; gap: 16px; }
+.image-preview-images[hidden], .image-preview-images img[hidden] { display: none !important; }
+.image-preview-toolbar button[aria-pressed="true"] { background: #505050; }
 .image-preview-stage img { max-width: none; max-height: none; transform-origin: center center; user-select: none; }
 .image-preview-toolbar { height: 52px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid #444; background: #1b1b1b; }
 .image-preview-toolbar output { min-width: 48px; color: #ddd; font: 10px var(--mono); text-align: center; }
