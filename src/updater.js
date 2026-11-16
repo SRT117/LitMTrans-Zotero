@@ -244,6 +244,26 @@
     return true;
   }
 
+  function normalizeLocalOCREntry(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const version = String(entry.version || "").trim();
+    const minPluginVersion = String(entry.minPluginVersion || "0").trim();
+    if (!/^v?\d+(?:\.\d+)*$/.test(version) || !/^\d+(?:\.\d+)*$/.test(minPluginVersion)) return null;
+    if (!entry.files || typeof entry.files !== "object") return null;
+    const files = {};
+    const bannedHost = /cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com/i;
+    for (const [name, spec] of Object.entries(entry.files)) {
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(name) || name.includes("..")) return null;
+      const sha256 = String(spec?.sha256 || "").trim().toLowerCase();
+      const urls = Array.isArray(spec?.urls)
+        ? spec.urls.map(item => String(item || "").trim()).filter(url => /^https:\/\//i.test(url) && !/\s/.test(url) && !bannedHost.test(url))
+        : [];
+      if (!Number.isSafeInteger(spec?.size) || spec.size < 1 || !/^[a-f0-9]{64}$/.test(sha256) || !urls.length) return null;
+      files[name] = { size: spec.size, sha256, urls };
+    }
+    return Object.keys(files).length ? { version, minPluginVersion, files } : null;
+  }
+
   function normalizeParserModels(value) {
     if (!Number.isSafeInteger(value?.revision) || value.revision < 1) return null;
     const output = { revision: value.revision };
@@ -259,7 +279,9 @@
       output[key] = { model: entry.model, minPluginVersion: entry.minPluginVersion,
         apiProtocol: entry.apiProtocol, resultSchema: entry.resultSchema };
     }
-    return output.paddle || output.paddleOCR ? output : null;
+    const localOCR = normalizeLocalOCREntry(value.localOCR);
+    if (localOCR) output.localOCR = localOCR;
+    return output.paddle || output.paddleOCR || output.localOCR ? output : null;
   }
 
   const Updater = {

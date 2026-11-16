@@ -224,6 +224,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .document-pane .markdown-body > p { text-align: justify; text-indent: .8cm; }
 .document-pane .markdown-body > p.caption-like { width: fit-content; max-width: 100%; margin: .7em auto .25em; color: var(--ink-2); font-size: .92em; font-weight: 500; text-align: center; text-indent: 0; }
 .markdown-body a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.markdown-body a.litmtrans-link { color: var(--link, #0969da); text-decoration: none; cursor: pointer; }
+.markdown-body a.litmtrans-link:hover { text-decoration: underline; }
 .markdown-body blockquote { margin: 1.1em 0; padding: .2em 1em; border-left: 3px solid var(--line-strong); color: var(--ink-2); }
 .markdown-body pre { max-width: 100%; overflow: auto; padding: 13px; background: var(--surface-3); border: 1px solid var(--line); font: 12px/1.55 var(--mono); }
 .markdown-body code { padding: .08em .25em; background: var(--surface-3); font: .86em var(--mono); }
@@ -261,6 +263,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 
 /* Match the Zotero Reader preview's top inset so the facing pages share one baseline. */
 .layout-document { width: 100%; min-height: 100%; padding: 6px 12px 100px; }
+@media screen { #translation-layout { padding-bottom: 12px; } }
 #source-layout.layout-export-cache {
   position: fixed;
   left: -100000px;
@@ -334,7 +337,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   :root[data-reader-theme] #translation-layout .layout-page:not(.layout-print-source) {
     --layout-paper: var(--reader-paper);
     --layout-ink: var(--reader-ink);
-    --layout-link: color-mix(in srgb, var(--reader-ink) 75%, #3b82f6);
+    --layout-link: color-mix(in srgb, var(--reader-ink) 25%, #3b82f6);
     --layout-code-bg: color-mix(in srgb, var(--reader-paper) 92%, var(--reader-ink));
     --layout-code-ink: var(--reader-ink);
     --layout-table-border: color-mix(in srgb, var(--reader-ink) 50%, var(--reader-paper));
@@ -463,7 +466,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-block.type-ref_text { line-height: 1.1; text-align: left; }
 .layout-block a, .layout-flow-stream a { color: var(--layout-link, #0645ad); font: inherit; text-decoration: none; cursor: pointer; }
 .layout-block a:hover, .layout-flow-stream a:hover { text-decoration: underline; }
-.layout-reference-focus { background: rgba(250, 204, 21, .25); }
+.layout-reference-focus { background: rgba(250, 204, 21, .28); outline: 2px solid rgba(216, 148, 0, .7); border-radius: 2px; }
 .translation-media-toggles { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
 .layout-block.type-table_caption,
 .layout-block.type-table_footnote,

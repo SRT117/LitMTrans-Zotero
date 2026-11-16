@@ -524,19 +524,19 @@
       const batches = this.packItems(pending, limit);
       if (provider === EDGE) {
         let completed = 0;
+        const total = pending.length;
         for (let index = 0; index < batches.length; index++) {
           abort(options.signal);
           const batch = batches[index];
-          options.log?.(`Edge本地翻译批次${index + 1}/${batches.length}，共${batch.length}个文本块，正在逐块处理…`);
           for (const [id, protectedText] of batch) {
             abort(options.signal);
             const translatedText = await translator.translate(protectedText, options.signal);
             translations[id] = restoreInlineTokens(translatedText, translations[`__placeholders__${id}`] || []);
             delete translations[`__placeholders__${id}`];
             completed++;
+            options.onProgress?.({ completed, total, batchIndex: index + 1, batchCount: batches.length, provider });
             options.liveUpdate?.({ ...translations });
           }
-          options.log?.(`Edge本地翻译已完成${completed}/${pending.length}个待翻译文本块。`);
         }
         return Object.fromEntries(items.map(([id, source]) => [id, translations[id] ?? source]));
       }
@@ -659,7 +659,9 @@
         // Add the records handled by local rules so this counter uses the same
         // all-records denominator shown to the user.
         const handled = direct + items.filter(([id]) => Object.hasOwn(partial, id)).length;
-        options.liveUpdate?.(`正在进行排版翻译…\n\n- 已处理：${handled}/${allRecords.length}\n- 当前服务：${translatorLabel(translator)}`);
+        const total = Math.max(1, allRecords.length);
+        const percent = Math.round((handled * 100) / total);
+        options.liveUpdate?.(`正在使用${translatorLabel(translator)}排版翻译，已处理：${handled}/${allRecords.length}（${percent}%）`);
       };
       publishProgress({});
       const result = await this.translateItems(items, {

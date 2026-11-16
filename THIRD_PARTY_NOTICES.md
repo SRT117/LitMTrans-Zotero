@@ -33,6 +33,12 @@ this notice does not make a legal determination about combined-work licensing.
 
 ## Dynamically downloaded runtime
 
+The optional local image OCR bundles PaddleOCR.js 0.4.2, OpenCV.js,
+clipper-lib and js-yaml; their Apache-2.0, Boost-1.0 and MIT notices are in
+`assets/vendor/licenses/local-ocr/`. ONNX Runtime Web 1.31.1 and the PP-OCRv6
+tiny model files are downloaded from their upstream services on first use;
+their MIT and Apache-2.0 notices are retained in the same directory.
+
 The optional acquisition runtime is not bundled in the XPI. Its pinned Python,
 uv, pip, ScanSci, and dependency-installation boundaries are described in
 `docs/licensing/acquisition-runtime.md`. Runtime files are fetched from their

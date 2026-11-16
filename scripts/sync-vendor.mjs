@@ -20,3 +20,4 @@ for (const [sourceRelative, targetRelative] of files) {
 }
 
 await patchScaffold();
+await import("./build-local-ocr.mjs");

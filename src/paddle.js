@@ -86,7 +86,7 @@
         if (task.state === "pending") pendingSince ??= Date.now();
         else pendingSince = null;
         const hint = pendingSince !== null && Date.now() - pendingSince >= 120000
-          ? "；等待时间较长，可在设置中将解析服务切换为 MinerU 后重试" : "";
+          ? "；等待时间较长，可能处于Paddle服务器不稳定或拥挤时段，可以尝试切换为MinerU解析服务" : "";
         emit?.({ type: "progress", phase: "paddle-poll", progress: total ? 15 + Math.min(60, Number(progress.extractedPages || 0) / total * 60) : null,
           message: (total ? `Paddle解析中：${Number(progress.extractedPages || 0)}/${total} 页` : "正在等待Paddle解析结果") + hint });
         await U.sleep(options.pollIntervalMs ?? 3000, signal);

@@ -226,7 +226,10 @@
       this.parser = new LitMTrans.DocumentParserService(this.storage, this.secrets, this.mineru);
       this.translation = new LitMTrans.TranslationService(this.storage, this.llm, this.parser, this.webMachine);
       this.layout = new LitMTrans.LayoutTranslationService(this.storage, this.llm, this.webMachine);
-      this.layout.imageService = new LitMTrans.ImageTranslationService(this.storage, this.parser.paddle, this.mineru);
+      this.layout.imageService = new LitMTrans.ImageTranslationService(this.storage, this.parser.paddle, this.mineru, {
+        localOCRConsent: info => this.confirmLocalOCRReadiness(info),
+        switchToPaddle: () => this.switchParseProviderToPaddle()
+      });
       if (LitMTrans.DeepSeekWeb?.PDFPageRenderer) {
         this.layout.lineService = new LitMTrans.PaddleLineService(this.storage, this.parser.paddle,
           new LitMTrans.DeepSeekWeb.PDFPageRenderer(this));
@@ -713,6 +716,15 @@
           || models.revision < Number(U.getPref(revision, 0))) continue;
         if (U.getPref(pref, fallback) !== entry.model) { U.setPref(pref, entry.model); changed = true; }
         U.setPref(revision, models.revision);
+      }
+      if (models.localOCR && LitMTrans.Updater.compareVersions(this.version, models.localOCR.minPluginVersion || "0") >= 0
+        && models.revision >= Number(U.getPref("localOCRCatalogRevision", 0))) {
+        const serialized = JSON.stringify(models.localOCR);
+        if (U.getPref("localOCRCatalog", "") !== serialized) {
+          U.setPref("localOCRCatalog", serialized);
+          changed = true;
+        }
+        U.setPref("localOCRCatalogRevision", models.revision);
       }
       return changed;
     }
@@ -4618,6 +4630,74 @@
       }
     }
 
+    switchParseProviderToPaddle() {
+      U.setPref("parseProvider", "paddle");
+      const settings = this.getSettings();
+      this.log("已自动切换解析服务为 PaddleOCR");
+      return settings;
+    }
+
+    async getImageOCRReadiness() {
+      const parseProvider = String(U.getPref("parseProvider", "mineru") || "mineru");
+      const mode = LitMTrans.LayoutImages.resolveImageOCRMode(parseProvider);
+      if (mode !== "local") {
+        return { parseProvider, mode, ready: true, totalBytes: 0, missingBytes: 0 };
+      }
+      const status = await this.storage.getLocalOCRStatus();
+      return { parseProvider, mode, ...status };
+    }
+
+    async confirmLocalOCRReadiness() {
+      const win = Zotero.getMainWindow?.() || [...this.windows][0] || null;
+      const doc = win?.document;
+      if (!doc?.createXULElement || !doc.documentElement) return "cancel";
+      return new Promise(resolve => {
+        const panel = doc.createXULElement("panel");
+        panel.setAttribute("type", "arrow");
+        panel.setAttribute("noautohide", "true");
+        panel.setAttribute("role", "alertdialog");
+        panel.style.cssText = "max-width: min(580px, calc(100vw - 32px));";
+        const box = doc.createXULElement("vbox");
+        box.style.cssText = "padding: 14px; gap: 10px;";
+        const title = doc.createXULElement("label");
+        title.setAttribute("value", "准备本地图片文字识别");
+        title.style.cssText = "font-weight: 600;";
+        const description = doc.createXULElement("description");
+        description.textContent = "当前解析服务为MinerU，启用“翻译图片”需要下载本地图片识别模型（约36MB），或直接切换为Paddle解析服务进行云端识别。";
+        description.style.cssText = "white-space: pre-wrap; max-width: 540px;";
+        const buttons = doc.createXULElement("hbox");
+        buttons.style.cssText = "gap: 8px; justify-content: flex-end;";
+        const cancel = doc.createXULElement("button");
+        cancel.setAttribute("label", "暂不识别");
+        const toPaddle = doc.createXULElement("button");
+        toPaddle.setAttribute("label", "切换为Paddle");
+        const download = doc.createXULElement("button");
+        download.setAttribute("label", "下载本地模型");
+        let answered = false;
+        const finish = answer => {
+          if (answered) return;
+          answered = true;
+          resolve(answer);
+          try { panel.hidePopup(); } catch (_) { panel.remove(); }
+        };
+        cancel.addEventListener("command", () => finish("cancel"));
+        toPaddle.addEventListener("command", () => finish("paddle"));
+        download.addEventListener("command", () => finish("download"));
+        panel.addEventListener("popuphidden", () => {
+          panel.remove();
+          if (!answered) {
+            answered = true;
+            resolve("cancel");
+          }
+        });
+        buttons.append(cancel, toPaddle, download);
+        box.append(title, description, buttons);
+        panel.append(box);
+        doc.documentElement.append(panel);
+        panel.openPopup(doc.documentElement, "after_start", 16, 16, false, false);
+      });
+    }
+
     async confirmEdgeModelDownload(sourceLanguage, targetLanguage) {
       const win = Zotero.getMainWindow?.() || [...this.windows][0] || null;
       const doc = win?.document;
@@ -6377,6 +6457,9 @@
             });
           };
           const readerScroll = () => emitLocation();
+          const readerUserScroll = event => {
+            if (!event.ctrlKey) this.sendToPage(runtime, { type: "event", payload: { type: "reader-user-scroll" } });
+          };
           let selectionFrame = 0;
           const emitSelection = () => {
             if (selectionFrame) return;
@@ -6426,6 +6509,8 @@
           }
           if (viewerContainer) {
             viewerContainer.addEventListener("scroll", readerScroll, { passive: true });
+            viewerContainer.addEventListener("wheel", readerUserScroll, { passive: true });
+            viewerContainer.addEventListener("pointerdown", readerUserScroll, { passive: true });
             pdfWindow.document.addEventListener("selectionchange", emitSelection);
             // Capture before PDF.js handles the wheel event so it cannot
             // escape the iframe as an application/browser zoom gesture.
@@ -6438,6 +6523,8 @@
               try { eventBus?.off?.("pagesinit", fitPDFToWidth); } catch (_) {}
               try { eventBus?.off?.("pagechanging", emitLocation); } catch (_) {}
               try { viewerContainer?.removeEventListener("scroll", readerScroll); } catch (_) {}
+              try { viewerContainer?.removeEventListener("wheel", readerUserScroll); } catch (_) {}
+              try { viewerContainer?.removeEventListener("pointerdown", readerUserScroll); } catch (_) {}
               try { pdfWindow.document.removeEventListener("selectionchange", emitSelection); } catch (_) {}
               try { viewerContainer?.removeEventListener("wheel", zoomOriginalPDF, true); } catch (_) {}
               try { pdfWindow.removeEventListener("resize", fitPDFToWidth); } catch (_) {}
@@ -6479,6 +6566,17 @@
           const page = Math.max(1, Math.min(Number(pdfViewer.pagesCount || Infinity), Math.trunc(Number(payload.page || 1))));
           const pageRatio = Math.max(0, Math.min(1, Number(payload.pageRatio || 0)));
           const anchorRatio = Math.max(0, Math.min(1, Number(payload.anchorRatio ?? .5)));
+          if (payload.syncScroll) {
+            const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
+            const pageView = pdfViewer.getPageView?.(page - 1);
+            if (viewerContainer && pageView?.div?.offsetHeight) {
+              const top = pageView.div.offsetTop + pageView.div.offsetHeight * pageRatio - viewerContainer.clientHeight * anchorRatio;
+              const range = Math.max(0, viewerContainer.scrollHeight - viewerContainer.clientHeight);
+              const target = Math.max(0, Math.min(range, top));
+              if (Math.abs(viewerContainer.scrollTop - target) > 1) viewerContainer.scrollTop = target;
+              return { available: true, page, pageRatio, anchorRatio };
+            }
+          }
           const highlightText = String(payload.highlightText || "");
           const highlightRects = (Array.isArray(payload.highlightRects) ? payload.highlightRects : [])
             .map(rect => ({ x: Number(rect?.x), y: Number(rect?.y), width: Number(rect?.width), height: Number(rect?.height) }))
@@ -6628,6 +6726,15 @@
           for (const target of this.tabs.values()) if (target !== runtime) this.emit(target, { type: "image-preference", enabled });
           return { enabled };
         }
+
+        case "image-ocr-readiness":
+          return this.getImageOCRReadiness();
+
+        case "prepare-local-ocr":
+          return this.withOperation(runtime, "local-ocr", async (signal, emit) => {
+            await this.layout.imageService.ensureLocalModels(signal, emit);
+            return this.getImageOCRReadiness();
+          });
 
         case "translate-images": {
           return this.withOperation(runtime, "layout", async (signal, emit) => {
@@ -7407,7 +7514,7 @@
     }
 
     saveSettings(values = {}) {
-      const previousMedia = { translateTables: U.getPref("translateTables", true), translateImages: U.getPref("translateImages", true) };
+      const previousMedia = { translateTables: U.getPref("translateTables", true), translateImages: U.getPref("translateImages", false) };
       if (Object.prototype.hasOwnProperty.call(values, "parseProvider")) {
         if (!["mineru", "paddle"].includes(values.parseProvider)) throw new Error("不支持所选文献解析服务");
         U.setPref("parseProvider", values.parseProvider);
@@ -7549,9 +7656,9 @@
         this.llm.saveSettings(chatValues, "chat");
       }
       void this.agent?.applySettings?.();
-      for (const [key, type] of [["translateTables", "table-preference"], ["translateImages", "image-preference"]]) {
-        if (Object.prototype.hasOwnProperty.call(values, key) && Boolean(previousMedia[key]) !== Boolean(U.getPref(key, true))) {
-          for (const target of this.tabs.values()) this.emit(target, { type, enabled: Boolean(U.getPref(key, true)) });
+      for (const [key, type, fallback] of [["translateTables", "table-preference", true], ["translateImages", "image-preference", false]]) {
+        if (Object.prototype.hasOwnProperty.call(values, key) && Boolean(previousMedia[key]) !== Boolean(U.getPref(key, fallback))) {
+          for (const target of this.tabs.values()) this.emit(target, { type, enabled: Boolean(U.getPref(key, fallback)) });
         }
       }
       return {
@@ -7611,6 +7718,8 @@
         targetPath = this.storage.tempRoot;
       } else if (payload?.kind === "edge") {
         targetPath = PathUtils.join(this.storage.root, "edge-local-translation");
+      } else if (payload?.kind === "local-ocr") {
+        targetPath = PathUtils.join(this.storage.root, "local-ocr");
       } else if (payload?.kind === "runtime") {
         targetPath = PathUtils.join(this.storage.root, "runtime");
       } else if (payload?.kind === "documentsRoot") {
@@ -7652,6 +7761,10 @@
       }
       if (target === "edge") {
         const res = await this.storage.clearEdgeLocalFiles();
+        return { success: true, ...res };
+      }
+      if (target === "local-ocr") {
+        const res = await this.storage.clearLocalOCRFiles();
         return { success: true, ...res };
       }
       if (target === "runtime-cache") {

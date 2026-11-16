@@ -959,11 +959,15 @@
       const edgeLocalDir = PathUtils.join(this.root, "edge-local-translation");
       const edgeStats = await this.dirStats(edgeLocalDir);
 
+      // 本地图片识别模型与运行时统计
+      const localOCRDir = PathUtils.join(this.root, "local-ocr");
+      const localOCRStats = await this.dirStats(localOCRDir);
+
       // 文献采集与下载运行时统计 (ScanSci + 嵌入式 Python)
       const runtimeDir = PathUtils.join(this.root, "runtime");
       const runtimeStats = await this.dirStats(runtimeDir);
 
-      const totalBytes = documentsTotalBytes + tempStats.bytes + edgeStats.bytes + runtimeStats.bytes;
+      const totalBytes = documentsTotalBytes + tempStats.bytes + edgeStats.bytes + localOCRStats.bytes + runtimeStats.bytes;
       const documentsCoreBytes = Math.max(0, documentsTotalBytes - deepseekWebTotalBytes);
       const orphanedCoreBytes = Math.max(0, orphanedTotalBytes - orphanedDeepSeekWebBytes);
       const cajActiveBytes = Math.max(0, cajTotalBytes - orphanedCajBytes);
@@ -1005,6 +1009,9 @@
         orphanedCoreBytesFormatted: this.formatBytes(orphanedCoreBytes),
         edgeLocalTotalBytes: edgeStats.bytes,
         edgeLocalTotalBytesFormatted: edgeStats.formatted,
+        localOCRTotalBytes: localOCRStats.bytes,
+        localOCRTotalBytesFormatted: localOCRStats.formatted,
+        localOCRTotalFiles: localOCRStats.files,
         runtimeTotalBytes: runtimeStats.bytes,
         runtimeTotalBytesFormatted: runtimeStats.formatted,
         runtimeTotalFiles: runtimeStats.files,
@@ -1062,6 +1069,98 @@
       const stats = await this.dirStats(edgeRoot);
       await this.remove(edgeRoot, true);
       await this.ensureDir(edgeRoot);
+      return {
+        clearedBytes: stats.bytes,
+        clearedFiles: stats.files,
+        formatted: stats.formatted
+      };
+    }
+
+    getLocalOCRConfig() {
+      const defaults = {
+        version: "v1",
+        files: {
+          "ort-wasm-simd-threaded.jsep.mjs": {
+            size: 47250,
+            sha256: "7838b4b2e77d6f1a739cd0de800e7f18a089328b365e6af4d416a88a94fd7fd3",
+            urls: ["https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.mjs"]
+          },
+          "ort-wasm-simd-threaded.jsep.wasm": {
+            size: 29520971,
+            sha256: "5ab8361783822d02a57d1e97cf2514bceb451a628f2b29ae0d7b6e618201ff8f",
+            urls: ["https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.wasm"]
+          },
+          "PP-OCRv6_tiny_det_onnx_infer.tar": {
+            size: 1792000,
+            sha256: "ff6ab415b0a6e0c488550f2fb5d5046f1719848df220b2dc21b56402a65bc05d",
+            urls: ["https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar"]
+          },
+          "PP-OCRv6_tiny_rec_onnx_infer.tar": {
+            size: 4526080,
+            sha256: "1e13b22717b1edd89d4cde4fda272b6c17d5b505c97c2baea99da1a3a2d54b29",
+            urls: ["https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar"]
+          }
+        }
+      };
+      let override = null;
+      try {
+        const raw = U.getPref?.("localOCRCatalog", "");
+        if (raw) override = JSON.parse(raw);
+      } catch (_) {}
+      const version = /^v?\d+(?:\.\d+)*$/.test(String(override?.version || "")) ? String(override.version) : defaults.version;
+      const assets = {};
+      for (const [name, fallback] of Object.entries(defaults.files)) {
+        const remote = override?.files?.[name];
+        const urls = Array.isArray(remote?.urls)
+          ? remote.urls.map(url => String(url || "").trim()).filter(url => /^https:\/\//i.test(url))
+          : [];
+        const validRemote = remote && Number.isSafeInteger(remote.size) && remote.size > 0
+          && /^[a-f0-9]{64}$/.test(String(remote.sha256 || "")) && urls.length;
+        assets[name] = validRemote ? { size: remote.size, sha256: remote.sha256, urls } : fallback;
+      }
+      return {
+        version,
+        root: PathUtils.join(this.root, "local-ocr", version),
+        assets
+      };
+    }
+
+    localOCRDir() {
+      return this.getLocalOCRConfig().root;
+    }
+
+    async getLocalOCRStatus() {
+      const config = this.getLocalOCRConfig();
+      let totalBytes = 0;
+      let missingBytes = 0;
+      const missingFiles = [];
+      for (const [name, entry] of Object.entries(config.assets)) {
+        totalBytes += entry.size;
+        const path = PathUtils.join(config.root, name);
+        const info = await this.stat(path);
+        if (!info || info.type === "directory" || Number(info.size) !== entry.size) {
+          missingBytes += entry.size;
+          missingFiles.push(name);
+        }
+      }
+      return {
+        ready: missingFiles.length === 0,
+        version: config.version,
+        root: config.root,
+        totalBytes,
+        missingBytes,
+        missingFiles
+      };
+    }
+
+    async hasLocalOCRModels() {
+      return (await this.getLocalOCRStatus()).ready;
+    }
+
+    async clearLocalOCRFiles() {
+      const localOCRRoot = PathUtils.join(this.root, "local-ocr");
+      const stats = await this.dirStats(localOCRRoot);
+      await this.remove(localOCRRoot, true);
       return {
         clearedBytes: stats.bytes,
         clearedFiles: stats.files,

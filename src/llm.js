@@ -801,7 +801,7 @@
         machineSourceLanguage: U.normalizeLanguageName(U.getPref("machineSourceLanguage", "英文"), "英文"),
         translationMode: String(U.getPref("translationMode", "full_context") || "full_context"),
         translateTables: Boolean(U.getPref("translateTables", true)),
-        translateImages: Boolean(U.getPref("translateImages", true)),
+        translateImages: Boolean(U.getPref("translateImages", false)),
         deepseekFastLayoutTranslation: Boolean(U.getPref("deepseekFastLayoutTranslation", true)),
         translationReferencePaths: readStringArrayPref("translationReferencePaths"),
         customTranslationInstruction: String(U.getPref("customTranslationInstruction", "") || "").trim(),
@@ -881,7 +881,7 @@
         machineSourceLanguage: U.normalizeLanguageName(values.machineSourceLanguage ?? current.machineSourceLanguage, "英文"),
         translationMode: String(values.translationMode ?? current.translationMode),
         translateTables: Boolean(values.translateTables ?? current.translateTables ?? true),
-        translateImages: Boolean(values.translateImages ?? current.translateImages ?? true),
+        translateImages: Boolean(values.translateImages ?? current.translateImages ?? false),
         deepseekFastLayoutTranslation: Boolean(
           values.deepseekFastLayoutTranslation ?? current.deepseekFastLayoutTranslation
         ),

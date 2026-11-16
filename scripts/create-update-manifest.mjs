@@ -170,6 +170,19 @@ if (paddleOCR && (typeof paddleOCR.model !== "string" || paddleOCR.model !== pad
   || paddleOCR.apiProtocol !== "aistudio-jobs-v2" || paddleOCR.resultSchema !== "paddle-text-lines-v1")) {
   throw new Error("文字OCR模型目录无效或与当前驱动不兼容，已阻断发布");
 }
+const localOCR = parserModels.localOCR;
+if (localOCR) {
+  const validFiles = localOCR.files && typeof localOCR.files === "object" && Object.entries(localOCR.files).every(([name, spec]) =>
+    /^[A-Za-z0-9._-]{1,128}$/.test(name) && !name.includes("..")
+    && Number.isSafeInteger(spec?.size) && spec.size > 0
+    && /^[a-f0-9]{64}$/.test(String(spec?.sha256 || ""))
+    && Array.isArray(spec?.urls) && spec.urls.length > 0 && spec.urls.every(url => /^https:\/\//i.test(String(url || "").trim())));
+  if (!/^v?\d+(?:\.\d+)*$/.test(String(localOCR.version || "").trim())
+    || !/^\d+(?:\.\d+)*$/.test(String(localOCR.minPluginVersion || "0").trim())
+    || !validFiles) {
+    throw new Error("本地OCR模型目录无效，已阻断发布");
+  }
+}
 const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
 const zotero = manifest.applications?.zotero;
 if (!zotero?.id || !zotero.strict_min_version || !zotero.strict_max_version) {

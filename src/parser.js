@@ -93,8 +93,11 @@
       catch (error) {
         if (!error.cancelled && !signal?.aborted) {
           const alternative = provider === "paddle" ? "MinerU" : "Paddle";
-          if (!(provider === "paddle" && U.isPaddleTokenCredentialError(error))) {
-            error.message = `${error.message || error}；可在设置中将解析服务切换为 ${alternative} 后重试`;
+          const isTokenError = provider === "paddle"
+            ? U.isPaddleTokenCredentialError(error)
+            : U.isMinerUTokenCredentialError(error);
+          if (!isTokenError) {
+            error.message = `${error.message || error}；可稍后尝试或更换服务商，在设置中将解析服务切换为${alternative}`;
           }
           emit?.({ type: "progress", phase: "parser-service-error", progress: null,
             message: `解析失败：${error.message}` });

@@ -99,7 +99,7 @@
           <label class="compact-check"><input id="sync-scroll-check" type="checkbox" checked="checked" /> 同步滚动</label>
           <div class="translation-media-toggles">
             <label id="translate-tables-control" class="compact-check"><input id="translate-tables-check" type="checkbox" checked="checked" /> 翻译表格</label>
-            <label id="translate-images-control" class="compact-check"><input id="translate-images-check" type="checkbox" checked="checked" /> 翻译图片</label>
+            <label id="translate-images-control" class="compact-check"><input id="translate-images-check" type="checkbox" /> 翻译图片</label>
           </div>
           <label id="reader-font-control" class="font-control">正文 <input id="reader-font-input" type="number" step="any" value="" placeholder="自动" title="留空时显示并使用自动排版得到的正文字号" /> pt</label>
           <div class="reader-ai-actions" role="group" aria-label="AI阅读视图">
@@ -350,7 +350,7 @@
       <div class="mineru-token-dialog-body">
         <label for="mineru-token-input">MinerU访问令牌</label>
         <input id="mineru-token-input" type="password" autocomplete="off" placeholder="请粘贴MinerU访问令牌" />
-        <p class="settings-note">还没有令牌？前往<a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">MinerU令牌官网</a>获取。</p>
+        <p id="mineru-token-link-note" class="settings-note"><span id="mineru-token-link-prefix">还没有令牌？前往</span><a href="https://mineru.net/apiManage/token" data-external-url="https://mineru.net/apiManage/token" data-mineru-token-link="true">MinerU令牌官网</a><span id="mineru-token-link-suffix">获取。</span></p>
         <p id="mineru-token-error" class="mineru-token-error" role="alert" hidden="hidden"></p>
       </div>
       <footer class="modal-footer"><span class="modal-spacer"></span><button class="button" value="cancel" type="submit">稍后处理</button><button id="save-mineru-token-and-parse" class="button button-primary" type="button">保存并继续解析</button></footer>
@@ -814,6 +814,11 @@
               <span class="storage-summary-label">文献采集运行时</span>
               <strong id="storage-runtime-bytes" class="storage-summary-value">-</strong>
               <span id="storage-runtime-count" class="storage-summary-sub">ScanSci 运行时</span>
+            </div>
+            <div class="storage-summary-card" id="storage-local-ocr-card" hidden="hidden">
+              <span class="storage-summary-label">本地图片识别</span>
+              <strong id="storage-local-ocr-bytes" class="storage-summary-value">-</strong>
+              <span id="storage-local-ocr-count" class="storage-summary-sub">0 个文件</span>
             </div>
             <div class="storage-summary-card" id="storage-orphaned-card" hidden="hidden">
               <span class="storage-summary-label">失效文献残留</span>

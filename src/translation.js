@@ -655,6 +655,16 @@
         sourceLanguage,
         signal,
         log: message => emit?.({ type: "log", message }),
+        onProgress: ({ completed, total }) => {
+          const safeTotal = Math.max(1, Number(total || 1));
+          const percent = Math.round((Number(completed || 0) * 100) / safeTotal);
+          emit?.({
+            type: "status",
+            phase: "web-machine-stream",
+            message: `正在使用${edgeLocal ? "Edge本地翻译" : "联网机翻"}：${completed}/${safeTotal}（${percent}%）`,
+            progress: percent
+          });
+        },
         liveUpdate: live => emit?.({ type: "translation", mode, markdown: live, complete: false })
       }));
       const meta = {

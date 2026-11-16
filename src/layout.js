@@ -3452,12 +3452,13 @@
           // A string update is progress text, not a translation dictionary;
           // keep it out of the layout checkpoint event.
           if (typeof partial === "string") {
-            const progress = /已完成\s*:\s*(\d+)\s*\/\s*(\d+)/.exec(partial);
+            const match = /(\d+)\s*\/\s*(\d+)/.exec(partial);
+            const progress = match ? Math.round((Number(match[1]) * 100) / Math.max(1, Number(match[2]))) : 0;
             emit?.({
               type: "status",
               phase: "web-machine-layout",
               message: partial,
-              progress: progress ? Number(progress[1]) / Math.max(1, Number(progress[2])) : 0
+              progress
             });
             return;
           }
@@ -3523,7 +3524,7 @@
 
     async imageRequestPlan(documentID, layout, records, settings, machine = false, signal = null, emit = null) {
       let ocr = null;
-      if (settings.translateImages !== false && this.imageService) {
+      if (settings.translateImages === true && this.imageService) {
         try { ocr = await this.imageService.ensure(documentID, layout, signal, emit, { parseProvider: settings.parseProvider }); }
         catch (error) {
           U.throwIfAborted(signal);
@@ -3561,6 +3562,10 @@
       const previous = await this.storage.readJSON(paths.images, null);
       if (previous?.sourceFingerprint === sourceFingerprint && previous.targetLanguage === settings.targetLanguage
         && (previous.parseRevisionID || "") === (plan.parseRevisionID || "") && Array.isArray(previous.images)) {
+        for (const image of cache.images) {
+          const prior = previous.images.find(item => item.fingerprint === image.fingerprint);
+          if (prior) image.translations = { ...prior.translations, ...image.translations };
+        }
         const completed = new Set(cache.images.map(image => image.id));
         cache.images.push(...previous.images.filter(image => !completed.has(image.id)));
       }
@@ -3615,7 +3620,8 @@
       const total = LitMTrans.LayoutImages.extract(layout).length;
       const revision = (await this.storage.getDocumentMeta(documentID))?.parseRevisionID || "";
       const needsOCR = !ocr || ocr.version !== 1 || !Array.isArray(ocr.images) || ocr.sourceFingerprint !== fingerprint || (ocr.parseRevisionID || "") !== revision
-        || (settings.parseProvider && ocr.model !== (settings.parseProvider === "paddle" ? "PP-OCRv6" : "mineru-pipeline")
+        || (ocr.model === "local-ppocr-v6-tiny" && ocr.images.some(image => image.ocrFailed))
+        || (settings.parseProvider && ocr.model !== LitMTrans.LayoutImages.resolveImageOCRModel(settings.parseProvider)
           && ocr.images.some(image => !image.lines?.length))
         || (ocr.model === "mineru-pipeline" && ["text-crops-v1", "shared-text-crops-v2"].includes(ocr.strategy)
           && ocr.images.some(image => !image.lines?.length));

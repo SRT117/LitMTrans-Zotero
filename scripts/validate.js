@@ -12,6 +12,7 @@ const runtimeFiles = [
   "src/settings-view-model.js", "src/reader-images.js", "src/reader-image-theme.js",
   "src/ported-core.js", "src/utils.js", "src/storage.js", "src/secrets.js", "src/http.js",
   "src/markdown.js", "src/mindmap.js", "src/flowchart.js", "src/mineru.js", "src/layout-images.js",
+  "src/local-ocr.xhtml", "src/local-ocr-page.mjs", "assets/vendor/local-ocr/local-ocr.js",
   "src/parser-model.js", "src/paddle-adapter.js", "src/paddle.js", "src/paddle-lines.js", "src/parser.js", "src/llm.js", "src/edge-local-translation.js", "src/web-machine-translation.js", "src/translation.js", "src/layout-tables.js", "src/layout.js",
   "src/chat.js", "src/icon-reader.js",
   "src/agent/contracts.js", "src/agent/capability-policy.js", "src/agent/task-manager.js",
@@ -222,7 +223,7 @@ if (/Ported from:|Ported capability group:|Migration status:|behavior-preserving
 
 console.log("[6/8] Runtime contract assertions");
 const runtimeText = walk(path.join(root, "src"))
-  .filter(file => /\.(?:js|xhtml|css)$/.test(file))
+  .filter(file => /\.(?:js|mjs|xhtml|css)$/.test(file))
   .map(file => fs.readFileSync(file, "utf8"))
   .join("\n");
 for (const pattern of [

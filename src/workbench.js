@@ -210,7 +210,7 @@
       "setting-chat-image-group", "setting-chat-image-size", "setting-chat-image-quality", "setting-chat-image-format",
       "setting-mineru-token", "setting-mineru-model", "setting-parse-provider", "setting-paddle-token", "setting-mineru-fields", "setting-paddle-fields",
       "setting-target-language", "setting-target-language-picker", "setting-machine-source-language-group", "setting-machine-source-language", "setting-machine-source-language-picker", "setting-translation-mode",
-      "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-link-dialog", "mineru-token-link-dialog-title", "close-mineru-token-link-dialog", "mineru-token-link-guide", "mineru-token-link-direct", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation", "open-ai-websites-button", "ai-websites-dialog", "close-ai-websites-button", "dismiss-ai-websites-button", "web-mode-info-dialog", "close-web-mode-info-button", "dismiss-web-mode-info-button",
+      "long-document-translation-dialog", "chat-parse-before-send-dialog", "mineru-token-link-dialog", "mineru-token-link-dialog-title", "close-mineru-token-link-dialog", "mineru-token-link-guide", "mineru-token-link-direct", "mineru-token-dialog", "mineru-token-dialog-title", "mineru-token-dialog-description", "mineru-token-input", "mineru-token-link-note", "mineru-token-link-prefix", "mineru-token-link-suffix", "mineru-token-error", "save-mineru-token-and-parse", "manual-translation-dialog", "manual-translation-command-tabs", "manual-translation-response-tabs", "manual-translation-command", "manual-translation-response", "copy-manual-translation-command", "render-manual-translation", "open-ai-websites-button", "ai-websites-dialog", "close-ai-websites-button", "dismiss-ai-websites-button", "web-mode-info-dialog", "close-web-mode-info-button", "dismiss-web-mode-info-button",
       "export-dialog", "export-dialog-close", "export-dialog-cancel", "export-dialog-confirm", "export-option-list", "export-empty",
       "setting-reference-list", "add-reference-button", "edit-custom-translation-instruction", "edit-custom-translation-instruction-preview", "custom-translation-instruction-preview", "custom-translation-instruction-preview-content", "remove-reference-button", "clear-reference-button",
       "setting-show-native-reader-ask-ai", "setting-key-points-prompt", "restore-key-points-prompt", "setting-caj-double-click-action",
@@ -222,7 +222,7 @@
       "storage-cache-warning-banner", "storage-warning-banner-text", "storage-warning-clean-button", "storage-warning-dismiss-button", "storage-warning-close-button",
       "storage-total-bytes", "storage-root-path", "storage-doc-count", "storage-doc-bytes",
       "storage-caj-bytes", "storage-caj-count",
-      "storage-temp-bytes", "storage-temp-count", "storage-runtime-card", "storage-runtime-bytes", "storage-runtime-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
+      "storage-temp-bytes", "storage-temp-count", "storage-runtime-card", "storage-runtime-bytes", "storage-runtime-count", "storage-local-ocr-card", "storage-local-ocr-bytes", "storage-local-ocr-count", "storage-orphaned-card", "storage-orphaned-bytes", "storage-orphaned-count",
       "storage-expand-all", "storage-collapse-all", "storage-search-input",
       "storage-open-root", "storage-clean-temp", "storage-clean-orphaned", "storage-refresh", "storage-tree-container",
       "custom-translation-instruction-dialog", "custom-translation-instruction-input", "save-custom-translation-instruction",
@@ -607,7 +607,9 @@
     // Streaming progress events can be emitted once per token/chunk even
     // when the human-readable status has not changed. Keep the operation
     // log useful by folding consecutive identical entries from all sources.
-    const previous = state.logEntries.at(-1);
+    const previous = key
+      ? state.logEntries.slice(-5).reverse().find(item => item.key === key && item.kind === kind && item.textNode)
+      : state.logEntries.at(-1);
     if (previous && previous.text === text && previous.kind === kind && previous.key === key) return;
     if (key && previous?.key === key && previous.kind === kind && previous.textNode) {
       const log = els["log-content"];
@@ -745,7 +747,7 @@
   function updateOperationUI() {
     const running = state.running.size > 0;
     if (els["translate-tables-check"]) els["translate-tables-check"].disabled = (tableInteraction && !tableSupplementRunning) || tablePreferenceSaving || exportBusy;
-    if (els["translate-images-check"]) els["translate-images-check"].disabled = (tableInteraction && !tableSupplementRunning) || tablePreferenceSaving || exportBusy;
+    if (els["translate-images-check"]) els["translate-images-check"].disabled = (tableInteraction && !tableSupplementRunning) || tablePreferenceSaving || exportBusy || state.running.has("local-ocr");
     els["stop-button"].hidden = !running;
     els["translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
     els["manual-translate-button"].disabled = running || !state.data?.capabilities?.canTranslate;
@@ -1014,6 +1016,10 @@
       if (Number(event.attachmentID) === Number(state.data?.item?.attachmentID)) applyReaderTheme(event.theme);
       return;
     }
+    if (type === "reader-user-scroll") {
+      state.readerSyncUntil = 0;
+      return;
+    }
     if (type === "reader-location") {
       const page = Math.max(1, Math.trunc(Number(event.page || 1)));
       const pageRatio = Math.max(0, Math.min(1, Number(event.pageRatio || 0)));
@@ -1158,7 +1164,7 @@
     renderedSourceMarkdown = null;
     state.settings = mergePromptLibraryDraft(data?.settings || state.settings);
     els["translate-tables-check"].checked = state.settings?.translateTables !== false;
-    els["translate-images-check"].checked = state.settings?.translateImages !== false;
+    els["translate-images-check"].checked = Boolean(state.settings?.translateImages);
     if (!state.aiModeInitialized) {
       state.aiModeInitialized = true;
       const preferredMode = (state.settings?.chatEngine || "deepseek_web") === "deepseek_web" ? "web" : "api";
@@ -1359,7 +1365,10 @@
       String(state.data?.parsed?.markdown || "")
     );
     if (source !== renderedSourceMarkdown) {
-      if (source) renderMarkdownInto(els["source-content"], source, { syncAnchors: true, imageLoading: "eager", parseProvider });
+      if (source) {
+        renderMarkdownInto(els["source-content"], source, { syncAnchors: true, imageLoading: "eager", parseProvider });
+        linkifyStreamDocument(els["source-content"], "stream-source");
+      }
       else els["source-content"].replaceChildren();
       renderedSourceMarkdown = source;
     }
@@ -1380,7 +1389,10 @@
     els["translation-content"].hidden = !translation || state.mode !== "stream";
     if (translation !== renderedTranslationMarkdown) {
       if (liveTranslation) replaceLiveTranslationPreview(translation);
-      else if (translation) renderMarkdownInto(els["translation-content"], translation, { syncAnchors: true, imageLoading: "eager", parseProvider });
+      else if (translation) {
+        renderMarkdownInto(els["translation-content"], translation, { syncAnchors: true, imageLoading: "eager", parseProvider });
+        linkifyStreamDocument(els["translation-content"], "stream-translation");
+      }
       else els["translation-content"].replaceChildren();
       renderedTranslationMarkdown = translation;
     }
@@ -1593,7 +1605,7 @@
     if (block.kind === "image" && block.imageURL) {
       if (useTranslation && block.translatedImageLabels?.length) {
         return `<div class="layout-image-translation" data-protected-boxes="${U.escapeAttribute(JSON.stringify(block.imageProtectedBoxes || []))}"><img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`
-          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("") + "</div>";
+          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}" data-rotation="${label.rotation === -90 ? -90 : 0}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("") + "</div>";
       }
       return `<img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`;
     }
@@ -1681,10 +1693,22 @@
     const source = document.createElement('div'), rendered = document.createElement('div');
     safeSetElementHTML(source, sourceHTML);
     safeSetElementHTML(rendered, html);
-    const normalize = text => text.replace(/\s/g, '').replace(/[–−]/g, '-');
+    const normalize = text => text.replace(/\s/g, '').replace(/[–−—]/g, '-').replace(/^[\[【]+|[\]】]+$/g, '');
+    const expandNumbers = text => {
+      const clean = normalize(text);
+      const numbers = new Set();
+      for (const token of clean.split(/[,，;；]+/)) {
+        const range = token.match(/^(\d+)(?:-(\d+))?$/);
+        if (!range) return null;
+        const start = Number(range[1]), end = range[2] ? Number(range[2]) : start;
+        if (end < start || end - start > 40) return null;
+        for (let n = start; n <= end; n++) numbers.add(n);
+      }
+      return numbers.size ? numbers : null;
+    };
     const eligible = (sup, text = sup.textContent, math = false) => {
       if ((math ? sup.parentElement : sup)?.closest('a, code, pre, .layout-formula, .katex, .litmtrans-math')) return false;
-      if (!/^\s*\d+(?:\s*[-–−]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−]\s*\d+)?)*\s*$/.test(text)) return false;
+      if (!/^\s*[\[【]?\s*\d+(?:\s*[-–−—]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−—]\s*\d+)?)*\s*[\]】]?\s*$/.test(text)) return false;
       const before = sup.previousSibling;
       if (before?.nodeType === Node.ELEMENT_NODE && (before.matches('sub, sup, .katex, .litmtrans-math') || before.querySelector('.katex, .litmtrans-math'))) return false;
       // 普通 HTML 中的变量和单位指数也不作为文献引用。
@@ -1695,7 +1719,7 @@
       for (const node of root.querySelectorAll('.litmtrans-math-inline[title], .katex')) {
         if (!root.contains(node)) continue;
         const tex = node.getAttribute('title') || node.querySelector('annotation[encoding="application/x-tex"]')?.textContent || '';
-        const match = tex.match(/^\s*\^\s*\{\s*([\d\s,，;；–−-]+)\s*\}\s*$/);
+        const match = tex.match(/^\s*(?:\{\s*\})?\s*\^\s*\{\s*[\[【]?\s*([\d\s,，;；–−—-]+)\s*[\]】]?\s*\}\s*$/);
         if (!match || !eligible(node, match[1], true)) continue;
         const sup = document.createElement('sup');
         sup.textContent = match[1].trim();
@@ -1704,9 +1728,21 @@
     };
     normalizeMath(source);
     normalizeMath(rendered);
-    const tokens = new Set([...source.querySelectorAll('sup')].filter(sup => eligible(sup)).map(sup => normalize(sup.textContent)));
+    const sourceTokens = new Set();
+    const sourceNumbers = new Set();
+    for (const sup of source.querySelectorAll('sup')) {
+      if (!eligible(sup)) continue;
+      sourceTokens.add(normalize(sup.textContent));
+      const nums = expandNumbers(sup.textContent);
+      if (nums) for (const n of nums) sourceNumbers.add(n);
+    }
     for (const sup of rendered.querySelectorAll('sup')) {
-      if (eligible(sup) && tokens.has(normalize(sup.textContent))) sup.dataset.layoutCitation = '1';
+      if (!eligible(sup)) continue;
+      const token = normalize(sup.textContent);
+      const nums = expandNumbers(sup.textContent);
+      if (sourceTokens.has(token) || (nums && [...nums].every(n => sourceNumbers.has(n)))) {
+        sup.dataset.layoutCitation = '1';
+      }
     }
     return rendered.innerHTML;
   }
@@ -2044,7 +2080,7 @@
   function fitLayoutImageLabels(pages) {
     for (const page of pages) for (const host of page.querySelectorAll(".layout-image-translation")) {
       const image = host.querySelector("img");
-      if (state.settings?.translateImages === false) {
+      if (!state.settings?.translateImages) {
         host.querySelectorAll(".layout-image-label").forEach(label => { label.hidden = true; });
         image.style.visibility = "";
         if (host._litmtransCleanedImage) host._litmtransCleanedImage.hidden = true;
@@ -2053,7 +2089,7 @@
         continue;
       }
       const paint = () => {
-        if (state.settings?.translateImages === false || !host.isConnected || !image.naturalWidth || !host.clientWidth || !host.clientHeight) return;
+        if (!state.settings?.translateImages || !host.isConnected || !image.naturalWidth || !host.clientWidth || !host.clientHeight) return;
         const hostStyle = getComputedStyle(host);
         const hostWidth = parseFloat(hostStyle.width) || host.clientWidth, hostHeight = parseFloat(hostStyle.height) || host.clientHeight;
         const key = `${image.src}|${hostWidth}|${hostHeight}|${document.fonts?.status || ""}`;
@@ -2071,35 +2107,134 @@
           const protectedBoxes = JSON.parse(host.dataset.protectedBoxes || '[]');
           const labels = [...host.querySelectorAll(".layout-image-label")];
           const labelBoxes = labels.map(label => JSON.parse(label.dataset.box));
+          const rotateBox = box => [1 - box[3], box[0], 1 - box[1], box[2]];
+          let rotatedPixels = null;
           for (const [index, label] of labels.entries()) {
             label.hidden = true;
-            const box = labelBoxes[index];
-            const restored = window.LitMTrans.LayoutImages.restoreImageLabel(pixels, canvas.width, canvas.height, box, protectedBoxes, label.dataset.sourceText,
-              labelBoxes.filter((_, other) => other !== index));
-            if (!restored) continue;
+            const rotated = Number(label.dataset.rotation) === -90;
+            if (rotated && !rotatedPixels) {
+              const turn = document.createElement("canvas");
+              turn.width = canvas.height; turn.height = canvas.width;
+              const context = turn.getContext("2d"); context.translate(turn.width, 0); context.rotate(Math.PI / 2); context.drawImage(image, 0, 0);
+              rotatedPixels = context.getImageData(0, 0, turn.width, turn.height).data;
+              turn.width = turn.height = 1;
+            }
+            const sourceWidth = rotated ? canvas.height : canvas.width, sourceHeight = rotated ? canvas.width : canvas.height;
+            const box = rotated ? rotateBox(labelBoxes[index]) : [...labelBoxes[index]];
+            if (!rotated) box[2] = Math.min(1, box[2] + 4 / canvas.width);
+            const restored = window.LitMTrans.LayoutImages.restoreImageLabel(rotated ? rotatedPixels : pixels, sourceWidth, sourceHeight, box,
+              rotated ? protectedBoxes.map(rotateBox) : protectedBoxes, label.dataset.sourceText,
+              labelBoxes.filter((_, other) => other !== index).map(other => rotated ? rotateBox(other) : other)) || {
+                box: box.map((value, axis) => Math.round(value * (axis % 2 ? sourceHeight : sourceWidth))),
+                width: 0, height: 0, pixels: [], color: [20, 20, 20], fallback: true
+              };
             const [x0, y0, x1, y1] = restored.box;
-            label.style.cssText = `left:${offsetX + x0 * scale}px;top:${offsetY + y0 * scale}px;width:${(x1 - x0) * scale}px;height:${(y1 - y0) * scale}px;color:rgb(${restored.color.join(",")})`;
+            const labelWidth = (x1 - x0) * scale, labelHeight = (y1 - y0) * scale;
+            const left = rotated ? offsetX + (y0 + y1) * scale / 2 - labelWidth / 2 : offsetX + x0 * scale;
+            const top = rotated ? offsetY + (canvas.height - (x0 + x1) / 2) * scale - labelHeight / 2 : offsetY + y0 * scale;
+            label.style.cssText = `left:${left}px;top:${top}px;width:${labelWidth}px;height:${labelHeight}px;color:rgb(${restored.color.join(",")});${rotated ? "transform:rotate(-90deg)" : ""}`;
+            if (restored.fallback) label.style.backgroundColor = "white";
+            if (!rotated) {
+              const bx = Math.floor(box[0] * canvas.width), y0 = Math.max(0, Math.floor(box[1] * canvas.height)), y1 = Math.min(canvas.height, Math.ceil(box[3] * canvas.height));
+              let colored = 0;
+              for (let y = y0; y < y1; y++) for (let x = Math.max(0, bx - (y1 - y0) * 3); x < bx; x++) {
+                const at = (y * canvas.width + x) * 4, rgb = [pixels[at], pixels[at + 1], pixels[at + 2]];
+                if (Math.max(...rgb) - Math.min(...rgb) > 25) colored++;
+              }
+              if (colored >= 8) label.style.justifyContent = "flex-start";
+              else {
+                const right = Math.ceil(box[2] * canvas.width);
+                let adjacent = 0;
+                for (let y = y0; y < y1; y++) for (let x = right; x < Math.min(canvas.width, right + y1 - y0); x++) {
+                  const at = (y * canvas.width + x) * 4;
+                  if (Math.max(pixels[at], pixels[at + 1], pixels[at + 2]) < 160) adjacent++;
+                }
+                if (adjacent >= 3) label.style.justifyContent = "flex-end";
+              }
+            }
             label.dataset.neutralInk = Math.max(...restored.color) - Math.min(...restored.color) <= 25 ? "1" : "0";
             const font = getComputedStyle(host).fontFamily;
-            let size = Math.min(y1 - y0, (box[3] - box[1]) * canvas.height) * scale * .8;
+            let size = Math.min(y1 - y0, (box[3] - box[1]) * sourceHeight) * scale * .8;
             ctx.font = `${size}px ${font}`;
             size *= Math.min(1, (x1 - x0) * scale / Math.max(1, ctx.measureText(label.textContent).width));
             const minimum = 3 * host.closest(".layout-block").clientWidth / Math.max(1, Number(host.closest(".layout-block").dataset.imageSourceWidth));
-            if (size < minimum) continue;
+            size = Math.max(size, minimum);
             label.style.fontSize = `${size}px`;
             label.hidden = false;
             while ((label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) && size > minimum) {
               size = Math.max(minimum, size - .5);
               label.style.fontSize = `${size}px`;
             }
-            if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.hidden = true;
-            if (label.hidden) continue;
+            if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.style.overflow = "visible";
             hasLabels = true;
             for (let y = 0; y < restored.height; y++) for (let x = 0; x < restored.width; x++) {
-              const at = (y * restored.width + x) * 4, target = ((y0 + y) * canvas.width + x0 + x) * 4;
+              const at = (y * restored.width + x) * 4;
+              const target = rotated ? ((canvas.height - 1 - (x0 + x)) * canvas.width + y0 + y) * 4 : ((y0 + y) * canvas.width + x0 + x) * 4;
               if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
                 && restored.pixels[at + 2] === pixels[target + 2]) continue;
               for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+            }
+          }
+          // 清理相邻子图裁切重叠带入的边缘英文残片，并在后绘图片覆盖先绘译文时透明让位。
+          const blockRect = item => {
+            const block = item?.closest?.(".layout-block");
+            if (!block) return null;
+            const l = parseFloat(block.style.left), t = parseFloat(block.style.top), w = parseFloat(block.style.width), h = parseFloat(block.style.height);
+            return [l, t, l + w, t + h].every(Number.isFinite) && w > 0 && h > 0 ? [l, t, l + w, t + h] : null;
+          };
+          const myRect = blockRect(host);
+          if (myRect) {
+            const mw = myRect[2] - myRect[0], mh = myRect[3] - myRect[1], edgePad = 0.45;
+            const overlapsOwn = (nx, ny) => labelBoxes.some(b => nx >= b[0] && nx < b[2] && ny >= b[1] && ny < b[3])
+              || protectedBoxes.some(b => nx >= b[0] && nx < b[2] && ny >= b[1] && ny < b[3]);
+            const allHosts = [...page.querySelectorAll(".layout-image-translation")];
+            const myIndex = allHosts.indexOf(host);
+            for (const [otherIndex, otherHost] of allHosts.entries()) {
+              if (otherHost === host) continue;
+              const oRect = blockRect(otherHost);
+              if (!oRect || oRect[2] < myRect[0] - 0.6 || oRect[0] > myRect[2] + 0.6 || oRect[3] < myRect[1] - 0.6 || oRect[1] > myRect[3] + 0.6) continue;
+              const ow = oRect[2] - oRect[0], oh = oRect[3] - oRect[1];
+              const isBefore = otherIndex >= 0 && myIndex >= 0 && otherIndex < myIndex;
+              for (const otherLabel of otherHost.querySelectorAll(".layout-image-label")) {
+                let lb;
+                try { lb = JSON.parse(otherLabel.dataset.box); } catch (_) { continue; }
+                if (!Array.isArray(lb) || lb.length !== 4) continue;
+                const lp = [oRect[0] + lb[0] * ow, oRect[1] + lb[1] * oh, oRect[0] + lb[2] * ow, oRect[1] + lb[3] * oh];
+                const fb = [
+                  Math.max(0, (lp[0] - edgePad - myRect[0]) / mw),
+                  Math.max(0, (lp[1] - edgePad - myRect[1]) / mh),
+                  Math.min(1, (lp[2] + edgePad - myRect[0]) / mw),
+                  Math.min(1, (lp[3] + edgePad - myRect[1]) / mh)
+                ];
+                if (fb[2] <= fb[0] || fb[3] <= fb[1]) continue;
+                if (!(fb[0] < 0.08 || fb[1] < 0.08 || fb[2] > 0.92 || fb[3] > 0.92)) continue;
+                if ((fb[2] - fb[0]) * (fb[3] - fb[1]) >= 0.15) continue;
+                const cleanedEdge = window.LitMTrans.LayoutImages.restoreImageLabel(
+                  pixels, canvas.width, canvas.height, fb, protectedBoxes, "", labelBoxes, { allowPartialEdge: true }
+                );
+                if (cleanedEdge && cleanedEdge.changed > 0) {
+                  hasLabels = true;
+                  const [ex0, ey0] = cleanedEdge.box;
+                  for (let y = 0; y < cleanedEdge.height; y++) for (let x = 0; x < cleanedEdge.width; x++) {
+                    const at = (y * cleanedEdge.width + x) * 4;
+                    const target = ((ey0 + y) * canvas.width + ex0 + x) * 4;
+                    if (cleanedEdge.pixels[at] === pixels[target] && cleanedEdge.pixels[at + 1] === pixels[target + 1]
+                      && cleanedEdge.pixels[at + 2] === pixels[target + 2]) continue;
+                    for (let c = 0; c < 4; c++) combined.data[target + c] = cleanedEdge.pixels[at + c];
+                  }
+                }
+                if (isBefore && lp[2] > myRect[0] - 0.1 && lp[0] < myRect[2] + 0.1 && lp[3] > myRect[1] - 0.1 && lp[1] < myRect[3] + 0.1) {
+                  const tx0 = Math.max(0, Math.floor(((lp[0] - 0.15 - myRect[0]) / mw) * canvas.width));
+                  const ty0 = Math.max(0, Math.floor(((lp[1] - 0.15 - myRect[1]) / mh) * canvas.height));
+                  const tx1 = Math.min(canvas.width, Math.ceil(((lp[2] + 0.15 - myRect[0]) / mw) * canvas.width));
+                  const ty1 = Math.min(canvas.height, Math.ceil(((lp[3] + 0.15 - myRect[1]) / mh) * canvas.height));
+                  for (let y = ty0; y < ty1; y++) for (let x = tx0; x < tx1; x++) {
+                    if (overlapsOwn(x / canvas.width, y / canvas.height)) continue;
+                    combined.data[(y * canvas.width + x) * 4 + 3] = 0;
+                  }
+                  hasLabels = true;
+                }
+              }
             }
           }
           if (hasLabels) {
@@ -3257,29 +3392,26 @@
   }
 
   function linkifyLayoutDocument(root, pane, referenceNumbers = {}) {
+    root?.normalize?.();
     const references = new Map();
     const authorYears = new Map();
     const authorNames = new Set();
     let authorSerial = 0;
+    const setUnique = (map, key, id) => {
+      map.set(key, map.has(key) ? null : id);
+    };
     for (const entry of root.querySelectorAll('.flow-ref, .layout-block.type-ref_text')) {
-      const author = entry.textContent.match(/^\s*([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+),/);
-      const year = entry.textContent.match(/[,;(]\s*((?:19|20)\d{2}[a-z]?)\s*[.)]?\s*$/);
-      const match = entry.textContent.match(/^\s*(?:\[(\d+)\]|(\d+)[.)])\s*/);
+      const match = entry.textContent.match(/^\s*(?:\[(\d+)\]|【(\d+)】|(\d+)[.)])\s*/);
       const first = [...entry.childNodes].find(node => node.textContent.trim());
-      const superscript = first?.nodeType === Node.ELEMENT_NODE && first.matches('sup') && /^\s*\d+\s*$/.test(first.textContent)
-        ? Number(first.textContent) : 0;
+      const superscript = first?.nodeType === Node.ELEMENT_NODE && first.matches('sup')
+        && /^\s*[\[(]?\s*\d+\s*[\])]?\s*$/.test(first.textContent)
+        ? Number(first.textContent.match(/\d+/)[0]) : 0;
       const localNumber = referenceNumbers[entry.dataset.blockID];
-      const number = localNumber || superscript || (match && Number(match[1] || match[2]));
-      if (!number && author && year) {
-        const key = `${author[1]}:${year[1]}`;
-        entry.id = `litmtrans-reference-${pane}-author-${authorSerial++}`;
-        authorYears.set(key, authorYears.has(key) ? null : entry.id);
-        authorNames.add(author[1]);
-      }
-      if (localNumber && localNumber !== (superscript || (match && Number(match[1] || match[2])))) {
+      const number = localNumber || superscript || (match && Number(match[1] || match[2] || match[3]));
+      if (localNumber && localNumber !== (superscript || (match && Number(match[1] || match[2] || match[3])))) {
         if (superscript) first.textContent = String(localNumber);
         else if (match && first?.nodeType === Node.TEXT_NODE) {
-          first.textContent = first.textContent.replace(/^\s*(?:\[\d+\]|\d+[.)])/, label => label.replace(/\d+/, String(localNumber)));
+          first.textContent = first.textContent.replace(/^\s*(?:\[\d+\]|【\d+】|\d+[.)])/, label => label.replace(/\d+/, String(localNumber)));
         }
         else if (!match) {
           const marker = document.createElement('sup');
@@ -3287,21 +3419,34 @@
           entry.prepend(marker);
         }
       }
-      if (!number || references.has(number)) continue;
-      entry.id = `litmtrans-reference-${pane}-${number}`;
-      references.set(number, entry.id);
+      if (number && !references.has(number)) {
+        entry.id ||= `litmtrans-reference-${pane}-${number}`;
+        references.set(number, entry.id);
+      }
+      const meta = extractReferenceMetadata(entry.textContent);
+      if (meta) {
+        entry.id ||= `litmtrans-reference-${pane}-author-${authorSerial++}`;
+        for (const name of meta.names) {
+          authorNames.add(name);
+          setUnique(authorYears, `${name}:${meta.year}`, entry.id);
+          if (meta.hasEtAl) setUnique(authorYears, `${name}|etal:${meta.year}`, entry.id);
+          else if (meta.coAuthor) setUnique(authorYears, `${name}|co:${meta.coAuthor}:${meta.year}`, entry.id);
+          else setUnique(authorYears, `${name}|solo:${meta.year}`, entry.id);
+        }
+      }
     }
     for (const sup of root.querySelectorAll('sup[data-layout-citation="1"]')) {
       const block = sup.closest('.layout-flow-stream, .layout-block');
-      if (!block || block.classList.contains('refs') || !(
+      if (!block || block.classList.contains('refs') || sup.closest('.refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math')) continue;
+      if (!(
         block.dataset.styleKind === 'body_text' || block.dataset.abstractBody === '1'
         || block.dataset.bodyStyleInherited === '1' || block.classList.contains('type-body_text')
       )) continue;
       const raw = sup.textContent, fragment = document.createDocumentFragment();
       let cursor = 0;
-      for (const token of raw.matchAll(/\d+(?:\s*[-–−]\s*\d+)?/g)) {
+      for (const token of raw.matchAll(/\d+(?:\s*[-–−—]\s*\d+)?/g)) {
         fragment.appendChild(document.createTextNode(raw.slice(cursor, token.index)));
-        const numbers = token[0].split(/[-–−]/).map(Number), start = numbers[0], end = numbers[1] || start;
+        const numbers = token[0].split(/[-–−—]/).map(Number), start = numbers[0], end = numbers[1] || start;
         const valid = end >= start && end - start < references.size
           && Array.from({ length: end - start + 1 }, (_, i) => start + i).every(number => references.has(number));
         if (valid) {
@@ -3318,19 +3463,13 @@
       fragment.appendChild(document.createTextNode(raw.slice(cursor)));
       sup.replaceChildren(fragment);
     }
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        const parent = node.parentElement;
-        return parent?.closest('.layout-flow-stream, .layout-block')
-          && !parent.closest('a, code, pre, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer')
-          ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-      }
-    });
-    const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const nodes = collectLayoutTextNodes(
+      root,
+      'a, code, pre, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer'
+    );
     for (const node of nodes) {
       const text = node.textContent;
-      const pattern = /https?:\/\/[^\s<>"\u3400-\u9fff]+|www\.[^\s<>"\u3400-\u9fff]+|(?:doi:\s*)?\b10\.\d{4,9}\/[^\s<>"\u3400-\u9fff]+|\bPMID\s*:\s*\d{4,10}\b|\[\s*\d+(?:\s*[-–−]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−]\s*\d+)?)*\s*\]/gi;
+      const pattern = /https?:\/\/[^\s<>"（）【】《》「」『』“”\u3400-\u9fff]+|www\.[^\s<>"（）【】《》「」『』“”\u3400-\u9fff]+|(?:doi:\s*)?\b10\.\d{4,9}\/[^\s<>"（）【】《》「」『』“”\u3400-\u9fff]+|\bPMID\s*:\s*\d{4,10}\b|[\[【]\s*\d+(?:\s*[-–−—~～]\s*\d+)?(?:\s*[,，;；]\s*\d+(?:\s*[-–−—~～]\s*\d+)?)*\s*[\]】]/gi;
       const matches = [...text.matchAll(pattern)];
       if (!matches.length) continue;
       const fragment = document.createDocumentFragment();
@@ -3342,21 +3481,21 @@
         anchor.className = 'litmtrans-link';
         if (target) {
           anchor.dataset.layoutReferenceTarget = target;
-          anchor.dataset.layoutReferenceEnd = String(Number(label.split(/[-–−]/).at(-1)));
+          anchor.dataset.layoutReferenceEnd = String(Number(label.split(/[-–−—~～]/).at(-1)));
         }
         fragment.appendChild(anchor);
       };
       for (const match of matches) {
         fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
         const raw = match[0];
-        if (raw.startsWith('[')) {
+        if (raw.startsWith('[') || raw.startsWith('【')) {
           const isReference = node.parentElement.closest('.refs, .flow-ref, .type-ref_text');
           if (isReference) fragment.appendChild(document.createTextNode(raw));
           else {
             let position = 0;
-            for (const token of raw.matchAll(/\d+(?:\s*[-–−]\s*\d+)?/g)) {
+            for (const token of raw.matchAll(/\d+(?:\s*[-–−—~～]\s*\d+)?/g)) {
               fragment.appendChild(document.createTextNode(raw.slice(position, token.index)));
-              const numbers = token[0].split(/[-–−]/).map(Number), start = numbers[0], end = numbers[1] || start;
+              const numbers = token[0].split(/[-–−—~～]/).map(Number), start = numbers[0], end = numbers[1] || start;
               const valid = end >= start && end - start < references.size && Array.from({ length: end - start + 1 }, (_, i) => start + i).every(number => references.has(number));
               if (valid) appendLink(token[0], `#${references.get(start)}`, references.get(start));
               else fragment.appendChild(document.createTextNode(token[0]));
@@ -3388,26 +3527,48 @@
     }
     if (authorNames.size) {
       const names = [...authorNames].sort((a, b) => b.length - a.length).map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-      const pattern = new RegExp(`\\b(${names})(?:\\s+et\\s+al\\.?|\\s*等|\\s*(?:and|&|和|与)\\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+)?\\s*(?:[,，]\\s*|[(（]\\s*)((?:19|20)\\d{2}[a-z]?(?:\\s*[,，]\\s*(?:19|20)\\d{2}[a-z]?)*)(?=[)）;；.\\s]|$)[)）]?`, 'g');
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      const candidates = [];
-      while (walker.nextNode()) {
-        const node = walker.currentNode, parent = node.parentElement;
-        if (parent?.closest('.layout-flow-stream, .layout-block')
-          && !parent.closest('a, code, pre, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math')) candidates.push(node);
-      }
+      const nameToken = "[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+";
+      const pattern = new RegExp(
+        `(?<![A-Za-zÀ-ÖØ-öø-ÿ\\u4e00-\\u9fff])(${names})`
+        + `(?:(\\s+et\\s+al\\.?|\\s*等人?)|(?:\\s*,\\s*${nameToken})?\\s*(?:and|&|和|与)\\s+(${nameToken}))?`
+        + `\\s*(?:[,，]\\s*|([(（])\\s*|(?=\\s+(?:19|20)\\d{2}))`
+        + `((?:19|20)\\d{2}[a-z]?(?:\\s*[,，]\\s*(?:19|20)\\d{2}[a-z]?)*)`
+        + `(?=[)）;；,，、。：:！？!?\\s]|$)`,
+        'g'
+      );
+      const resolveAuthorTarget = (author, isEtAl, coAuthor, year) => {
+        if (isEtAl) {
+          const exact = authorYears.get(`${author}|etal:${year}`);
+          if (exact) return exact;
+        } else if (coAuthor) {
+          const exact = authorYears.get(`${author}|co:${coAuthor}:${year}`);
+          if (exact) return exact;
+        } else {
+          const exact = authorYears.get(`${author}|solo:${year}`);
+          if (exact) return exact;
+        }
+        return authorYears.get(`${author}:${year}`) || '';
+      };
+      const candidates = collectLayoutTextNodes(
+        root,
+        'a, code, pre, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer'
+      );
       for (const node of candidates) {
         const text = node.textContent, fragment = document.createDocumentFragment();
         let cursor = 0;
         for (const match of text.matchAll(pattern)) {
-          const years = [...match[2].matchAll(/(?:19|20)\d{2}[a-z]?/g)];
+          const author = match[1], isEtAl = Boolean(match[2]), coAuthor = match[3] || '', openParen = match[4] || '', yearsRaw = match[5];
+          const afterIndex = match.index + match[0].length;
+          const trailingParen = openParen && /^[)）]/.test(text.slice(afterIndex)) ? text[afterIndex] : '';
+          const matchEnd = afterIndex + trailingParen.length;
+          const years = [...yearsRaw.matchAll(/(?:19|20)\d{2}[a-z]?/g)];
           if (years.length > 1) {
-            if (!years.some(year => authorYears.get(`${match[1]}:${year[0]}`))) continue;
+            if (!years.some(year => resolveAuthorTarget(author, isEtAl, coAuthor, year[0]))) continue;
             fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
             let position = 0;
-            const offset = match[0].indexOf(match[2]);
+            const offset = match[0].indexOf(yearsRaw);
             for (const year of years) {
-              const start = offset + year.index, target = authorYears.get(`${match[1]}:${year[0]}`);
+              const start = offset + year.index, target = resolveAuthorTarget(author, isEtAl, coAuthor, year[0]);
               fragment.appendChild(document.createTextNode(match[0].slice(position, start)));
               if (target) {
                 const anchor = document.createElement('a');
@@ -3417,54 +3578,242 @@
               } else fragment.appendChild(document.createTextNode(year[0]));
               position = start + year[0].length;
             }
-            fragment.appendChild(document.createTextNode(match[0].slice(position)));
-            cursor = match.index + match[0].length;
+            fragment.appendChild(document.createTextNode(match[0].slice(position) + trailingParen));
+            cursor = matchEnd;
             continue;
           }
-          const target = authorYears.get(`${match[1]}:${match[2]}`);
+          const target = resolveAuthorTarget(author, isEtAl, coAuthor, yearsRaw);
           if (!target) continue;
           fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
           const anchor = document.createElement('a');
           anchor.className = 'litmtrans-link';
-          anchor.textContent = match[0];
+          anchor.textContent = match[0] + trailingParen;
           anchor.setAttribute('href', `#${target}`);
           anchor.dataset.layoutReferenceTarget = target;
           fragment.appendChild(anchor);
-          cursor = match.index + match[0].length;
+          cursor = matchEnd;
         }
         if (cursor) { fragment.appendChild(document.createTextNode(text.slice(cursor))); node.replaceWith(fragment); }
       }
     }
   }
 
-  function linkifyLayoutFigures(root, pane) {
-    const targets = new Map();
-    const pattern = /(?:\b(?:fig(?:ure)?s?\.?|tables?)(?![a-z])|[图表])\s*([1-9]\d*(?:[.\-]\d+)*)(?!\d|[.\-]\d)/gi;
-    const keyOf = match => `${/^(?:表|table)/i.test(match[0]) ? 'table' : 'figure'}-${match[1]}`;
-    let serial = 0;
-    for (const caption of root.querySelectorAll('.type-image_caption, .type-chart_caption, .type-table_caption')) {
-      const text = caption.textContent.trim();
-      pattern.lastIndex = 0;
-      const match = pattern.exec(text);
-      if (!match || match.index !== 0) continue;
-      const key = keyOf(match);
-      caption.id ||= `litmtrans-figure-${pane}-${serial++}`;
-      targets.set(key, targets.has(key) ? null : caption.id);
+  function parseLayoutRomanNumeral(raw) {
+    const unicode = { 'Ⅰ': 1, 'Ⅱ': 2, 'Ⅲ': 3, 'Ⅳ': 4, 'Ⅴ': 5, 'Ⅵ': 6, 'Ⅶ': 7, 'Ⅷ': 8, 'Ⅸ': 9, 'Ⅹ': 10, 'Ⅺ': 11, 'Ⅻ': 12 };
+    const text = String(raw || '').trim();
+    if (unicode[text]) return unicode[text];
+    if (!/^(?:X{1,3}(?:IX|IV|V?I{0,3})|IX|IV|V?I{1,3})$/.test(text)) return 0;
+    const values = { I: 1, V: 5, X: 10 };
+    let total = 0;
+    for (let i = 0; i < text.length; i++) {
+      const current = values[text[i]] || 0, next = values[text[i + 1]] || 0;
+      total += current < next ? -current : current;
     }
-    if (!targets.size) return;
+    return total > 0 && total <= 39 ? total : 0;
+  }
+
+  function parseLayoutChineseNumeral(raw) {
+    const digits = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+    const text = String(raw || '').trim();
+    if (!text) return 0;
+    if (text === '十') return 10;
+    if (digits[text]) return digits[text];
+    if (text.length === 2 && text[0] === '十' && digits[text[1]]) return 10 + digits[text[1]];
+    if (text.length === 2 && digits[text[0]] && text[1] === '十') return digits[text[0]] * 10;
+    if (text.length === 3 && digits[text[0]] && text[1] === '十' && digits[text[2]]) return digits[text[0]] * 10 + digits[text[2]];
+    return 0;
+  }
+
+  function collectLayoutTextNodes(root, excludedSelector) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     while (walker.nextNode()) {
       const node = walker.currentNode, parent = node.parentElement;
-      if (parent?.closest('.layout-flow-stream, .layout-block')
-        && !parent.closest('a, sup, code, pre, .layout-caption, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer')) nodes.push(node);
+      if (parent?.closest('.layout-flow-stream, .layout-block, p, li, figcaption, td, th, blockquote')
+        && !parent.closest(excludedSelector)) {
+        nodes.push(node);
+      }
     }
+    return nodes;
+  }
+
+  function extractReferenceMetadata(rawText) {
+    const clean = String(rawText || '').replace(/([A-Za-zÀ-ÖØ-öø-ÿ])\s*[ˇ´¨ˆ]\s*(?=[A-Za-zÀ-ÖØ-öø-ÿ])/g, '$1')
+      .replace(/\s+/g, ' ').trim();
+    const body = clean.replace(/^\s*(?:\[\d+\]|【\d+】|\d+[.)])\s*/, '').trim();
+    if (!body) return null;
+
+    // 剥离 URL/DOI 防止其中的数字被误识别为出版年份。
+    const noLinks = body.replace(/(?:https?:\/\/|www\.|(?:doi:\s*)?\b10\.\d{4,9}\/)\S+/gi, ' ');
+    let year = '';
+    const endYear = noLinks.match(/[,.;(\s]\s*((?:19|20)\d{2}[a-z]?)\s*[.)]?\s*$/);
+    if (endYear) {
+      year = endYear[1];
+    } else {
+      const parenYear = noLinks.match(/(?:[(（](?:[^()（）]{0,60}[,，]\s*)?)((?:19|20)\d{2}[a-z]?)\s*[)）]/);
+      if (parenYear) {
+        year = parenYear[1];
+      } else {
+        const candidates = [...noLinks.matchAll(/(?:^|[,.;\s])((?:19|20)\d{2}[a-z]?)(?=[.,;\s]|$)/g)].filter(match => {
+          const idx = match.index + match[0].length - match[1].length;
+          const prev = idx > 0 ? noLinks[idx - 1] : '';
+          const after = noLinks.slice(idx + match[1].length);
+          return !/[-–—/:]/.test(prev) && !/^\s*[-–—]\s*\d/.test(after);
+        });
+        if (candidates.length) year = candidates[0][1];
+      }
+    }
+    if (!year) return null;
+
+    const cnMatch = body.match(/^\s*([\u4e00-\u9fff]{2,4})(?:\s*[,，、.．(（]|\s+等)/);
+    if (cnMatch) {
+      return { names: [cnMatch[1]], year, coAuthor: '', hasEtAl: /\s*等/.test(body.slice(0, 30)) };
+    }
+
+    let cut = body.length;
+    const yearBoundary = body.search(/[,.;\s]*[(（]\s*(?:19|20)\d{2}[a-z]?\s*[)）]|,\s*(?:19|20)\d{2}[a-z]?\b/);
+    if (yearBoundary > 0) cut = Math.min(cut, yearBoundary);
+    const etAlBoundary = body.search(/\bet\s+al\.?/i);
+    const hasEtAlFlag = etAlBoundary > 0 && etAlBoundary < 240;
+    if (hasEtAlFlag) cut = Math.min(cut, etAlBoundary + 6);
+
+    for (let i = 1; i < Math.min(cut, 260); i++) {
+      if (body[i] !== '.') continue;
+      const before = body.slice(Math.max(0, i - 6), i);
+      if (/(?:^|[\s.,-])(?:[A-Z]|St|Jr|Sr|Dr|al)$/i.test(before)) continue;
+      if (i + 1 >= body.length || /[\s´ˇ¨ˆ˜]/.test(body[i + 1])) {
+        cut = Math.min(cut, i);
+        break;
+      }
+    }
+    const authorSeg = body.slice(0, cut).trim().replace(/[.,;:\s´ˇ¨ˆ˜]+$/, '');
+    if (!authorSeg) return null;
+
+    const particles = /^(?:de|del|della|der|den|van|von|ben|al|el|la|le|du|da|di|dos|das|st\.?)$/i;
+    const surnameWord = "[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+";
+    const extractLastSurname = chunk => {
+      const words = chunk.replace(/\b(?:Jr|Sr|II|III|IV)\.?$/i, '').trim().split(/\s+/).filter(Boolean);
+      if (!words.length) return [];
+      const last = words[words.length - 1].replace(/^[,;.(]+|[,;.)´ˇ¨ˆ˜]+$/g, '');
+      if (!/^[A-ZÀ-ÖØ-Þ]/.test(last) || /^[A-Z]\.?$/.test(last)) return [];
+      const out = [last];
+      if (words.length >= 2) {
+        const prev = words[words.length - 2].replace(/[.,;]+$/g, '');
+        if (particles.test(prev)) out.unshift(`${prev} ${last}`);
+        if (words.length >= 3 && particles.test(words[words.length - 3]) && particles.test(prev)) {
+          out.unshift(`${words[words.length - 3]} ${prev} ${last}`);
+        }
+      }
+      return out;
+    };
+
+    let surnames = [];
+    let secondSurname = '';
+    let authorCount = 1;
+    const commaInitialStyle = new RegExp(`^(${surnameWord}(?:\\s+${surnameWord})?),\\s*(?:[A-Z](?:\\.|\\b)|[A-Z]\\.[A-Z]\\.)`).test(authorSeg)
+      || /;/.test(authorSeg);
+
+    if (commaInitialStyle) {
+      const segments = authorSeg.includes(';')
+        ? authorSeg.split(/\s*;\s*/)
+        : authorSeg.split(/,\s*(?:and\s+|&\s*)?(?=[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’−-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'’−-]+)?,\s*[A-Z])|\s+(?:and|&)\s+/i);
+      const validSegments = segments.filter(segment => segment && !/^et\s+al/i.test(segment.trim()));
+      authorCount = validSegments.length;
+      const first = validSegments[0]?.split(',')[0]?.trim() || '';
+      if (first) {
+        surnames = [first];
+        const parts = first.split(/\s+/);
+        if (parts.length > 1) surnames.push(parts[parts.length - 1]);
+      }
+      if (authorCount === 2 && validSegments[1]) {
+        secondSurname = validSegments[1].split(',')[0].trim().split(/\s+/).pop() || '';
+      }
+    } else {
+      const cleanList = authorSeg.replace(/,?\s*\bet\s+al\.?$/i, '').trim();
+      const segments = cleanList.split(/\s*,\s*(?:and\s+|&\s*)?|\s+(?:and|&)\s+/i).map(segment => segment.trim()).filter(Boolean);
+      authorCount = segments.length;
+      if (segments[0]) surnames = extractLastSurname(segments[0]);
+      if (authorCount === 2 && segments[1]) {
+        const secondary = extractLastSurname(segments[1]);
+        secondSurname = secondary[0] || '';
+      }
+    }
+
+    surnames = [...new Set(surnames.filter(name => name.length >= 2))];
+    if (!surnames.length) return null;
+    return { names: surnames, year, coAuthor: secondSurname, hasEtAl: hasEtAlFlag || authorCount >= 3 };
+  }
+
+  function linkifyLayoutFigures(root, pane) {
+    const targets = new Map();
+    const romanAliasKeys = new Map();
+    const captionVerbAfter = /^(?:shows?|compares?|illustrates?|presents?|depicts?|summarizes?|lists?|gives?|indicates?|demonstrates?|reveals?|plots?|displays?|contains?|provides?|reports?|describes?|is|are|was|were|has|have|can|will|显示|表明|说明|展示|给出|列出|对比|比较|描述|总结|反映|揭示|包含|是|为)\b/i;
+    const captionHeadPattern = /^(?:(?:fig(?:ure)?s?[.,]?|tables?[.,]?)(?![a-z])|[图表])\s*(?:([1-9]\d*(?:[.\-]\d+)*)(?!\d|[.\-]\d)|((?:X{1,3}(?:IX|IV|V?I{0,3})|IX|IV|V?I{1,3}|[Ⅰ-Ⅻ]))(?![A-Za-z\d])|([一二三四五六七八九十]{1,3})(?=[\s.:：、\-—，。,.;；)）\]】中内里的和与及所]|$))/i;
+    const bodyPattern = /(?:\b(?:fig(?:ure)?s?\.?|tables?)(?![a-z])|[图表])\s*(?:([1-9]\d*(?:[.\-]\d+)*)(?!\d|[.\-]\d)|((?:X{1,3}(?:IX|IV|V?I{0,3})|IX|IV|V?I{1,3}|[Ⅰ-Ⅻ]))(?![A-Za-z\d])|([一二三四五六七八九十]{1,3})(?=[\s，。,.;；:：)）\]】中内里的和与及所]|$))/gi;
+    const parseCaptionTarget = (text, strictFormat) => {
+      const clean = String(text || '').replace(/\s+/g, ' ').trim();
+      const match = captionHeadPattern.exec(clean);
+      if (!match) return null;
+      if (match[2] && !/^[Ⅰ-Ⅻ]$/.test(match[2]) && match[2] !== match[2].toUpperCase()) return null;
+      const rest = clean.slice(match[0].length);
+      const hasPunct = /^\s*[.:：、\-—]/.test(rest);
+      const restAfterSpace = rest.replace(/^\s+/, '');
+      if (!hasPunct && captionVerbAfter.test(restAfterSpace)) return null;
+      if (hasPunct && /^\s*\.\s*(?:shows?|compares?|illustrates?|is|are|显示|表明)/i.test(rest)) return null;
+      if (strictFormat && ((!hasPunct && restAfterSpace.length > 0) || clean.length > 350)) return null;
+      const kind = /^(?:表|table)/i.test(match[0]) ? 'table' : 'figure';
+      if (match[1]) return { key: `${kind}-${match[1]}`, aliasKey: '' };
+      if (match[3]) {
+        const cnValue = parseLayoutChineseNumeral(match[3]);
+        return cnValue ? { key: `${kind}-${cnValue}`, aliasKey: '' } : null;
+      }
+      const romanValue = parseLayoutRomanNumeral(match[2]);
+      if (!romanValue) return null;
+      return { key: `${kind}-roman-${romanValue}`, aliasKey: `${kind}-${romanValue}` };
+    };
+    const keyOfBodyMatch = match => {
+      const kind = /^(?:表|table)/i.test(match[0]) ? 'table' : 'figure';
+      if (match[1]) return `${kind}-${match[1]}`;
+      if (match[3]) {
+        const cnValue = parseLayoutChineseNumeral(match[3]);
+        return cnValue ? `${kind}-${cnValue}` : '';
+      }
+      if (!match[2]) return '';
+      if (!/^[Ⅰ-Ⅻ]$/.test(match[2]) && match[2] !== match[2].toUpperCase()) return '';
+      const romanValue = parseLayoutRomanNumeral(match[2]);
+      return romanValue ? `${kind}-roman-${romanValue}` : '';
+    };
+    let serial = 0;
+    const registerCaption = (element, strictFormat) => {
+      const parsed = parseCaptionTarget(element.textContent, strictFormat);
+      if (!parsed) return;
+      element.id ||= `litmtrans-figure-${pane}-${serial++}`;
+      targets.set(parsed.key, targets.has(parsed.key) ? null : element.id);
+      if (parsed.aliasKey) romanAliasKeys.set(parsed.aliasKey, romanAliasKeys.has(parsed.aliasKey) ? null : element.id);
+    };
+    for (const caption of root.querySelectorAll('.type-image_caption, .type-chart_caption, .type-table_caption, figcaption, p.caption-like')) {
+      registerCaption(caption, false);
+    }
+    // 兜底识别被解析器误归类为普通正文或附注的独立图/表题注。
+    for (const block of root.querySelectorAll('.layout-block.type-text, .layout-block.type-image_footnote, .layout-block.type-table_footnote, .flow-para, p')) {
+      if (block.matches('.layout-caption, .caption-like') || block.closest('.layout-caption, figcaption, .refs, .flow-ref, .type-ref_text')) continue;
+      registerCaption(block, true);
+    }
+    for (const [aliasKey, id] of romanAliasKeys.entries()) {
+      if (id && !targets.has(aliasKey)) targets.set(aliasKey, id);
+    }
+    if (!targets.size) return;
+    const nodes = collectLayoutTextNodes(
+      root,
+      'a, sup, code, pre, .layout-caption, figcaption, .caption-like, .type-title, h1, h2, h3, h4, h5, h6, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer'
+    );
     for (const node of nodes) {
       const text = node.textContent, fragment = document.createDocumentFragment();
       let cursor = 0;
-      pattern.lastIndex = 0;
-      for (const match of text.matchAll(pattern)) {
-        const target = targets.get(keyOf(match));
+      bodyPattern.lastIndex = 0;
+      for (const match of text.matchAll(bodyPattern)) {
+        const key = keyOfBodyMatch(match);
+        const target = key ? targets.get(key) : null;
         if (!target) continue;
         // 范围和子图编号暂不推断，避免把不完整的编号链接到整图。
         if (/^[a-z\d]|^\s*[-–−(（]/i.test(text.slice(match.index + match[0].length))) continue;
@@ -3484,8 +3833,240 @@
     }
   }
 
+  function linkifyLayoutSections(root, pane) {
+    const sections = new Map();
+    const romanAliases = new Map();
+    let serial = 0;
+    const setUnique = (map, key, element) => {
+      element.id ||= `litmtrans-section-${pane}-${serial++}`;
+      map.set(key, map.has(key) ? null : element.id);
+    };
+    for (const title of root.querySelectorAll('.layout-block.type-title, h1, h2, h3, h4, h5, h6')) {
+      const text = title.textContent.replace(/\s+/g, ' ').trim();
+      const numMatch = text.match(/^([1-9]\d?(?:\.\d+)*)\s*[.)．、:：\s]\s*\S/);
+      if (numMatch) {
+        setUnique(sections, `sec-${numMatch[1]}`, title);
+        continue;
+      }
+      const romanMatch = text.match(/^([IVX]{1,5})\s*[.)．、]\s*\S/);
+      if (romanMatch) {
+        const romanValue = parseLayoutRomanNumeral(romanMatch[1]);
+        if (romanValue) {
+          setUnique(sections, `sec-${romanMatch[1]}`, title);
+          setUnique(romanAliases, `sec-${romanValue}`, title);
+          continue;
+        }
+      }
+      const cnMatch = text.match(/^第\s*([一二三四五六七八九十]{1,3})\s*[章节](?:\s|[.:：、]|\S)/);
+      if (cnMatch) {
+        const cnValue = parseLayoutChineseNumeral(cnMatch[1]);
+        if (cnValue) {
+          setUnique(sections, `sec-${cnValue}`, title);
+          continue;
+        }
+      }
+      const appendixMatch = text.match(/^(?:Appendix|附录)\s*([A-Z](?:\.\d+)?)\s*[.)．、:：\s]\s*\S/i);
+      if (appendixMatch) setUnique(sections, `app-${appendixMatch[1].toUpperCase()}`, title);
+    }
+    for (const [aliasKey, id] of romanAliases.entries()) {
+      if (id && !sections.has(aliasKey)) sections.set(aliasKey, id);
+    }
+    if (!sections.size) return;
+    const sectionKey = token => {
+      const cn = parseLayoutChineseNumeral(token);
+      return `sec-${cn || token}`;
+    };
+    const nodes = collectLayoutTextNodes(
+      root,
+      'a, sup, code, pre, .type-title, h1, h2, h3, h4, h5, h6, .toc-stream, .refs, .flow-ref, .type-ref_text, .layout-formula, .katex, .litmtrans-math, .layout-line-debug-box, .layout-collision-debug-layer'
+    );
+    const pattern = /\b(Sections?|Secs?\.?)\s+((?:[1-9]\d?(?:\.\d+)*|[IVX]{1,5})(?:\s*(?:,\s*(?:and|&)?|and|&)\s*(?:[1-9]\d?(?:\.\d+)*|[IVX]{1,5}))*)\b|\bAppendix\s+([A-Z](?:\.\d+)?)\b|第\s*((?:[1-9]\d?(?:\.\d+)*|[IVX]{1,5}|[一二三四五六七八九十]{1,3})(?:\s*[、,，和与]\s*(?:[1-9]\d?(?:\.\d+)*|[IVX]{1,5}|[一二三四五六七八九十]{1,3}))*)\s*[章节]|([1-9]\d?(?:\.\d+)+)\s*节|附录\s*([A-Z](?:\.\d+)?)/g;
+    for (const node of nodes) {
+      const text = node.textContent, fragment = document.createDocumentFragment();
+      let cursor = 0;
+      for (const match of text.matchAll(pattern)) {
+        const prefix = match[1] || '';
+        const listRaw = match[2] || match[4] || '';
+        const singleSection = match[5] || '';
+        const appendixCode = match[3] || match[6] || '';
+        if (appendixCode) {
+          const target = sections.get(`app-${appendixCode.toUpperCase()}`);
+          if (!target) continue;
+          fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+          const anchor = document.createElement('a');
+          anchor.className = 'litmtrans-link';
+          anchor.textContent = match[0];
+          anchor.setAttribute('href', `#${target}`);
+          anchor.dataset.layoutReferenceTarget = target;
+          fragment.appendChild(anchor);
+          cursor = match.index + match[0].length;
+          continue;
+        }
+        if (singleSection) {
+          const target = sections.get(sectionKey(singleSection));
+          if (!target) continue;
+          fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+          const anchor = document.createElement('a');
+          anchor.className = 'litmtrans-link';
+          anchor.textContent = match[0];
+          anchor.setAttribute('href', `#${target}`);
+          anchor.dataset.layoutReferenceTarget = target;
+          fragment.appendChild(anchor);
+          cursor = match.index + match[0].length;
+          continue;
+        }
+        if (!listRaw) continue;
+        const numbers = [...listRaw.matchAll(/[1-9]\d?(?:\.\d+)*|[IVX]{1,5}|[一二三四五六七八九十]{1,3}/g)];
+        if (!numbers.some(item => sections.get(sectionKey(item[0])))) continue;
+        fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        if (numbers.length === 1) {
+          const target = sections.get(sectionKey(numbers[0][0]));
+          const anchor = document.createElement('a');
+          anchor.className = 'litmtrans-link';
+          anchor.textContent = match[0];
+          anchor.setAttribute('href', `#${target}`);
+          anchor.dataset.layoutReferenceTarget = target;
+          fragment.appendChild(anchor);
+        } else {
+          const listOffset = match[0].indexOf(listRaw);
+          let pos = 0;
+          const leadText = match[0].slice(0, listOffset);
+          const firstTarget = sections.get(sectionKey(numbers[0][0]));
+          const includePrefixInFirst = Boolean(prefix && firstTarget);
+          if (!includePrefixInFirst && leadText) fragment.appendChild(document.createTextNode(leadText));
+          for (const item of numbers) {
+            const gap = listRaw.slice(pos, item.index);
+            if (gap) fragment.appendChild(document.createTextNode(gap));
+            const target = sections.get(sectionKey(item[0]));
+            if (target) {
+              const anchor = document.createElement('a');
+              anchor.className = 'litmtrans-link';
+              anchor.textContent = (pos === 0 && includePrefixInFirst) ? leadText + item[0] : item[0];
+              anchor.setAttribute('href', `#${target}`);
+              anchor.dataset.layoutReferenceTarget = target;
+              fragment.appendChild(anchor);
+            } else {
+              fragment.appendChild(document.createTextNode(item[0]));
+            }
+            pos = item.index + item[0].length;
+          }
+          fragment.appendChild(document.createTextNode(listRaw.slice(pos) + match[0].slice(listOffset + listRaw.length)));
+        }
+        cursor = match.index + match[0].length;
+      }
+      if (cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor)));
+        node.replaceWith(fragment);
+      }
+    }
+  }
+
+  function linkifyLayoutEquations(root, pane) {
+    const equations = new Map();
+    let serial = 0;
+    const register = (number, element) => {
+      const key = String(number || '').replace(/\s+/g, '').replace(/^[(\[（]+|[)\]）]+$/g, '');
+      if (!/^[A-Za-z]?\d+(?:\.\d+)*[a-z]?$/.test(key)) return;
+      element.id ||= `litmtrans-equation-${pane}-${serial++}`;
+      equations.set(key, equations.has(key) ? null : element.id);
+    };
+    for (const block of root.querySelectorAll('.layout-block.layout-formula, .layout-block.type-formula_number, .litmtrans-math-display, .litmtrans-display-formula, .katex-display')) {
+      if (block.matches('.katex-display') && block.closest('.layout-formula')) continue;
+      const numberNode = block.querySelector?.('.layout-equation-number');
+      if (numberNode) {
+        register(numberNode.textContent, block);
+        continue;
+      }
+      if (block.classList?.contains('type-formula_number')) {
+        register(block.textContent, block);
+        continue;
+      }
+      const tex = block.dataset?.formulaTex
+        || block.querySelector?.('[data-formula-tex]')?.dataset?.formulaTex
+        || block.getAttribute?.('title')
+        || block.querySelector?.('annotation[encoding="application/x-tex"]')?.textContent
+        || '';
+      const tagMatch = tex.match(/\\tag\s*\{\s*([^{}]+?)\s*\}/);
+      if (tagMatch) register(tagMatch[1], block);
+    }
+    if (!equations.size) return;
+    const nodes = collectLayoutTextNodes(
+      root,
+      'a, sup, code, pre, .layout-formula, .type-formula_number, .katex, .litmtrans-math, .refs, .flow-ref, .type-ref_text, .layout-line-debug-box, .layout-collision-debug-layer'
+    );
+    const pattern = /\b(?:Equations?|Eqs?\.?)\s*(?:[(（]\s*([A-Za-z]?\d+(?:\.\d+)*[a-z]?)\s*[)）]|([A-Za-z]?\d+(?:\.\d+)*[a-z]?)(?![.\d]))|(?:公式|方程|等式|式)\s*[(（]\s*([A-Za-z]?\d+(?:\.\d+)*[a-z]?)\s*[)）]/gi;
+    for (const node of nodes) {
+      const text = node.textContent, fragment = document.createDocumentFragment();
+      let cursor = 0;
+      for (const match of text.matchAll(pattern)) {
+        const key = match[1] || match[2] || match[3];
+        const target = key ? equations.get(key) : null;
+        if (!target) continue;
+        fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        const anchor = document.createElement('a');
+        anchor.className = 'litmtrans-link';
+        anchor.textContent = match[0];
+        anchor.setAttribute('href', `#${target}`);
+        anchor.dataset.layoutReferenceTarget = target;
+        fragment.appendChild(anchor);
+        cursor = match.index + match[0].length;
+      }
+      if (cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor)));
+        node.replaceWith(fragment);
+      }
+    }
+  }
+
+  function linkifyStreamDocument(root, pane) {
+    if (!root) return;
+    let inReferences = false;
+    for (const child of [...root.children]) {
+      if (/^H[1-6]$/.test(child.tagName)) {
+        const headingText = child.textContent.replace(/\s+/g, ' ').trim();
+        if (/^(?:(?:\d+|[IVX]+)[.)．、]?\s*)?(?:references|bibliography|参考文献)\s*[:：]?$/i.test(headingText)) {
+          inReferences = true;
+        } else if (inReferences && /^(?:(?:\d+|[IVX]+|[A-Z])[.)．、]?\s*)?(?:appendix|acknowledg|致谢|附录|附注)/i.test(headingText)) {
+          inReferences = false;
+        }
+        continue;
+      }
+      if (!inReferences) continue;
+      if (child.tagName === 'P') {
+        child.classList.add('flow-ref');
+      } else if (child.tagName === 'OL' || child.tagName === 'UL') {
+        const ordered = child.tagName === 'OL';
+        const items = [...child.querySelectorAll(':scope > li')];
+        items.forEach((item, index) => {
+          item.classList.add('flow-ref');
+          if (ordered && !/^\s*(?:\[\d+\]|\d+[.)])/.test(item.textContent) && !item.querySelector(':scope > sup')) {
+            const marker = document.createElement('span');
+            marker.className = 'stream-ref-order-marker';
+            marker.hidden = true;
+            marker.textContent = `[${index + 1}] `;
+            item.prepend(marker);
+          }
+        });
+      }
+    }
+    linkifyLayoutDocument(root, pane);
+    linkifyLayoutFigures(root, pane);
+    linkifyLayoutSections(root, pane);
+    linkifyLayoutEquations(root, pane);
+    setLayoutReferencePreviews(root);
+  }
+
   function setLayoutReferencePreviews(root) {
     const entries = new Map([...root.querySelectorAll('[id]')].map(entry => [entry.id, entry]));
+    const readPreview = entry => {
+      if (!entry) return '';
+      const tex = entry.dataset?.formulaTex
+        || entry.querySelector?.('[data-formula-tex]')?.dataset?.formulaTex
+        || entry.getAttribute?.('title')
+        || entry.querySelector?.('annotation[encoding="application/x-tex"]')?.textContent;
+      if (tex) return tex.replace(/\s+/g, ' ').trim();
+      return entry.textContent.trim();
+    };
     for (const anchor of root.querySelectorAll('a[data-layout-reference-target]')) {
       const target = anchor.dataset.layoutReferenceTarget;
       const ids = [target];
@@ -3494,7 +4075,7 @@
       if (match && end > Number(match[2])) {
         for (let number = Number(match[2]) + 1; number <= end; number++) ids.push(`${match[1]}${number}`);
       }
-      anchor.title = ids.map(id => entries.get(id)?.textContent.trim()).filter(Boolean).join('\n\n');
+      anchor.title = ids.map(id => readPreview(entries.get(id))).filter(Boolean).join('\n\n');
     }
   }
 
@@ -3587,8 +4168,11 @@
       root.appendChild(wrap);
       observers.push(pageNode);
     }
-    linkifyLayoutDocument(root, useTranslation ? 'translation' : 'source', model.referenceNumbers);
-    linkifyLayoutFigures(root, useTranslation ? 'translation' : 'source');
+    const pane = useTranslation ? 'translation' : 'source';
+    linkifyLayoutDocument(root, pane, model.referenceNumbers);
+    linkifyLayoutFigures(root, pane);
+    linkifyLayoutSections(root, pane);
+    linkifyLayoutEquations(root, pane);
     setLayoutReferencePreviews(root);
     requestAnimationFrame(() => {
       let fitQueued = false;
@@ -4426,6 +5010,7 @@
     return {
       page: Math.max(1, Number(wrap.dataset.page || 1)),
       pageRatio: Math.max(0, Math.min(1, (focusY - rect.top) / Math.max(1, rect.height))),
+      pageHeight: rect.height,
       anchorRatio
     };
   }
@@ -4845,16 +5430,27 @@
     const canvas = document.createElement("canvas");canvas.width = width;canvas.height = height;
     try {
       const ctx = canvas.getContext("2d");ctx.drawImage(source, 0, 0);
-      ctx.textAlign = "center";ctx.textBaseline = "middle";
+      ctx.textBaseline = "middle";
       for (const label of host.querySelectorAll(".layout-image-label")) {
         if (label.hidden) continue;
         const left = parseFloat(label.style.left), top = parseFloat(label.style.top), w = parseFloat(label.style.width), h = parseFloat(label.style.height);
         const size = parseFloat(label.style.fontSize);
         if (![left, top, w, h, size].every(Number.isFinite) || size <= 0) continue;
-        const textStyle = getComputedStyle(label);
+        const textStyle = getComputedStyle(label), labelWidth = w / scale, labelHeight = h / scale;
+        ctx.save();
+        ctx.translate((left + w / 2 - offsetX) / scale, (top + h / 2 - offsetY) / scale);
+        if (Number(label.dataset.rotation) === -90) ctx.rotate(-Math.PI / 2);
+        if (textStyle.overflow !== "visible") {
+          ctx.beginPath();ctx.rect(-labelWidth / 2, -labelHeight / 2, labelWidth, labelHeight);ctx.clip();
+        }
+        ctx.fillStyle = textStyle.backgroundColor;
+        ctx.fillRect(-labelWidth / 2, -labelHeight / 2, labelWidth, labelHeight);
         ctx.font = `${textStyle.fontWeight || "normal"} ${size / scale}px ${textStyle.fontFamily}`;
         ctx.fillStyle = label.style.color || "#111";
-        ctx.fillText(label.textContent, (left + w / 2 - offsetX) / scale, (top + h / 2 - offsetY) / scale, w / scale);
+        const align = textStyle.justifyContent;
+        ctx.textAlign = align === "flex-start" ? "left" : align === "flex-end" ? "right" : "center";
+        ctx.fillText(label.textContent, align === "flex-start" ? -labelWidth / 2 : align === "flex-end" ? labelWidth / 2 : 0, 0);
+        ctx.restore();
       }
       return canvas.toDataURL("image/png");
     } catch (_) { return ""; }
@@ -6151,7 +6747,7 @@
     const layoutIdentity = String(state.data?.layout?.meta?.identity || state.data?.layout?.meta?.sourceFingerprint || state.data?.layout?.model?.sourceFingerprint || "");
     const parseRevisionID = String(state.data?.parsed?.meta?.parseRevisionID || "");
     const tables = state.settings?.translateTables === false ? "" : state.data?.layout?.model?.tableTranslationHash;
-    const images = state.settings?.translateImages === false ? "" : state.data?.layout?.model?.imageTranslationHash;
+    const images = state.settings?.translateImages ? state.data?.layout?.model?.imageTranslationHash : "";
     const retranslationCount = Number(state.data?.layout?.meta?.retranslationCount || 0);
     const rev = retranslationCount > 0 ? `:rev-${retranslationCount}` : "";
     return layoutIdentity ? `${parseRevisionID ? `${parseRevisionID}:` : ""}${layoutIdentity}${tables ? `:tables-${tables}` : ""}${images ? `:images-${images}` : ""}${rev}:pdf-${LAYOUT_PDF_EXPORT_REVISION}` : "";
@@ -6787,6 +7383,7 @@
     content.className = "markdown-body";
     root.appendChild(content);
     renderMarkdownInto(content, markdown, { imageLoading: "eager", parseProvider: state.data?.parsed?.meta?.parseProvider });
+    linkifyStreamDocument(content, `stream-print-${pane}`);
     const style = document.createElement("style");
     style.id = "litmtrans-stream-print-style";
     style.textContent = streamPrintStyle();
@@ -7306,21 +7903,28 @@
     return key === tableDocumentKey();
   }
 
-  function tableDecision(message, { manual = false, title = "翻译表格" } = {}) {
+  function tableDecision(message, { manual = false, title = "翻译表格", yesLabel = "是", noLabel = "否", manualLabel = "手动翻译",
+    yesValue = true, noValue = false, manualValue = "manual", cancelValue = false } = {}) {
     const dialog = $("table-decision-dialog");
     $("table-decision-title").textContent = title;
     $("table-decision-message").textContent = message;
+    $("table-decision-yes").textContent = yesLabel;
+    $("table-decision-no").textContent = noLabel;
+    $("table-decision-manual").textContent = manualLabel;
     $("table-decision-manual").hidden = !manual;
     return new Promise(resolve => {
-      let accepted = false;
-      const yes = () => { accepted = true; dialog.close(); };
-      const no = () => dialog.close();
-      const byHand = () => { accepted = "manual"; dialog.close(); };
+      let accepted = cancelValue;
+      const yes = () => { accepted = yesValue; dialog.close(); };
+      const no = () => { accepted = noValue; dialog.close(); };
+      const byHand = () => { accepted = manualValue; dialog.close(); };
       const close = () => {
         $("table-decision-yes").removeEventListener("click", yes);
         $("table-decision-no").removeEventListener("click", no);
         $("table-decision-manual").removeEventListener("click", byHand);
         dialog.removeEventListener("close", close);
+        $("table-decision-yes").textContent = "是";
+        $("table-decision-no").textContent = "否";
+        $("table-decision-manual").textContent = "手动翻译";
         resolve(accepted);
       };
       $("table-decision-yes").addEventListener("click", yes);
@@ -7511,12 +8115,17 @@
       try {
         if (!state.data?.parsed?.hasLayout) return;
         const status = await hostCall("image-translation-status"), revision = imagePreferenceRevision;
-        let enabled = state.settings?.translateImages !== false;
+        let enabled = Boolean(state.settings?.translateImages);
         const previous = status.previousDisplay ?? status.available;
         if (!enabled && previous && status.available) {
           if (!await waitForTableDecisionSlot(current)) return;
           enabled = await tableDecision("这篇文献此前启用了翻译图片，当前全局设置为不翻译。是否重新勾选“翻译图片”？此选择会修改全局设置。选择否将显示原图。", { title: "翻译图片" });
-          if (revision !== imagePreferenceRevision) return;
+          if (revision !== imagePreferenceRevision || current !== tableDocumentKey()) return;
+          if (enabled) {
+            const ready = await ensureImageOCRReady({ mode: "toggle" });
+            if (revision !== imagePreferenceRevision || current !== tableDocumentKey()) return;
+            if (!ready.proceed) enabled = false;
+          }
           if (enabled) { await hostCall("set-image-preference", { enabled: true });state.settings.translateImages = true; }
         }
         els["translate-images-check"].checked = enabled;
@@ -7530,12 +8139,23 @@
   }
 
   async function changeImagePreference(enabled, { external = false } = {}) {
-    const originalKey = tableDocumentKey(), before = state.settings?.translateImages !== false, revision = ++imagePreferenceRevision;
+    const originalKey = tableDocumentKey(), before = Boolean(state.settings?.translateImages), revision = ++imagePreferenceRevision;
     tablePreferenceSaving = true;updateOperationUI();
     try {
       while (exportBusy || document.body.dataset.printSnapshot) await new Promise(resolve => setTimeout(resolve, 100));
-      if (external) enabled = (await hostCall("get-settings")).translateImages !== false;
-      else await hostCall("set-image-preference", { enabled });
+      if (external) enabled = Boolean((await hostCall("get-settings")).translateImages);
+      else {
+        if (enabled && !before) {
+          els["translate-images-check"].checked = false;
+          const ready = await ensureImageOCRReady({ mode: "toggle" });
+          if (originalKey !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
+          if (!ready.proceed) {
+            els["translate-images-check"].checked = before;
+            return;
+          }
+        }
+        await hostCall("set-image-preference", { enabled });
+      }
       if (originalKey !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
       state.settings = { ...state.settings, translateImages: enabled };
       els["translate-images-check"].checked = enabled;
@@ -7553,6 +8173,8 @@
         const accepted = await tableDecision(status.available ? "部分图片缺少译文，是否补翻缺失的图片？" : "当前文献的图片尚无可用译文，是否翻译？", { title: "翻译图片" });
         if (key !== tableDocumentKey() || revision !== imagePreferenceRevision) return;
         if (accepted) {
+          const ready = await ensureImageOCRReady({ mode: "toggle" });
+          if (key !== tableDocumentKey() || revision !== imagePreferenceRevision || !ready.proceed) return;
           const oldHash = state.data?.layout?.model?.imageTranslationHash || "";
           let result, failure;tableSupplementRunning = true;updateOperationUI();
           try { result = await hostCall("translate-images", { engine: state.aiMode === "web" ? "deepseek_web" : "api", aiMode: state.aiMode }); }
@@ -7561,7 +8183,7 @@
           if (key !== tableDocumentKey()) return;
           if (failure) { if (!failure.cancelled) toast(failure.message || String(failure), "error");return; }
           setData(result.state);
-          if (state.settings?.translateImages !== false && (state.data?.layout?.model?.imageTranslationHash || "") !== oldHash) await rememberImageDisplay(true, true, status);
+          if (state.settings?.translateImages && (state.data?.layout?.model?.imageTranslationHash || "") !== oldHash) await rememberImageDisplay(true, true, status);
           if (!state.data?.layout?.model?.imageTranslationHash) toast("未识别到可翻译的图片文字");
           if (result.remaining) toast("部分图片未获得有效译文，已保留原图", "warning");
         }
@@ -7582,6 +8204,66 @@
       engine: isWeb ? "deepseek_web" : "api",
       aiMode: isWeb ? "web" : "api"
     };
+  }
+
+  async function ensureImageOCRReady({ mode = "toggle" } = {}) {
+    const readiness = await hostCall("image-ocr-readiness");
+    if (readiness?.ready) return { proceed: true, translateImages: true };
+    const mb = Math.max(1, Math.round(Number(readiness?.totalBytes || 35886301) / 1000000));
+    const isTranslation = mode === "translation";
+    const choice = await tableDecision(
+      isTranslation
+        ? `当前已开启“翻译图片”，但解析服务为MinerU且尚未下载本地图片识别模型（约${mb}MB）。请下载本地模型或切换为Paddle服务；也可本次不翻图片直接继续。`
+        : `当前解析服务为MinerU，使用“翻译图片”需下载本地图片识别模型（约${mb}MB），或直接切换为Paddle解析服务进行云端识别。`,
+      {
+        title: "翻译图片",
+        manual: true,
+        yesLabel: "下载本地模型",
+        yesValue: "download",
+        manualLabel: "切换为Paddle",
+        manualValue: "paddle",
+        noLabel: isTranslation ? "仅翻译正文" : "取消",
+        noValue: isTranslation ? "skip" : "cancel",
+        cancelValue: "cancel"
+      }
+    );
+    if (choice === "download") {
+      setStatus("正在准备本地图片识别模型…", 0, "running");
+      try {
+        await hostCall("prepare-local-ocr");
+        toast("本地图片识别模型已就绪");
+        return { proceed: true, translateImages: true };
+      } catch (error) {
+        if (!error?.cancelled) toast(error?.message || String(error), "error");
+        restoreIdleStatus();
+        return { proceed: false, translateImages: false };
+      }
+    }
+    if (choice === "paddle") {
+      try {
+        const settings = await hostCall("save-settings", { parseProvider: "paddle" });
+        state.settings = mergePromptLibraryDraft(settings);
+        populateSettings(state.settings);
+        toast(state.settings?.paddleToken ? "已切换为Paddle解析服务" : "已切换为Paddle解析服务，可在设置中填写Paddle令牌");
+        return { proceed: true, translateImages: true };
+      } catch (error) {
+        toast(error?.message || String(error), "error");
+        return { proceed: false, translateImages: false };
+      }
+    }
+    if (choice === "skip" && isTranslation) {
+      try {
+        await hostCall("set-image-preference", { enabled: false });
+        state.settings = { ...state.settings, translateImages: false };
+        if (els["translate-images-check"]) els["translate-images-check"].checked = false;
+        updateTableDisplay();
+        return { proceed: true, translateImages: false };
+      } catch (error) {
+        toast(error?.message || String(error), "error");
+        return { proceed: false, translateImages: false };
+      }
+    }
+    return { proceed: false, translateImages: false };
   }
 
   function isWebChatSession(target) {
@@ -8162,6 +8844,7 @@
     document.addEventListener("click", event => {
       if (menu && !menu.contains(event.target)) removeMenu();
       if (event.button !== 0) return;
+      if (event.target?.closest?.("a[href], a[data-layout-reference-target]") && !event.ctrlKey && !event.metaKey && !event.shiftKey) return;
       const tableTarget = event.target?.closest?.(".layout-table-translation-host, .layout-table-wrap table");
       if (tableTarget && readerPaneForTarget(tableTarget)
         && (state.settings?.translateTables !== false || !tableTarget.classList.contains("layout-table-translation-host"))
@@ -8193,7 +8876,7 @@
           name,
           mimeType,
           url: srcUrl,
-          displayURL: state.settings?.translateImages !== false ? translatedImagePreviewDataURL(image.closest(".layout-image-translation")) : "",
+          displayURL: state.settings?.translateImages ? translatedImagePreviewDataURL(image.closest(".layout-image-translation")) : "",
           quote: pane ? readerImageQuote(image, pane) : null
         });
       }
@@ -9672,7 +10355,9 @@
     const input = els["mineru-token-input"];
     const errorNode = els["mineru-token-error"];
     const saveButton = els["save-mineru-token-and-parse"];
-    title.textContent = expired ? (paddle ? "Paddle访问令牌无法通过验证" : "MinerU访问令牌可能已失效") : `配置${name}访问令牌`;
+    const linkPrefix = els["mineru-token-link-prefix"];
+    const linkSuffix = els["mineru-token-link-suffix"];
+    title.textContent = expired ? (paddle ? "Paddle访问令牌无法通过验证" : "MinerU访问令牌已过期") : `配置${name}访问令牌`;
     dialog.querySelector("label[for=mineru-token-input]").textContent = `${name}访问令牌`;
     const link = dialog.querySelector("a[data-external-url]");
     if (link) {
@@ -9681,13 +10366,21 @@
       link.dataset.mineruTokenLink = paddle ? "false" : "true";
       link.textContent = `${name}令牌官网`;
     }
+    if (linkPrefix) linkPrefix.textContent = expired ? "请前往" : "还没有令牌？前往";
+    if (linkSuffix) linkSuffix.textContent = expired ? (paddle ? "检查或重新获取。" : "重新创建令牌后替换。") : "获取。";
     input.placeholder = `请粘贴${name}访问令牌`;
     description.textContent = expired
-      ? `${name}访问令牌无法通过验证，请前往官网检查并替换。`
+      ? (paddle
+        ? "Paddle访问令牌无法通过验证，请前往官网检查并替换。"
+        : "MinerU官方访问令牌每3个月会自动过期（属正常现象，并非账号异常），重新创建并替换即可。")
       : "解析文献前需要先填写访问令牌。";
     input.value = "";
     errorNode.hidden = !expired;
-    errorNode.textContent = expired ? `当前令牌已无法通过${name}验证，请粘贴新令牌后重试。` : "";
+    errorNode.textContent = expired
+      ? (paddle
+        ? "当前令牌已无法通过Paddle验证，请粘贴新令牌后重试。"
+        : "旧令牌已过期，请粘贴新创建的MinerU访问令牌后重试。")
+      : "";
     saveButton.disabled = false;
     saveButton.textContent = expired ? "保存新令牌并重试" : "保存并继续解析";
 
@@ -9800,10 +10493,11 @@
         const paddle = state.settings?.parseProvider === "paddle";
         const tokenError = paddle ? U.isPaddleTokenCredentialError?.(error) : U.isMinerUTokenCredentialError?.(error);
         if (method === "parse" && tokenError) {
-          const name = paddle ? "Paddle" : "MinerU";
-          const notice = paddle ? "Paddle访问令牌无法通过验证，请前往官网检查或重新获取。" : "MinerU访问令牌可能已过期或失效，请前往官网重新创建。";
+          const notice = paddle
+            ? "Paddle访问令牌无法通过验证，请前往官网检查或重新获取。"
+            : "MinerU访问令牌已过期（官方令牌每3个月自动失效，并非账号异常），请前往官网重新创建并替换。";
           lastActionError = notice;
-          setStatus(`${name}访问令牌需要更新`, null, "error");
+          setStatus(paddle ? "Paddle访问令牌需要更新" : "MinerU访问令牌已过期，请更新", null, "error");
           addLog(notice, "error");
           const replaced = await ensureParserTokenForParse({ force: true, reason: "expired" });
           if (replaced) return runAction(method, payload, options);
@@ -10137,29 +10831,29 @@
     bind(els["source-scroll"], els["translation-scroll"]);
     bind(els["translation-scroll"], els["source-scroll"]);
     let readerJumpFrame = null;
-    let pendingReaderLocation = null;
+    const translationScroll = els["translation-scroll"];
+    const allowTranslationScroll = () => { translationScroll._litmtransProgrammaticUntil = 0; };
+    translationScroll.addEventListener("wheel", allowTranslationScroll, { passive: true });
+    translationScroll.addEventListener("pointerdown", allowTranslationScroll, { passive: true });
     els["translation-scroll"].addEventListener("scroll", () => {
       if (state.mode !== "layout" || !state.syncScroll) return;
       if (performance.now() < Number(els["translation-scroll"]._litmtransProgrammaticUntil || 0)) return;
-      pendingReaderLocation = layoutPageAtViewportAnchor(els["translation-scroll"], .35);
       if (readerJumpFrame) return;
       readerJumpFrame = requestAnimationFrame(() => {
         readerJumpFrame = null;
-        const location = pendingReaderLocation;
-        pendingReaderLocation = null;
+        if (state.mode !== "layout" || !state.syncScroll) return;
+        const location = layoutPageAtViewportAnchor(translationScroll, .35);
         if (!location) return;
         const page = location.page;
-        // Page-only de-duplication made an entire long page inert after its
-        // first jump. Keep Reader aligned while the user continues within the
-        // same page, but avoid needless sub-pixel echo traffic.
-        if (page === state.readerSyncPage && Math.abs(location.pageRatio - state.readerSyncPageRatio) < .012) return;
+        if (page === state.readerSyncPage && Math.abs(location.pageRatio - state.readerSyncPageRatio) * location.pageHeight < 1) return;
         state.readerSyncUntil = performance.now() + 120;
         state.readerSyncPage = page;
         state.readerSyncPageRatio = location.pageRatio;
         void hostCall("reader-preview-jump", {
           page,
           pageRatio: location.pageRatio,
-          anchorRatio: location.anchorRatio
+          anchorRatio: location.anchorRatio,
+          syncScroll: true
         }).catch(() => {});
       });
     }, { passive: true });
@@ -10569,6 +11263,10 @@
         catch (error) { toast(error?.message || "无法保存翻译设置", "error"); return; }
       }
       const translationMode = await recommendedTranslationModeForLongPDF();
+      if (state.mode === "layout" && state.settings?.translateImages) {
+        const ready = await ensureImageOCRReady({ mode: "translation" });
+        if (!ready.proceed) return;
+      }
       // Parsing is an implementation prerequisite, not a separate reading
       // action. The visible control remains one unambiguous "翻译" button.
       if (!state.data?.parsed?.markdown) {
@@ -10608,6 +11306,10 @@
     };
     els["translate-button"].addEventListener("click", () => { void startTranslation(); });
     const openManualTranslation = async ({ tablesOnly = false } = {}) => {
+      if (state.mode === "layout" && !tablesOnly && state.settings?.translateImages) {
+        const ready = await ensureImageOCRReady({ mode: "translation" });
+        if (!ready.proceed) return;
+      }
       if (!state.data?.parsed?.markdown) {
         if (!window.confirm("这篇文献尚未解析。是否立即解析？")) return;
         const parsed = await runAction("parse", {}, { success: "解析完成" });
@@ -11996,6 +12698,7 @@
     const cajBytes = Number(summary.cajActiveBytes ?? 0);
     const tempBytes = summary.tempTotalBytes || 0;
     const edgeBytes = summary.edgeLocalTotalBytes || 0;
+    const localOCRBytes = summary.localOCRTotalBytes || 0;
     const runtimeBytes = summary.runtimeTotalBytes || 0;
     const orphanBytes = Number(summary.orphanedCoreBytes ?? 0);
 
@@ -12006,6 +12709,9 @@
     ];
     if (edgeBytes > 0) {
       segments.push({ key: "edge", label: "离线引擎", bytes: edgeBytes, formatted: summary.edgeLocalTotalBytesFormatted || formatStorageBytes(edgeBytes), color: "#8b5cf6" });
+    }
+    if (localOCRBytes > 0) {
+      segments.push({ key: "local-ocr", label: "图片识别", bytes: localOCRBytes, formatted: summary.localOCRTotalBytesFormatted || formatStorageBytes(localOCRBytes), color: "#ec4899" });
     }
     if (runtimeBytes > 0) {
       segments.push({ key: "runtime", label: "采集运行时", bytes: runtimeBytes, formatted: summary.runtimeTotalBytesFormatted || formatStorageBytes(runtimeBytes), color: "#06b6d4" });
@@ -12121,6 +12827,16 @@
       }
     }
 
+    if (els["storage-local-ocr-card"]) {
+      if (s.localOCRTotalBytes > 0) {
+        els["storage-local-ocr-card"].hidden = false;
+        if (els["storage-local-ocr-bytes"]) els["storage-local-ocr-bytes"].textContent = s.localOCRTotalBytesFormatted || "0 B";
+        if (els["storage-local-ocr-count"]) els["storage-local-ocr-count"].textContent = `${s.localOCRTotalFiles || 0} 个文件`;
+      } else {
+        els["storage-local-ocr-card"].hidden = true;
+      }
+    }
+
     if (els["storage-orphaned-card"]) {
       if (s.orphanedCount > 0) {
         els["storage-orphaned-card"].hidden = false;
@@ -12204,6 +12920,8 @@
       message = "确定删除全部临时生成文件与解压缓存吗？";
     } else if (kind === "edge") {
       message = "确定删除 Edge 本地离线翻译引擎数据吗？\n\n下次使用离线翻译时会重新下载。";
+    } else if (kind === "local-ocr") {
+      message = "确定删除本地图片识别模型与运行时数据吗？\n\n下次使用本地图片识别时会重新下载。";
     } else if (kind === "runtime") {
       message = "确定完全删除文献检索与采集运行时吗？\n\n将清理嵌入式 Python 与 ScanSci 依赖包，释放全部空间。下次发起文献下载时将自动重新配置。";
     } else if (kind === "runtime-cache") {
@@ -12231,6 +12949,8 @@
       ? "临时缓存"
       : kind === "edge"
       ? "Edge 本地离线翻译引擎数据"
+      : kind === "local-ocr"
+      ? "本地图片识别模型与运行时"
       : kind === "runtime"
       ? "文献检索与采集运行时"
       : "运行时临时缓存";
@@ -12567,6 +13287,42 @@
       container.appendChild(edgeGroup);
     }
 
+    // 根组 3.5：本地图片识别模型与运行时
+    if (currentStorageSummary.localOCRTotalBytes > 0) {
+      const localOCRGroup = document.createElement("div");
+      localOCRGroup.className = "tree-root-group";
+      const localOCRHeader = document.createElement("div");
+      localOCRHeader.className = "tree-root-header";
+      localOCRHeader.title = `本地图片识别模型与运行时 (${currentStorageSummary.localOCRTotalBytesFormatted})\n\nPP-OCRv6 tiny 模型权重与 ONNX Runtime WASM 运行时文件。\n\n💡 提示：双击可直接在系统文件管理器中打开此目录`;
+      localOCRHeader.innerHTML = `
+        <div class="tree-root-left">
+          <span class="tree-node-icon">${getStorageIcon("images")}</span>
+          <span>本地图片识别模型与运行时</span>
+        </div>
+        <div class="tree-item-right">
+          <span class="tree-item-size">${escapeHTML(currentStorageSummary.localOCRTotalBytesFormatted || "0 B")}</span>
+          <div class="tree-item-actions">
+            <button class="tree-action-link" type="button" data-action="open-local-ocr" title="打开本地图片识别目录">打开</button>
+            <button class="tree-action-link danger" type="button" data-action="clear-local-ocr" title="删除本地图片识别模型与运行时">清空</button>
+          </div>
+        </div>
+      `;
+
+      localOCRHeader.addEventListener("dblclick", (e) => {
+        if (e.target.closest("button")) return;
+        e.stopPropagation();
+        hostCall("open-storage-folder", { kind: "local-ocr" }).catch(err => toast(err.message, "error"));
+      });
+
+      localOCRHeader.addEventListener("contextmenu", (e) => {
+        if (e.target.closest("button")) return;
+        showStorageContextMenu(e, { kind: "local-ocr", title: "本地图片识别模型与运行时" });
+      });
+
+      localOCRGroup.appendChild(localOCRHeader);
+      container.appendChild(localOCRGroup);
+    }
+
     // 根组 4：文献检索与采集运行时 (ScanSci)
     if (currentStorageSummary.runtimeTotalBytes > 0) {
       const runtimeGroup = document.createElement("div");
@@ -12735,6 +13491,14 @@
         } else if (action === "open-edge") {
           try {
             await hostCall("open-storage-folder", { kind: "edge" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "open-local-ocr") {
+          try {
+            await hostCall("open-storage-folder", { kind: "local-ocr" });
+          } catch (err) { toast(err.message, "error"); }
+        } else if (action === "clear-local-ocr") {
+          try {
+            await clearStorageEntry({ kind: "local-ocr", title: "本地图片识别模型与运行时" });
           } catch (err) { toast(err.message, "error"); }
         } else if (action === "open-runtime") {
           try {

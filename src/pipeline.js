@@ -307,7 +307,7 @@
           targetLanguage: payload.targetLanguage ?? settings.targetLanguage,
           mode: String(payload.mode || settings.translationMode || "full_context"),
           translateTables: payload.translateTables ?? settings.translateTables,
-          translateImages: payload.translateImages,
+          translateImages: payload.translateImages ?? settings.translateImages,
           // Character-mix retry is an opt-in compatibility mode.
           enableUntranslatedCheck: Boolean(payload.enableUntranslatedCheck),
           referenceContext: reference.corpus,

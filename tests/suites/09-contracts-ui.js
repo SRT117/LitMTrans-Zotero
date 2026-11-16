@@ -42,6 +42,87 @@ function testLayoutReferencePreviewsAndFigureLinks() {
   assert.equal(document.querySelector('a'), null, '重复或缺失的目标不能猜测链接');
 }
 
+function testExtendedLayoutAndStreamHyperlinks() {
+  const { parseHTML } = require('linkedom');
+  const { document, Node } = parseHTML('<html><body></body></html>');
+  const workbench = fs.readFileSync(path.join(root, 'src', 'workbench.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src', 'workbench.css'), 'utf8');
+  const source = workbench.slice(workbench.indexOf('  function linkifyLayoutDocument('), workbench.indexOf('  function buildLayoutDocument('));
+  const sandbox = { document, Node, NodeFilter: { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 } };
+  vm.runInNewContext(
+    source + '\nthis.linkify = linkifyLayoutDocument; this.figures = linkifyLayoutFigures; this.sections = linkifyLayoutSections; this.equations = linkifyLayoutEquations; this.stream = linkifyStreamDocument; this.previews = setLayoutReferencePreviews;',
+    sandbox
+  );
+
+  document.body.innerHTML = `
+    <div class="layout-block type-title">1. 引言</div>
+    <div class="layout-block type-title">2. 方法</div>
+    <div class="layout-block type-title">IV. 结果分析</div>
+    <div class="layout-flow-stream"><div class="flow-para">
+      Qi,<sup>1</sup> 为作者标号不应链接。
+      详见 He等人 (2025)、（Huang et al., 2009; Washburn et al., 2008）、（Ben Moussa 等，2017）、Albergo &amp; Vanden-Eijnden (2022)、Chen (2018) 与 Chen et al. (2018)。
+      结构见 Sections 1, 2, IV 与第四节；图见 FIG. 1、图 5、列于表一中（注意表一般不应链接）。公式见式 (1) 与等式 (2)。链接见（https://example.com/paper）。
+    </div></div>
+    <div class="layout-flow-stream"><div class="flow-para" data-style-kind="body_text">正文上标<sup data-layout-citation="1">1</sup>应链接。</div></div>
+    <div class="layout-block type-text">FIG. 1. 实验装置。</div>
+    <div class="layout-block layout-caption type-image_caption">Figure 5 shows the pressure history.</div>
+    <div class="layout-block layout-caption type-chart_caption">图 5. 压力历史曲线。</div>
+    <div class="layout-block layout-caption type-table_caption">TABLE I. 参数列表 (Huang et al., 2009)。</div>
+    <div class="layout-block layout-formula" data-formula-tex="a = b \\tag{1}"><span class="layout-equation-number">(1)</span></div>
+    <div class="layout-block layout-formula" data-formula-tex="c = d \\tag{2}"><span class="layout-equation-number">(2)</span></div>
+    <div class="layout-flow-stream refs">
+      <div class="flow-ref">[1] Numbered reference. 2020.</div>
+      <div class="flow-ref">He, Y., Wang, L., Li, Z., 2025. Pulsating mode. Fuel 310, 112.</div>
+      <div class="flow-ref">Huang, Z., Washburn, E.B., 2009. Kinetics. Proc. 32, 100-108.</div>
+      <div class="flow-ref">Washburn, E.B., Trivedi, J.N., Catoire, L., 2008. Combustion study. Sci. 180, 1502.</div>
+      <div class="flow-ref">Ben Moussa, A., Smith, K., 2017. Particle study. Shock Waves 27, 50-60.</div>
+      <div class="flow-ref">Michael S Albergo and Eric Vanden-Eijnden. Flow matching. arXiv:2209.15571, 2022.</div>
+      <div class="flow-ref">Ricky T. Q. Chen. torchdiffeq, 2018. URL https://github.com/rtqichen/torchdiffeq.</div>
+      <div class="flow-ref">Ricky T. Q. Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ODEs. NeurIPS, 2018.</div>
+    </div>
+  `;
+  // 模拟由 layoutPartHTML 为正文上标打标后交给 linkifyLayoutDocument。
+  document.querySelectorAll('.flow-para[data-style-kind="body_text"] sup').forEach(s => { s.dataset.layoutCitation = '1'; });
+  const firstPara = document.querySelector('.flow-para');
+  firstPara.previousElementSibling;
+  sandbox.linkify(document.body, 'translation');
+  sandbox.figures(document.body, 'translation');
+  sandbox.sections(document.body, 'translation');
+  sandbox.equations(document.body, 'translation');
+  sandbox.previews(document.body);
+
+  const byText = text => [...document.querySelectorAll('a')].find(a => a.textContent === text);
+  assert(!document.querySelector('.flow-para sup:not([data-layout-citation]) a'), '作者/单位上标在非正文块中不得误链接');
+  assert(byText('He等人 (2025)'), '中文“等人”引文与非末尾年份应成功链接');
+  assert(byText('Huang et al., 2009') && byText('Washburn et al., 2008'), '分号并列引文应分别链接且不吞并外侧右括号');
+  assert(byText('Ben Moussa 等，2017'), '带空格复姓与中文逗号引文应链接');
+  assert(byText('Albergo & Vanden-Eijnden (2022)'), 'First-Last 文献与双作者 & 引文应链接');
+  assert.notEqual(byText('Chen (2018)')?.getAttribute('href'), byText('Chen et al. (2018)')?.getAttribute('href'), '同第一作者同年单作与多作应精确消歧');
+  assert(byText('Sections 1') && byText('2') && byText('IV') && byText('第四节'), '多节并列与中文大写数字节号应链接');
+  assert(byText('FIG. 1') && byText('图 5') && byText('表一'), '错分类的独立图注应恢复，伪 caption 不得覆盖真图注，罗马/中文表号应互通');
+  assert(!byText('表一般'), '中文普通词语不得误识别为表格引用');
+  assert.equal(byText('式 (1)')?.title, 'a = b \\tag{1}', '公式悬停预览应显示干净的 TeX 而非重复 DOM 文本');
+  assert(byText('等式 (2)'), '中文“等式 (N)”引用应链接');
+  assert.equal(byText('https://example.com/paper')?.getAttribute('href'), 'https://example.com/paper', '全角右括号不得混入 URL');
+
+  // 流式模式端到端链接检查
+  document.body.innerHTML = `
+    <h2>1. 引言</h2>
+    <p>参见第1节、图 1、式 (1) 与 Chen (2018)，文献 [1]。</p>
+    <figure class="litmtrans-figure"><figcaption>图 1. 流式图注。</figcaption></figure>
+    <span class="litmtrans-math-display" title="x = y \\tag{1}">x = y</span>
+    <h2>References</h2>
+    <ol><li>Ricky T. Q. Chen. torchdiffeq, 2018.</li></ol>
+  `;
+  sandbox.stream(document.body, 'stream-translation');
+  const streamTexts = [...document.querySelectorAll('p a')].map(a => a.textContent);
+  assert.deepEqual(streamTexts, ['第1节', '图 1', '式 (1)', 'Chen (2018)', '1']);
+
+  assert(css.includes('--layout-link: color-mix(in srgb, var(--reader-ink) 25%, #3b82f6);'), '阅读主题下链接应保持清晰可读的蓝色对比度');
+  assert(css.includes('.markdown-body a.litmtrans-link'), '流式阅读区链接应应用显式链接颜色');
+  assert(workbench.includes('if (event.target?.closest?.("a[href], a[data-layout-reference-target]")'), '布局交互捕获阶段不得拦截普通超链接点击');
+}
+
 function testPDFReaderThemeCrossWindowAndFailureIsolation() {
   const controller = Object.create(context.LitMTrans.Controller.prototype);
   const events = [];
@@ -1451,6 +1532,7 @@ async function testSettingsAutoSaveIsolationAndFailure() {
 
   return {
     testLayoutReferencePreviewsAndFigureLinks,
+    testExtendedLayoutAndStreamHyperlinks,
     testPDFReaderThemeCrossWindowAndFailureIsolation,
     testReaderThemeWithoutPreviewAndLegacyContentSwitch,
     testCustomReaderThemeNotificationUpdatesPreviewBeforeEmission,

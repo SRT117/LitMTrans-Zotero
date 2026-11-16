@@ -1,5 +1,5 @@
 {
-  "revision": 2,
+  "revision": 3,
   "paddle": {
     "model": "PaddleOCR-VL-1.6",
     "minPluginVersion": "2.1.3",
@@ -11,5 +11,39 @@
     "minPluginVersion": "2.1.3",
     "apiProtocol": "aistudio-jobs-v2",
     "resultSchema": "paddle-text-lines-v1"
+  },
+  "localOCR": {
+    "version": "v1",
+    "minPluginVersion": "2.1.5",
+    "files": {
+      "ort-wasm-simd-threaded.jsep.mjs": {
+        "size": 47250,
+        "sha256": "7838b4b2e77d6f1a739cd0de800e7f18a089328b365e6af4d416a88a94fd7fd3",
+        "urls": [
+          "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.mjs"
+        ]
+      },
+      "ort-wasm-simd-threaded.jsep.wasm": {
+        "size": 29520971,
+        "sha256": "5ab8361783822d02a57d1e97cf2514bceb451a628f2b29ae0d7b6e618201ff8f",
+        "urls": [
+          "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.wasm"
+        ]
+      },
+      "PP-OCRv6_tiny_det_onnx_infer.tar": {
+        "size": 1792000,
+        "sha256": "ff6ab415b0a6e0c488550f2fb5d5046f1719848df220b2dc21b56402a65bc05d",
+        "urls": [
+          "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar"
+        ]
+      },
+      "PP-OCRv6_tiny_rec_onnx_infer.tar": {
+        "size": 4526080,
+        "sha256": "1e13b22717b1edd89d4cde4fda272b6c17d5b505c97c2baea99da1a3a2d54b29",
+        "urls": [
+          "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar"
+        ]
+      }
+    }
   }
 }

@@ -13,6 +13,8 @@ $stage = Join-Path $dist "addon"
 $manifestPath = Join-Path $stage "manifest.json"
 
 if (-not $NoSync) {
+    & node (Join-Path $projectRoot "scripts/sync-vendor.mjs")
+    if ($LASTEXITCODE -ne 0) { throw "Vendor preparation failed." }
     $portedCore = Join-Path $projectRoot "src\ported-core.js"
     $localTsc = Join-Path $projectRoot "node_modules\typescript\bin\tsc"
     if (-not (Test-Path -LiteralPath $localTsc -PathType Leaf)) {

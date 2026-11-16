@@ -343,7 +343,7 @@
       const pendingHint = () => {
         pendingSince ??= Date.now();
         return Date.now() - pendingSince >= 120000
-          ? "；等待时间较长，可在设置中将解析服务切换为 Paddle 后重试" : "";
+          ? "；等待时间较长，可能处于Mineru服务器不稳定或拥挤时段，可以尝试切换为Paddle解析服务" : "";
       };
       while (Date.now() - started < timeoutMs) {
         U.throwIfAborted(signal);

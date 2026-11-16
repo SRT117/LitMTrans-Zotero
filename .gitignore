@@ -10,6 +10,7 @@ node_modules/
 .validation-logs/
 .playwright-cli/
 output/
+assets/vendor/local-ocr/
 
 # Isolated Zotero development profile and test-library data
 .zotero-dev/
