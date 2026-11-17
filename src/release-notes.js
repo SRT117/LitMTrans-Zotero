@@ -18,6 +18,13 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.7": Object.freeze({
+      title: "LitMTrans 2.1.7",
+      entries: Object.freeze([
+        Object.freeze({ title: "工作台兼容性修复", detail: "修复部分 Zotero 环境下初始化访问本地存储报错的问题；" }),
+        Object.freeze({ title: "网页翻译稳定性优化", detail: "优化 DeepSeek 网页端长文本轮询与内存占用，并在首轮截断抢救后自动补全末尾图片与表格译文。" })
+      ])
+    }),
     "2.1.6": Object.freeze({
       title: "LitMTrans 2.1.6",
       entries: Object.freeze([
