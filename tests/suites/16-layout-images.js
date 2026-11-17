@@ -1841,7 +1841,59 @@ module.exports = function (env) {
     }
   }
 
+  async function truncatedSalvageRetriesMissingImageLabels() {
+    context.DOMParser = DOMParser;
+    try {
+      const { storage, documentID, settings } = fixture();
+      const raw = JSON.stringify({ pdf_info: [{ page_size: [600, 800], preproc_blocks: [
+        { type: "text", bbox: [20, 20, 580, 60], lines: [{ spans: [{ content: "First paragraph." }] }] },
+        { type: "text", bbox: [20, 70, 580, 110], lines: [{ spans: [{ content: "Second paragraph." }] }] },
+        { type: "image", bbox: [20, 200, 580, 400], blocks: [{ type: "image_body", bbox: [20, 200, 580, 400], image_path: "images/figure.png", lines: [] }] }
+      ] }] });
+      storage.text.set(storage.path(documentID, "layout.json"), raw);
+      const sourceFingerprint = U.hashString(raw);
+      const calls = [];
+      let attempt = 0;
+      const llm = {
+        getSettings: () => settings,
+        resolveConfig: values => values,
+        ensureConfiguredModel: async values => values,
+        complete: async (messages, options) => {
+          attempt++;
+          calls.push(messages.map(m => m.content).join("\n"));
+          if (attempt === 1) {
+            options?.onText?.('{"translations":[{"id":"p1","text":"第一段。"}');
+            throw new Error("DeepSeek网页通信超时 (get-assistant-text)");
+          }
+          const retryPayload = JSON.parse(messages[1].content.split("\n\n").at(-1));
+          const ids = retryPayload.blocks_to_correct.map(item => item.id);
+          assert(ids.includes("p2") && ids.includes("I1"), "首轮截断抢救后必须同时补译遗漏的正文块和末尾图片标签");
+          const img = retryPayload.blocks_to_correct.find(item => item.id === "I1");
+          assert(Array.isArray(img.cells), "补译图片标签时应沿用 wireRecord 的 cells 结构");
+          return { text: JSON.stringify({ translations: [
+            { id: "p2", text: "第二段。" },
+            { id: "I1", cells: img.cells.map(([index, text]) => [index, text.replace("RAW INPUT", "原始输入").replace("IMAGE TEXT", "图片文字")]) }
+          ] }) };
+        }
+      };
+      const service = new LayoutTranslationService(storage, llm);
+      service.extractRecords = async () => [
+        { id: "p1", page: 1, type: "text", text: "First paragraph." },
+        { id: "p2", page: 1, type: "text", text: "Second paragraph." }
+      ];
+      service.buildBaseModel = async () => ({ sourceFingerprint, pages: [{ blocks: [{ id: "figure", type: "image_body", kind: "image", bbox: [20, 200, 580, 400], imagePath: "images/figure.png", imageURL: "fixture.png" }] }] });
+      service.imageService = { ensure: async () => ({ version: 1, sourceFingerprint, images: [{ ...I.extract({ pages: JSON.parse(raw).pdf_info })[0], lines }] }) };
+      const result = await service.translate(documentID);
+      assert.equal(attempt, 2);
+      assert.equal(result.translations.p1, "第一段。");
+      assert.equal(result.translations.p2, "第二段。");
+      assert.equal(result.meta.translatedImages, 1);
+      assert.equal(result.model.pages[0].blocks[0].translatedImageLabels[0].text, "原始输入");
+    } finally { delete context.DOMParser; }
+  }
+
   return { OCRCoordinatesAndUncertainInput, imageAIKeepsUnneededLabelsUntouched, pageFurnitureSkipsOCRTranslationAndCachedOverlay, sharedBatchCacheAndImageOnlyCompletion, missingImageResponseRetainsBodyAndPriorImageCache,
+    truncatedSalvageRetriesMissingImageLabels,
     paddleImagesShareOneMultipageRequest, paddleRequestSplitsOnlyAtDocumentLimits,
     taskLanguageKeepsMediaCacheAligned,
     imagePreferenceSkipsOCRAndSupplementsOnlyImages,

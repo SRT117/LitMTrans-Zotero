@@ -95,7 +95,7 @@
     exportSelectedKind: ""
   };
   // Bump when the print snapshot format changes.
-  const LAYOUT_PDF_EXPORT_REVISION = 26;
+  const LAYOUT_PDF_EXPORT_REVISION = 27;
   let readerPrintSnapshotTask = Promise.resolve();
   // 开发诊断仍保留在日志和状态中，但暂不展示给普通用户。
   const SHOW_DEVELOPMENT_PROBES_IN_USER_UI = false;
@@ -3042,11 +3042,13 @@
   const layoutFitSnapshots = new Map();
   let legacyFitStorageCleaned = false;
   function pruneLegacyLayoutFitStorage() {
-    if (legacyFitStorageCleaned || typeof localStorage === "undefined") return;
+    if (legacyFitStorageCleaned) return;
     legacyFitStorageCleaned = true;
     const prefix = "litmtrans-layout-fit-runtime:snapshot-v";
     const currentPrefix = `${prefix}${LAYOUT_FIT_SNAPSHOT_VERSION}:`;
     try {
+      // chrome:// 页面中访问 localStorage getter 本身就会抛出 NS_ERROR_NOT_AVAILABLE，必须在 try 内探测。
+      if (typeof localStorage === "undefined") return;
       const obsolete = [];
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);

@@ -449,6 +449,39 @@ function domToMarkdown(root, isReasoning = false) {
   return raw.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+let cachedSnapshotBodyNode = null;
+let cachedSnapshotBodyRaw = "";
+let cachedSnapshotBodyChildCount = -1;
+let cachedSnapshotBodyMd = "";
+let cachedSnapshotThinkNode = null;
+let cachedSnapshotThinkRaw = "";
+let cachedSnapshotThinkMd = "";
+
+function cachedDomToMarkdown(node, isReasoning) {
+  if (!node) return "";
+  const raw = node.textContent || "";
+  if (isReasoning) {
+    if (node === cachedSnapshotThinkNode && raw === cachedSnapshotThinkRaw) return cachedSnapshotThinkMd;
+    const md = domToMarkdown(node, true);
+    cachedSnapshotThinkNode = node;
+    cachedSnapshotThinkRaw = raw;
+    cachedSnapshotThinkMd = md;
+    return md;
+  }
+  const childCount = Number.isInteger(node.childElementCount) ? node.childElementCount : -1;
+  // 长文本流式轮询时若正文无增删、子元素数不变且不含链接/图片，复用上次序列化以降低低配机器主线程开销。
+  if (node === cachedSnapshotBodyNode && raw === cachedSnapshotBodyRaw
+    && childCount === cachedSnapshotBodyChildCount && !node.querySelector?.("img, a")) {
+    return cachedSnapshotBodyMd;
+  }
+  const md = domToMarkdown(node, false);
+  cachedSnapshotBodyNode = node;
+  cachedSnapshotBodyRaw = raw;
+  cachedSnapshotBodyChildCount = childCount;
+  cachedSnapshotBodyMd = md;
+  return md;
+}
+
 function replySnapshot(doc) {
   const items = Array.from(doc.querySelectorAll("[data-virtual-list-item-key]"));
   const replies = items.filter(item => item.querySelector(".ds-assistant-message-main-content, " + THINK_SELECTOR));
@@ -462,8 +495,8 @@ function replySnapshot(doc) {
 
   // 思考区和正文是兄弟节点；没有明确的正文容器时不把任意 markdown 当作回答。
   return {
-    text: domToMarkdown(body, false),
-    reasoning: domToMarkdown(think, true),
+    text: cachedDomToMarkdown(body, false),
+    reasoning: cachedDomToMarkdown(think, true),
     count: item ? replies.length : bodies.length,
     messageKey: item?.getAttribute("data-virtual-list-item-key") || "",
     url: doc.location.href

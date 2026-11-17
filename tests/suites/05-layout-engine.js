@@ -2779,6 +2779,13 @@ function testInheritedBodyAlignmentSnapshot() {
   assert.equal(node.style.lineHeight, '1.02');
   assert.equal(node.style.priority, '');
   assert.equal(node.dataset.bodyLeadingBeforeRelease, undefined);
+  const pruneHelper = source.slice(source.indexOf('  function pruneLegacyLayoutFitStorage('), source.indexOf('  function layoutFitSnapshotKey('));
+  const throwingScope = { LAYOUT_FIT_SNAPSHOT_VERSION: version, legacyFitStorageCleaned: false };
+  Object.defineProperty(throwingScope, 'localStorage', {
+    get() { throw new Error('Component is not available'); }
+  });
+  vm.runInNewContext(`${pruneHelper}\npruneLegacyLayoutFitStorage()`, throwingScope);
+  assert.equal(throwingScope.legacyFitStorageCleaned, true);
 }
 
 function testKeywordLineBreaks() {

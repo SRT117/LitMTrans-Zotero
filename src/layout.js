@@ -3018,7 +3018,7 @@
         }
         // 如果成功挽救出部分有效译文，返回已完成内容，未完成部分将自然流向补译（classifyRetryRecords）
         if (Object.keys(translations).length > 0) {
-          return { translations, formulaReplacements: {} };
+          return { translations, formulaReplacements: {}, salvaged: true };
         }
         // 若一个 block 都未能抢救，抛出原始异常维持原重试行为
         throw extractError;
@@ -3168,6 +3168,9 @@
       );
       const retryPayload = retryDetails
         ? group.map(record => {
+          if (["table_cells", "image_labels"].includes(record.type)) {
+            return { ...LitMTrans.LayoutTables.wireRecord(record), repair_mode: "retranslate" };
+          }
           const details = retryDetails.get(record.id) || {};
           const reasons = Array.isArray(details.reasons) ? details.reasons : [];
           const currentTranslation = String(details.currentTranslation || "");
@@ -3189,10 +3192,17 @@
         : [];
       const retryFormatOnly = retryPayload.length > 0
         && retryPayload.every(item => item.repair_mode === "symbol-format-only");
+      const retryHasMedia = group.some(record => ["table_cells", "image_labels"].includes(record.type));
+      const retryMediaInstruction = retryHasMedia
+        ? "For table_cells and image_labels records, return {\"id\":\"...\",\"cells\":[[1,\"translation\"]]}, preserving each cell index and marker such as ⟦0⟧.\n"
+          + (group.some(record => record.type === "image_labels")
+            ? 'For image_labels only, return "无需翻译" for formulas, variables, units, numbers, abbreviations, or text already in the target language.\n'
+            : "")
+        : "";
       const retryUser = retryDetails ? (
         retryFormatOnly
           ? "This is a surgical formula/JSON-format check. Do not explain your reasoning, retranslate, or polish prose. retry_reasons and retry_details are fallible program guesses, not factual conclusions; independently verify the source, current_translation, and math structure. If normalized math is already equivalent (whitespace, redundant braces, \\mathrm wrappers, or OCR list markers), or you cannot confirm a real error, return current_translation unchanged. Otherwise repair only the named missing/altered delimiter or math token and keep surrounding prose, citations, and identifiers unchanged. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]}; use normal JSON escaping.\n\n"
-          : `Translate the missing blocks listed below into ${settings.targetLanguage || "Simplified Chinese"}. No nonempty translation has been received for these IDs. Return one nonempty translation for every listed ID. Translate strictly within each visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n\n`
+          : `Translate the missing blocks listed below into ${settings.targetLanguage || "Simplified Chinese"}. No nonempty translation has been received for these IDs. Return one nonempty translation for every listed ID. Translate strictly within each visible block's own scope. Never complete sentences prematurely with text from other blocks, never merge blocks, and never duplicate or migrate content between blocks. Return only JSON with shape {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}],\"formula_replacements\":[]} and no explanation.\n${retryMediaInstruction}\n`
       ) + (retryFormatOnly ? "" : C.SYMBOL_DEFINITION_LINE_BREAK_RULE.en + "\n\n") + JSON.stringify({ blocks_to_correct: retryPayload }, null, 2) : "";
       const retryContext = retryDetails && Array.isArray(settings.retryContextGroup)
         ? settings.retryContextGroup.map(record => record.wireID ? LitMTrans.LayoutTables.wireRecord(record)
@@ -3215,6 +3225,7 @@
       let streamed = "";
       let latestUsage = null;
       let result;
+      let salvaged = false;
       try {
         result = await this.llm.complete(primaryMessages, {
           purpose: "layout",
@@ -3259,6 +3270,7 @@
             const partial = this.parseTranslationResponse(streamed, group, { sanitizeUnsafe: true, allowSanitized: isRetryPass });
             if (partial?.translations && Object.keys(partial.translations).length > 0) {
               result = { text: streamed, usage: latestUsage };
+              salvaged = true;
             }
           } catch (_) {}
         }
@@ -3266,6 +3278,7 @@
       }
       const isRetryPass = Boolean(retryDetails || settings.transportRecovery);
       const parsed = this.parseTranslationResponse(result.text, group, { sanitizeUnsafe: true, allowSanitized: isRetryPass });
+      if (salvaged) parsed.salvaged = true;
       const retryClassified = settings.deferLayoutRetry
         ? []
         : classifyRetryRecords(group, parsed.translations, settings.targetLanguage, settings.enableUntranslatedCheck);
@@ -3933,6 +3946,7 @@
       const failures = [];
       let nextGroupIndex = 0;
       let completedGroupCount = 0;
+      let hasTruncatedSalvage = false;
       let commitTail = Promise.resolve();
       if (groups.length) {
         emit?.({
@@ -3947,6 +3961,7 @@
       const commitResult = (index, translated) => {
         const task = commitTail.then(async () => {
           completedResults.set(index, translated);
+          if (translated?.salvaged) hasTruncatedSalvage = true;
           translations = { ...baseTranslations };
           formulaReplacements = { ...baseFormulaReplacements };
           for (const groupIndex of [...completedResults.keys()].sort((a, b) => a - b)) {
@@ -4131,6 +4146,23 @@
           settings.targetLanguage,
           settings.enableUntranslatedCheck
         );
+        // 首轮发生流式截断/超时抢救时，排在末尾的 image_labels / table_cells 尚未到达输出点；
+        // 仅在此场景下将其纳入一次补译，完整返回仍跳过以避免反复请求。
+        if (hasTruncatedSalvage) {
+          hasTruncatedSalvage = false;
+          const queued = new Set(documentRetryClassified.map(item => item.record.id));
+          for (const record of records) {
+            if (["table_cells", "image_labels"].includes(record.type)
+              && !queued.has(record.id)
+              && !String(translations[record.id] ?? "").trim()) {
+              documentRetryClassified.push({
+                record,
+                reasons: ["missing"],
+                details: retryDetailsForRecord(record, translations, ["missing"])
+              });
+            }
+          }
+        }
         if (!documentRetryClassified.length) break;
 
         const documentRetryRecords = documentRetryClassified.map(item => item.record);

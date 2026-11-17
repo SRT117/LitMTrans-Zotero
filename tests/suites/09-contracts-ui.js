@@ -1011,7 +1011,7 @@ async function testUpdaterContractsAndSafety() {
   assert(/^[a-f0-9]{64}$/.test(expected), "valid 64-char hex hash must pass");
 }
 
-function testDeepSeekWebDriverSessionActionAndRetryContracts() {
+async function testDeepSeekWebDriverSessionActionAndRetryContracts() {
   const driverSource = fs.readFileSync(path.join(root, "src", "deepseek-web", "driver.js"), "utf8");
   const childSource = fs.readFileSync(path.join(root, "src", "deepseek-web", "DeepSeekActorChild.sys.mjs"), "utf8");
 
@@ -1037,6 +1037,44 @@ function testDeepSeekWebDriverSessionActionAndRetryContracts() {
     driverSource.includes('execute("session-action", { subAction: "delete", expectedURL: targetURL }, 20000)'),
     "deleteCurrentSession must execute delete with adequate timeout margin (20000ms)"
   );
+  // 4. 确保低配设备长文本轮询放宽了超时并容忍短暂 IPC 卡顿，同时 Actor 对未变化的思考/正文启用序列化缓存
+  assert(
+    driverSource.includes("consecutivePollErrors")
+      && driverSource.includes("lastActivityAt")
+      && childSource.includes("cachedDomToMarkdown"),
+    "DeepSeekWebDriver must tolerate transient polling stalls and cache unchanged DOM snapshots"
+  );
+  // 5. 运行时验证：即使 is-generating 连续超时，已读到的 get-assistant-text 增量也必须先交给 onText
+  const driverCtx = {
+    ChromeUtils: { importESModule: () => ({ setTimeout, clearTimeout }) },
+    LitMTrans: {
+      Utils: { throwIfAborted() {}, sleep: async () => {} },
+      DeepSeekWeb: { createStreamDispatcher: () => ({}) }
+    }
+  };
+  vm.runInNewContext(driverSource, driverCtx);
+  const Driver = driverCtx.LitMTrans.DeepSeekWeb.DeepSeekWebDriver;
+  const driver = new Driver({ currentURI: { spec: "https://chat.deepseek.com/a/chat/s/test-1" } });
+  driver.ensureReady = async () => true;
+  driver.stop = async () => {};
+  let textPolls = 0;
+  driver.execute = async action => {
+    if (action === "get-assistant-text") {
+      textPolls++;
+      if (textPolls === 1) return { text: "", reasoning: "", count: 0, messageKey: "", url: "https://chat.deepseek.com/a/chat/s/test-1" };
+      return { text: '{"translations":[{"id":"I1","cells":[[1,"速度"]]}]}', reasoning: "", count: 1, messageKey: "m1", url: "https://chat.deepseek.com/a/chat/s/test-1" };
+    }
+    if (action === "submit") return { ok: true };
+    if (action === "is-generating") throw new Error("DeepSeek网页通信超时 (is-generating)");
+    return {};
+  };
+  let streamed = "";
+  await assert.rejects(
+    () => driver.submitMessage("prompt", { onText: delta => { streamed += delta; } }),
+    /DeepSeek网页通信超时 \(is-generating\)/
+  );
+  assert.equal(streamed, '{"translations":[{"id":"I1","cells":[[1,"速度"]]}]}',
+    "is-generating 超时前已读到的快照内容必须先通过 onText 传给上层抢救");
 }
 
 async function testAnnouncementSystemContracts() {

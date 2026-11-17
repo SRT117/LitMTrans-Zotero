@@ -223,7 +223,7 @@
           res = await this.execute("check-ready", {
             chatInputSelectors: SELECTORS.chatInput,
             loginSelectors: SELECTORS.loginIndicator
-          }, Math.min(5000, Math.max(1, timeoutMs - (Date.now() - start))));
+          }, Math.min(10000, Math.max(1, timeoutMs - (Date.now() - start))));
         } catch (error) {
           U.throwIfAborted(signal);
           // 导航会销毁旧 Actor；只在文档确实发生切换时重新获取。
@@ -279,22 +279,22 @@
       const started = Date.now();
       while (this.browser.browsingContext?.currentWindowGlobal === previous) {
         U.throwIfAborted(signal);
-        if (Date.now() - started > 30000) throw new Error("DeepSeek会话页面未打开");
+        if (Date.now() - started > 45000) throw new Error("DeepSeek会话页面未打开");
         await U.sleep(100, signal);
       }
-      await this.ensureReady(30000, signal, emit);
+      await this.ensureReady(45000, signal, emit);
       return true;
     }
 
     async stop() {
       try {
-        await this.execute("stop", { stopButtonSelectors: SELECTORS.stopButton }, 3000);
+        await this.execute("stop", { stopButtonSelectors: SELECTORS.stopButton }, 5000);
       } catch (_) {}
     }
 
     async isGenerating() {
       try {
-        const res = await this.execute("is-generating", { stopButtonSelectors: SELECTORS.stopButton }, 2000);
+        const res = await this.execute("is-generating", { stopButtonSelectors: SELECTORS.stopButton }, 5000);
         return Boolean(res?.generating);
       } catch (_) {
         return false;
@@ -469,16 +469,16 @@
       emit?.({ type: "log", message: `[探针6-Driver] submitMessage: 准备提交消息 (字数=${text.length})` });
       try { Zotero.debug?.(`[LitMTrans-Probe] [探针6-Driver] submitMessage: 准备提交消息 (字数=${text.length})`); } catch (_) {}
 
-      await this.ensureReady(options.timeout || 30000, signal, emit);
+      await this.ensureReady(options.timeout || 45000, signal, emit);
 
       const baseline = await this.execute("get-assistant-text", {
         assistantSelectors: SELECTORS.assistantMessage
-      }, 3000);
+      }, 10000);
       await this.execute("submit", {
         text,
         chatInputSelectors: SELECTORS.chatInput,
         sendButtonSelectors: SELECTORS.sendButton
-      }, 10000);
+      }, 15000);
 
       const dispatcher = LitMTrans.DeepSeekWeb.createStreamDispatcher({
         onText: options.onText, onReasoning: options.onReasoning, onUsage: options.onUsage
@@ -489,14 +489,31 @@
       let reasoning = "";
       let receivedReply = false;
       let idleSince = 0;
+      let consecutivePollErrors = 0;
       const started = Date.now();
-      const timeout = options.timeout || 300000;
+      let lastActivityAt = started;
+      const inactivityTimeout = options.timeout || 300000;
+      const maxWaitMs = Math.max(inactivityTimeout * 3, 900000);
       try {
-        while (Date.now() - started < timeout) {
+        while (Date.now() - lastActivityAt < inactivityTimeout && Date.now() - started < maxWaitMs) {
           U.throwIfAborted(signal);
-          const snapshot = await this.execute("get-assistant-text", {
-            assistantSelectors: SELECTORS.assistantMessage
-          }, 3000);
+          let snapshot;
+          try {
+            snapshot = await this.execute("get-assistant-text", {
+              assistantSelectors: SELECTORS.assistantMessage
+            }, 15000);
+          } catch (pollError) {
+            U.throwIfAborted(signal);
+            const message = String(pollError?.message || pollError);
+            // 低配机器长回复重渲染/GC 可能导致单次 IPC 超过阈值；容忍连续少量卡顿，避免直接掐断生成。
+            if (!/DeepSeek网页通信超时|Actor .* destroyed|WindowGlobal 尚未建立/i.test(message)
+              || ++consecutivePollErrors >= 4 || Date.now() - started >= maxWaitMs) {
+              throw pollError;
+            }
+            emit?.({ type: "log", message: `[探针6-Driver] 网页读取短暂卡顿(${consecutivePollErrors}/4)，继续等待生成完成...` });
+            await U.sleep(500, signal);
+            continue;
+          }
           const currentURL = this.browser.currentURI?.spec || snapshot?.url || "";
           if (!sessionURL && /\/(?:a\/)?chat\/(?:s\/)?[^/?#]+/.test(currentURL)) {
             sessionURL = currentURL.split(/[?#]/)[0].replace(/\/$/, "");
@@ -506,13 +523,8 @@
             throw new Error("DeepSeek网页已切换到其他会话，本次任务已停止");
           }
 
-          const state = await this.execute("is-generating", {
-            stopButtonSelectors: SELECTORS.stopButton,
-            continueButtonSelectors: SELECTORS.continueButton
-          }, 3000);
-          U.throwIfAborted(signal);
-
           // 新回复出现前，页面仍然保留上一轮的最后一条回复。
+          // 取得快照后立即把增量交给上层并更新本地缓存，避免后续状态查询超时导致已读取的译文丢失。
           receivedReply ||= snapshot.count > baseline.count
             || Boolean(snapshot.messageKey && snapshot.messageKey !== baseline.messageKey)
             || snapshot.text !== baseline.text || snapshot.reasoning !== baseline.reasoning;
@@ -527,6 +539,33 @@
             content = snapshot.text;
             reasoning = snapshot.reasoning;
           }
+          if (changed) {
+            lastActivityAt = Date.now();
+          }
+
+          let state;
+          try {
+            state = await this.execute("is-generating", {
+              stopButtonSelectors: SELECTORS.stopButton,
+              continueButtonSelectors: SELECTORS.continueButton
+            }, 10000);
+            consecutivePollErrors = 0;
+          } catch (pollError) {
+            U.throwIfAborted(signal);
+            const message = String(pollError?.message || pollError);
+            if (!/DeepSeek网页通信超时|Actor .* destroyed|WindowGlobal 尚未建立/i.test(message)
+              || ++consecutivePollErrors >= 4 || Date.now() - started >= maxWaitMs) {
+              throw pollError;
+            }
+            emit?.({ type: "log", message: `[探针6-Driver] 网页状态检测短暂卡顿(${consecutivePollErrors}/4)，继续等待生成完成...` });
+            await U.sleep(500, signal);
+            continue;
+          }
+          U.throwIfAborted(signal);
+
+          if (state.generating || state.canContinue) {
+            lastActivityAt = Date.now();
+          }
           if (state.generating || changed || !content) {
             idleSince = 0;
           } else if (!idleSince) {
@@ -536,9 +575,10 @@
               emit?.({ type: "log", message: "[探针6-Driver] 检测到DeepSeek触发长文本截断，自动点击【继续生成】..." });
               const clickRes = await this.execute("click-continue", {
                 continueButtonSelectors: SELECTORS.continueButton
-              }, 3000).catch(() => null);
+              }, 8000).catch(() => null);
               if (clickRes?.clicked) {
                 idleSince = 0;
+                lastActivityAt = Date.now();
                 await U.sleep(600, signal);
                 continue;
               }
