@@ -32,21 +32,72 @@
     return figures;
   }
 
+  function quadsOverlap(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 4 || b.length !== 4) return false;
+    const axes = [];
+    for (const poly of [a, b]) {
+      for (let i = 0; i < 2; i++) {
+        const dx = poly[i + 1][0] - poly[i][0], dy = poly[i + 1][1] - poly[i][1];
+        if (dx || dy) axes.push([-dy, dx]);
+      }
+    }
+    for (const [ax, ay] of axes) {
+      let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+      for (const p of a) { const v = p[0] * ax + p[1] * ay; minA = Math.min(minA, v); maxA = Math.max(maxA, v); }
+      for (const p of b) { const v = p[0] * ax + p[1] * ay; minB = Math.min(minB, v); maxB = Math.max(maxB, v); }
+      if (maxA <= minB || maxB <= minA) return false;
+    }
+    return true;
+  }
+
+  function itemQuad(item, width = 1, height = 1) {
+    if (Array.isArray(item?.poly) && item.poly.length === 4) {
+      return item.poly.map(point => [point[0] * width, point[1] * height]);
+    }
+    const box = Array.isArray(item) ? item : item?.bbox;
+    if (!validBox(box)) return null;
+    return [[box[0] * width, box[1] * height], [box[2] * width, box[1] * height], [box[2] * width, box[3] * height], [box[0] * width, box[3] * height]];
+  }
+
+  function ocrLineFromPolygon(text, score, polygon, width, height, options = {}) {
+    const clean = typeof text === "string" ? text.trim() : "";
+    const minScore = options.minScore ?? .85;
+    if (!clean || !(Number(score) >= minScore) || !(width > 0 && height > 0) || !Array.isArray(polygon)
+      || polygon.length !== 4 || polygon.some(point => !Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite))) return null;
+    const norm = value => options.clamp ? Math.max(0, Math.min(1, value)) : value;
+    const xs = polygon.map(point => norm(point[0] / width)), ys = polygon.map(point => norm(point[1] / height));
+    const bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    if (!validBox(bbox) || (!options.clamp && bbox.some(value => value < 0 || value > 1))) return null;
+    const vx = ((polygon[1][0] - polygon[0][0]) + (polygon[2][0] - polygon[3][0])) / 2;
+    const vy = ((polygon[1][1] - polygon[0][1]) + (polygon[2][1] - polygon[3][1])) / 2;
+    const len = Math.hypot(vx, vy);
+    if (!(len > 0)) return null;
+    const tx = vx / len, ty = vy / len, nx = -ty, ny = tx;
+    const h1 = Math.abs((polygon[3][0] - polygon[0][0]) * nx + (polygon[3][1] - polygon[0][1]) * ny);
+    const h2 = Math.abs((polygon[2][0] - polygon[1][0]) * nx + (polygon[2][1] - polygon[1][1]) * ny);
+    const thick = (h1 + h2) / 2;
+    const angle = Math.atan2(vy, vx) * 180 / Math.PI;
+    const horizontal = Math.abs(angle) <= 6;
+    if (options.rotated) {
+      if (!horizontal || !(thick > 0) || len < thick * (options.minAspect ?? 1.2)) return null;
+      return { text: clean, score: Number(score), bbox: [bbox[1], 1 - bbox[2], bbox[3], 1 - bbox[0]], rotation: -90 };
+    }
+    const requiredAspect = horizontal ? (options.minAspect || 0) : Math.max(1.2, options.minAspect || 0);
+    if (!(thick > 0) || (requiredAspect > 0 && len < thick * requiredAspect)) return null;
+    if (horizontal) return { text: clean, score: Number(score), bbox };
+    // 倾斜曲线或网格交叉易产生低置信度误检，斜向文本仅保留高置信度识别框。
+    if (Number(score) < Math.max(minScore, .8)) return null;
+    const poly = polygon.map(point => [Math.max(0, Math.min(1, point[0] / width)), Math.max(0, Math.min(1, point[1] / height))]);
+    return { text: clean, score: Number(score), bbox, rotation: Math.round(angle * 100) / 100, poly };
+  }
+
   function linesFromOCR(result, info) {
     const raw = result?.prunedResult;
     if (!(info?.width > 0 && info?.height > 0) || !Array.isArray(raw?.rec_texts)
       || !Array.isArray(raw.rec_polys) || raw.rec_texts.length !== raw.rec_polys.length) return [];
     return raw.rec_texts.flatMap((text, index) => {
-      const score = Number(raw.rec_scores?.[index]);
-      const polygon = raw.rec_polys[index];
-      if (!(score >= .85) || typeof text !== "string" || !text.trim() || !Array.isArray(polygon)
-        || polygon.length !== 4 || polygon.some(point => !Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite))) return [];
-      const xs = polygon.map(point => point[0] / info.width), ys = polygon.map(point => point[1] / info.height);
-      const bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-      if (!validBox(bbox) || bbox.some(value => value < 0 || value > 1)) return [];
-      // 只覆盖近似水平的单行，旋转文字保持原图。
-      if (Math.abs(polygon[1][1] - polygon[0][1]) > (bbox[3] - bbox[1]) * info.height * .15) return [];
-      return [{ text: text.trim(), bbox, score }];
+      const line = ocrLineFromPolygon(text, raw.rec_scores?.[index], raw.rec_polys[index], info.width, info.height, { minScore: .85 });
+      return line ? [line] : [];
     });
   }
 
@@ -254,6 +305,13 @@
     }));
   }
 
+  function shrinkQuad(quad, factor = .8) {
+    if (!quad) return null;
+    const cx = (quad[0][0] + quad[1][0] + quad[2][0] + quad[3][0]) / 4;
+    const cy = (quad[0][1] + quad[1][1] + quad[2][1] + quad[3][1]) / 4;
+    return quad.map(([x, y]) => [cx + (x - cx) * factor, cy + (y - cy) * factor]);
+  }
+
   function mergeImageLines(original, extra) {
     const lines = [...original];
     for (let line of extra) {
@@ -277,7 +335,11 @@
         if (validBox(box) && box[2] - box[0] >= (line.bbox[2] - line.bbox[0]) * .5
           && box[3] - box[1] >= (line.bbox[3] - line.bbox[1]) * .8) line = { ...line, bbox: box };
       }
-      const overlaps = lines.some(existing => imageLineOverlap(line.bbox, existing.bbox) > .02);
+      const overlaps = lines.some(existing => {
+        if (imageLineOverlap(line.bbox, existing.bbox) <= .02) return false;
+        if (!line.poly && !existing.poly) return true;
+        return quadsOverlap(shrinkQuad(itemQuad(line)), shrinkQuad(itemQuad(existing)));
+      });
       if (!overlaps) lines.push(line);
       else if (replaced) lines.splice(replacedIndex, 0, replaced);
     }
@@ -626,12 +688,16 @@
       for (let i = 0; i < size; i++) if (accepted[i]) for (let c = 0; c < 3; c++) background[i * 3 + c] = color[c];
     }
     const patch = new Uint8ClampedArray((x1 - x0) * (y1 - y0) * 4), colors = [[], [], []], darkColors = [[], [], []];
+    const acceptedMask = options?.returnMask ? new Uint8Array((x1 - x0) * (y1 - y0)) : null;
     let changed = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-      const index = y * w + x, at = ((y - y0) * (x1 - x0) + x - x0) * 4, rgb = sample(left + x, top + y);
+      const index = y * w + x, localAt = (y - y0) * (x1 - x0) + x - x0, at = localAt * 4, rgb = sample(left + x, top + y);
       for (let c = 0; c < 3; c++) patch[at + c] = accepted[index] ? background[index * 3 + c] : rgb[c];
       patch[at + 3] = 255;
-      if (accepted[index]) changed++;
+      if (accepted[index]) {
+        changed++;
+        if (acceptedMask) acceptedMask[localAt] = 1;
+      }
       if (chosen[index] && rgb.some((value, c) => Math.abs(value - background[index * 3 + c]) > 100)) {
         for (let c = 0; c < 3; c++) colors[c].push(rgb[c]);
         if (Math.min(...rgb) < 130) for (let c = 0; c < 3; c++) darkColors[c].push(rgb[c]);
@@ -639,7 +705,114 @@
     }
     const inkColors = darkColors.every(values => values.length) ? darkColors : colors;
     return { pixels: patch, width: x1 - x0, height: y1 - y0, box: [left + x0, top + y0, left + x1, top + y1],
-      color: inkColors.every(values => values.length) ? inkColors.map(median) : [20, 20, 20], changed };
+      color: inkColors.every(values => values.length) ? inkColors.map(median) : [20, 20, 20], changed,
+      ...(acceptedMask ? { acceptedMask } : {}) };
+  }
+
+  function restoreRotatedImageLabel(pixels, width, height, poly, protectedItems = [], sourceText = "", neighborItems = []) {
+    if (!pixels || !(width > 0 && height > 0) || !Array.isArray(poly) || poly.length !== 4) return null;
+    const pts = poly.map(([x, y]) => [x * width, y * height]);
+    const cx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
+    const cy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
+    const vx = ((pts[1][0] - pts[0][0]) + (pts[2][0] - pts[3][0])) / 2;
+    const vy = ((pts[1][1] - pts[0][1]) + (pts[2][1] - pts[3][1])) / 2;
+    const textLen = Math.hypot(vx, vy);
+    if (!(textLen > 4)) return null;
+    const tx = vx / textLen, ty = vy / textLen, nx = -ty, ny = tx;
+    const h1 = Math.abs((pts[3][0] - pts[0][0]) * nx + (pts[3][1] - pts[0][1]) * ny);
+    const h2 = Math.abs((pts[2][0] - pts[1][0]) * nx + (pts[2][1] - pts[1][1]) * ny);
+    const textH = (h1 + h2) / 2;
+    if (!(textH > 4)) return null;
+    const pad = Math.max(6, Math.ceil(textH * .4));
+    const patchW = Math.ceil(textLen) + pad * 2, patchH = Math.ceil(textH) + pad * 2;
+    if (patchW * patchH > 400000) return null;
+    const pcx = patchW / 2, pcy = patchH / 2;
+    const patch = new Uint8ClampedArray(patchW * patchH * 4);
+    for (let ly = 0; ly < patchH; ly++) for (let lx = 0; lx < patchW; lx++) {
+      const dx = lx - pcx, dy = ly - pcy;
+      const sx = Math.max(0, Math.min(width - 1, cx + dx * tx - dy * ty));
+      const sy = Math.max(0, Math.min(height - 1, cy + dx * ty + dy * tx));
+      const x0 = Math.floor(sx), y0 = Math.floor(sy), x1 = Math.min(width - 1, x0 + 1), y1 = Math.min(height - 1, y0 + 1);
+      const fx = sx - x0, fy = sy - y0;
+      const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+      const i00 = (y0 * width + x0) * 4, i10 = (y0 * width + x1) * 4, i01 = (y1 * width + x0) * 4, i11 = (y1 * width + x1) * 4;
+      const dst = (ly * patchW + lx) * 4;
+      for (let c = 0; c < 4; c++) {
+        patch[dst + c] = Math.round(pixels[i00 + c] * w00 + pixels[i10 + c] * w10 + pixels[i01 + c] * w01 + pixels[i11 + c] * w11);
+      }
+    }
+    const toLocalBox = item => {
+      const quad = itemQuad(item, width, height);
+      if (!quad) return null;
+      const lxs = [], lys = [];
+      for (const [px, py] of quad) {
+        const rx = px - cx, ry = py - cy;
+        lxs.push((pcx + rx * tx + ry * ty) / patchW);
+        lys.push((pcy - rx * ty + ry * tx) / patchH);
+      }
+      const box = [Math.max(0, Math.min(...lxs)), Math.max(0, Math.min(...lys)), Math.min(1, Math.max(...lxs)), Math.min(1, Math.max(...lys))];
+      return validBox(box) ? box : null;
+    };
+    const localBox = [(pcx - textLen / 2) / patchW, (pcy - textH / 2) / patchH, (pcx + textLen / 2) / patchW, (pcy + textH / 2) / patchH];
+    const restored = restoreImageLabel(patch, patchW, patchH, localBox,
+      (protectedItems || []).map(toLocalBox).filter(Boolean), sourceText,
+      (neighborItems || []).map(toLocalBox).filter(Boolean), { returnMask: true });
+    if (!restored || !restored.acceptedMask) return null;
+    const [rx0, ry0, rx1, ry1] = restored.box;
+    const rw = restored.width, rh = restored.height, mask = restored.acceptedMask;
+    const corners = [[rx0, ry0], [rx1, ry0], [rx1, ry1], [rx0, ry1]].map(([lx, ly]) => [
+      cx + (lx - pcx) * tx - (ly - pcy) * ty,
+      cy + (lx - pcx) * ty + (ly - pcy) * tx
+    ]);
+    const ox0 = Math.max(0, Math.floor(Math.min(...corners.map(c => c[0]))) - 1);
+    const oy0 = Math.max(0, Math.floor(Math.min(...corners.map(c => c[1]))) - 1);
+    const ox1 = Math.min(width, Math.ceil(Math.max(...corners.map(c => c[0]))) + 1);
+    const oy1 = Math.min(height, Math.ceil(Math.max(...corners.map(c => c[1]))) + 1);
+    const repairs = [];
+    for (let oy = oy0; oy < oy1; oy++) for (let ox = ox0; ox < ox1; ox++) {
+      const rx = ox - cx, ry = oy - cy;
+      const lx = pcx + rx * tx + ry * ty - rx0, ly = pcy - rx * ty + ry * tx - ry0;
+      if (lx < 0 || lx >= rw - 1 || ly < 0 || ly >= rh - 1) continue;
+      const x0 = Math.floor(lx), y0 = Math.floor(ly), fx = lx - x0, fy = ly - y0;
+      const ws = [(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy];
+      const idxs = [y0 * rw + x0, y0 * rw + x0 + 1, (y0 + 1) * rw + x0, (y0 + 1) * rw + x0 + 1];
+      let wSum = 0, r = 0, g = 0, b = 0;
+      for (let k = 0; k < 4; k++) {
+        if (!mask[idxs[k]]) continue;
+        const w = ws[k], ra = idxs[k] * 4;
+        wSum += w; r += restored.pixels[ra] * w; g += restored.pixels[ra + 1] * w; b += restored.pixels[ra + 2] * w;
+      }
+      if (wSum >= .35) repairs.push((oy * width + ox) * 4, Math.round(r / wSum), Math.round(g / wSum), Math.round(b / wSum));
+    }
+    const rcx = cx + ((rx0 + rx1) / 2 - pcx) * tx - ((ry0 + ry1) / 2 - pcy) * ty;
+    const rcy = cy + ((rx0 + rx1) / 2 - pcx) * ty + ((ry0 + ry1) / 2 - pcy) * tx;
+    return {
+      center: [rcx, rcy], width: rw, height: rh, sourceHeight: textH,
+      angle: Math.round(Math.atan2(ty, tx) * 18000 / Math.PI) / 100,
+      color: restored.color, changed: repairs.length / 4, repairs
+    };
+  }
+
+  function applyRestoredImageLabel(combinedData, sourcePixels, width, height, restored, rotated = false) {
+    if (!restored) return;
+    if (Array.isArray(restored.repairs)) {
+      for (let i = 0; i < restored.repairs.length; i += 4) {
+        const target = restored.repairs[i];
+        combinedData[target] = restored.repairs[i + 1];
+        combinedData[target + 1] = restored.repairs[i + 2];
+        combinedData[target + 2] = restored.repairs[i + 3];
+        combinedData[target + 3] = 255;
+      }
+      return;
+    }
+    const [x0, y0] = restored.box;
+    for (let y = 0; y < restored.height; y++) for (let x = 0; x < restored.width; x++) {
+      const at = (y * restored.width + x) * 4;
+      const target = rotated ? ((height - 1 - (x0 + x)) * width + y0 + y) * 4 : ((y0 + y) * width + x0 + x) * 4;
+      if (restored.pixels[at] === sourcePixels[target] && restored.pixels[at + 1] === sourcePixels[target + 1]
+        && restored.pixels[at + 2] === sourcePixels[target + 2]) continue;
+      for (let c = 0; c < 4; c++) combinedData[target + c] = restored.pixels[at + c];
+    }
   }
 
   function requestPlan(ocr, layout, machine = false, reserved = new Set()) {
@@ -841,13 +1014,20 @@
           if (/^(?:[\s|·•─━]+|-{2,}|–{2,}|—+|\.(?=\d+[A-Za-z])|-(?=[A-Za-z]))/.test(srcText)) {
             text = text.replace(/^(?:[\s|·•─━]+|-{2,}|–{2,}|—+|-(?=[A-Za-z0-9])|\.(?=\d+[A-Za-z]))+/, "");
           }
-          return { bbox: image.lines[cell.index].bbox, text, sourceText: srcText, rotation: image.lines[cell.index].rotation || 0 };
+          const line = image.lines[cell.index];
+          return {
+            bbox: line.bbox,
+            text,
+            sourceText: srcText,
+            rotation: Number.isFinite(Number(line.rotation)) ? Number(line.rotation) : 0,
+            ...(Array.isArray(line.poly) ? { poly: line.poly } : {})
+          };
         });
         if (!labels.length || labels.some(label => !validBox(label.bbox))) return { ...clean, ...withDebug };
         return { ...clean, ...withDebug, translatedImageLabels: labels, imageProtectedBoxes: image.cells.filter(cell => !translated(cell)).map(cell => image.lines[cell.index].bbox) };
       } catch (_) { return { ...clean, ...withDebug }; }
     };
-    return { ...base, ...(active ? { imageTranslationHash: U.hashString(`image-render-centered-v11|${JSON.stringify(cache)}`) } : {}), pages: model.pages.map((page, index) => ({
+    return { ...base, ...(active ? { imageTranslationHash: U.hashString(`image-render-centered-v12|${JSON.stringify(cache)}`) } : {}), pages: model.pages.map((page, index) => ({
       ...page, blocks: (page.blocks || []).map(block => apply(block, index)), restoration: page.restoration ? {
         ...page.restoration, absoluteBlocks: (page.restoration.absoluteBlocks || []).map(block => apply(block, index))
       } : page.restoration
@@ -1469,6 +1649,6 @@
     });
   }
 
-  L.LayoutImages = { extract, linesFromOCR, linesFromMinerU, imageTextCandidates, planImageOCRSheets, planPaddleImageSheets, mapPaddleSheetLines, mapPackedImageLines, mergeImageLines, filterRotatedDetections, isColoredCurveCandidate, recognizeLocalImageText, mergeAdjacentRotatedWords, normalizeImageLines, restoreImageLabel, planAlignedImageLabelGroups, splitMergedImageLabel, splitMergedLegendLines, requestPlan, cacheFromRecords, cachedRecords, attach, mineruUseLocalOCR: MINERU_USE_LOCAL_OCR, resolveImageOCRMode, resolveImageOCRModel };
+  L.LayoutImages = { extract, ocrLineFromPolygon, linesFromOCR, linesFromMinerU, imageTextCandidates, planImageOCRSheets, planPaddleImageSheets, mapPaddleSheetLines, mapPackedImageLines, mergeImageLines, filterRotatedDetections, isColoredCurveCandidate, recognizeLocalImageText, mergeAdjacentRotatedWords, normalizeImageLines, restoreImageLabel, restoreRotatedImageLabel, applyRestoredImageLabel, planAlignedImageLabelGroups, splitMergedImageLabel, splitMergedLegendLines, requestPlan, cacheFromRecords, cachedRecords, attach, mineruUseLocalOCR: MINERU_USE_LOCAL_OCR, resolveImageOCRMode, resolveImageOCRModel };
   L.ImageTranslationService = ImageTranslationService;
 })(this);

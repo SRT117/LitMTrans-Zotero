@@ -119,6 +119,7 @@ function testExtendedLayoutAndStreamHyperlinks() {
   assert.deepEqual(streamTexts, ['第1节', '图 1', '式 (1)', 'Chen (2018)', '1']);
 
   assert(css.includes('--layout-link: color-mix(in srgb, var(--reader-ink) 25%, #3b82f6);'), '阅读主题下链接应保持清晰可读的蓝色对比度');
+  assert(css.includes('[data-themed-background-ink="1"] a { color: color-mix(in srgb, var(--layout-background-ink, var(--reader-ink)) 25%, #3b82f6) !important; }'), '融合背景适配下超链接不得被正文前景色覆盖');
   assert(css.includes('.markdown-body a.litmtrans-link'), '流式阅读区链接应应用显式链接颜色');
   assert(workbench.includes('if (event.target?.closest?.("a[href], a[data-layout-reference-target]")'), '布局交互捕获阶段不得拦截普通超链接点击');
 }

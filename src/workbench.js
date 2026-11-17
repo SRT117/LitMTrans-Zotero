@@ -1620,7 +1620,7 @@
         : "";
       if (useTranslation && block.translatedImageLabels?.length) {
         return `<div class="layout-image-translation" data-protected-boxes="${U.escapeAttribute(JSON.stringify(block.imageProtectedBoxes || []))}"><img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`
-          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}" data-rotation="${label.rotation === -90 ? -90 : 0}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("")
+          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}"${Array.isArray(label.poly) ? ` data-poly="${U.escapeAttribute(JSON.stringify(label.poly))}"` : ""} data-rotation="${Number.isFinite(Number(label.rotation)) ? Number(label.rotation) : 0}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("")
           + `</div>${ocrDebugHTML}`;
       }
       return `<img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />${ocrDebugHTML}`;
@@ -2267,7 +2267,7 @@
               label.dataset.splitOrigSource = label.dataset.sourceText || "";
             }
             const origBox = JSON.parse(label.dataset.splitOrigBox);
-            const splitParts = Number(label.dataset.rotation) !== -90
+            const splitParts = !Number(label.dataset.rotation)
               ? window.LitMTrans?.LayoutImages?.splitMergedImageLabel?.(pixels, canvas.width, canvas.height, origBox, label.dataset.splitOrigSource, label.dataset.splitOrigText)
               : null;
             if (splitParts?.length === 2) {
@@ -2297,13 +2297,58 @@
               labels.push(label);
             }
           }
+          const parsePoly = label => {
+            if (!label.dataset.poly) return null;
+            try {
+              const poly = JSON.parse(label.dataset.poly);
+              return Array.isArray(poly) && poly.length === 4 ? poly : null;
+            } catch (_) { return null; }
+          };
           const labelBoxes = labels.map(label => JSON.parse(label.dataset.box));
+          const labelItems = labels.map((label, i) => ({ bbox: labelBoxes[i], poly: parsePoly(label) }));
           const rotateBox = box => [1 - box[3], box[0], 1 - box[1], box[2]];
           let rotatedPixels = null;
           const fittedItems = [];
           for (const [index, label] of labels.entries()) {
             label.hidden = true;
-            const rotated = Number(label.dataset.rotation) === -90;
+            const rawRotation = Number(label.dataset.rotation) || 0;
+            const rotated = rawRotation === -90;
+            const poly = labelItems[index].poly;
+            const tilted = !rotated && rawRotation !== 0 && Boolean(poly);
+            if (tilted) {
+              const restoredTilted = window.LitMTrans.LayoutImages.restoreRotatedImageLabel?.(
+                pixels, canvas.width, canvas.height, poly, protectedBoxes, label.dataset.sourceText,
+                labelItems.filter((_, other) => other !== index)
+              );
+              if (!restoredTilted) {
+                label.hidden = true;
+                label.style.backgroundColor = "";
+                continue;
+              }
+              const [cx, cy] = restoredTilted.center;
+              const labelWidth = restoredTilted.width * scale, labelHeight = restoredTilted.height * scale;
+              const left = offsetX + cx * scale - labelWidth / 2;
+              const top = offsetY + cy * scale - labelHeight / 2;
+              label.style.cssText = `left:${left}px;top:${top}px;width:${labelWidth}px;height:${labelHeight}px;color:rgb(${restoredTilted.color.join(",")});transform:rotate(${restoredTilted.angle}deg)`;
+              label.dataset.neutralInk = Math.max(...restoredTilted.color) - Math.min(...restoredTilted.color) <= 25 ? "1" : "0";
+              const font = getComputedStyle(host).fontFamily;
+              let size = Math.min(restoredTilted.height, restoredTilted.sourceHeight) * scale * .8;
+              ctx.font = `${size}px ${font}`;
+              size *= Math.min(1, labelWidth / Math.max(1, ctx.measureText(label.textContent).width));
+              const minimum = 3 * host.closest(".layout-block").clientWidth / Math.max(1, Number(host.closest(".layout-block").dataset.imageSourceWidth));
+              size = Math.max(size, minimum);
+              label.style.fontSize = `${size}px`;
+              label.hidden = false;
+              while ((label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) && size > minimum) {
+                size = Math.max(minimum, size - .5);
+                label.style.fontSize = `${size}px`;
+              }
+              if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.style.overflow = "visible";
+              fittedItems.push({ index, label, rotated: true, box: [cx - restoredTilted.width / 2, cy - restoredTilted.height / 2, cx + restoredTilted.width / 2, cy + restoredTilted.height / 2], align: "center", fontSize: size, minimum });
+              hasLabels = true;
+              window.LitMTrans.LayoutImages.applyRestoredImageLabel?.(combined.data, pixels, canvas.width, canvas.height, restoredTilted);
+              continue;
+            }
             if (rotated && !rotatedPixels) {
               const turn = document.createElement("canvas");
               turn.width = canvas.height; turn.height = canvas.width;
@@ -2368,12 +2413,16 @@
             if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.style.overflow = "visible";
             fittedItems.push({ index, label, rotated, box: [x0, y0, x1, y1], align: label.style.justifyContent || "center", fontSize: size, minimum });
             hasLabels = true;
-            for (let y = 0; y < restored.height; y++) for (let x = 0; x < restored.width; x++) {
-              const at = (y * restored.width + x) * 4;
-              const target = rotated ? ((canvas.height - 1 - (x0 + x)) * canvas.width + y0 + y) * 4 : ((y0 + y) * canvas.width + x0 + x) * 4;
-              if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
-                && restored.pixels[at + 2] === pixels[target + 2]) continue;
-              for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+            if (window.LitMTrans.LayoutImages.applyRestoredImageLabel) {
+              window.LitMTrans.LayoutImages.applyRestoredImageLabel(combined.data, pixels, canvas.width, canvas.height, restored, rotated);
+            } else {
+              for (let y = 0; y < restored.height; y++) for (let x = 0; x < restored.width; x++) {
+                const at = (y * restored.width + x) * 4;
+                const target = rotated ? ((canvas.height - 1 - (x0 + x)) * canvas.width + y0 + y) * 4 : ((y0 + y) * canvas.width + x0 + x) * 4;
+                if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
+                  && restored.pixels[at + 2] === pixels[target + 2]) continue;
+                for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+              }
             }
           }
           // 同图内左边缘相近的相邻垂直图例/列表统一到众数左边缘、统一字号并消除微弱上下叠边。
@@ -5822,7 +5871,8 @@
         const textStyle = getComputedStyle(label), labelWidth = w / scale, labelHeight = h / scale;
         ctx.save();
         ctx.translate((left + w / 2 - offsetX) / scale, (top + h / 2 - offsetY) / scale);
-        if (Number(label.dataset.rotation) === -90) ctx.rotate(-Math.PI / 2);
+        const rotation = Number(label.dataset.rotation) || 0;
+        if (rotation) ctx.rotate(rotation * Math.PI / 180);
         if (textStyle.overflow !== "visible") {
           ctx.beginPath();ctx.rect(-labelWidth / 2, -labelHeight / 2, labelWidth, labelHeight);ctx.clip();
         }
@@ -9373,11 +9423,47 @@
       combined.data.set(pixels);
       const protectedBoxes = JSON.parse(host.dataset.protectedBoxes || "[]");
       const labelBoxes = labels.map(label => JSON.parse(label.dataset.box));
+      const labelItems = labels.map((label, i) => {
+        let poly = null;
+        if (label.dataset.poly) {
+          try {
+            const parsed = JSON.parse(label.dataset.poly);
+            if (Array.isArray(parsed) && parsed.length === 4) poly = parsed;
+          } catch (_) {}
+        }
+        return { bbox: labelBoxes[i], poly };
+      });
       const rotateBox = box => [1 - box[3], box[0], 1 - box[1], box[2]];
       let rotatedPixels = null;
       const drawItems = [];
       for (const [index, label] of labels.entries()) {
-        const rotated = Number(label.dataset.rotation) === -90;
+        const rawRotation = Number(label.dataset.rotation) || 0;
+        const rotated = rawRotation === -90;
+        const poly = labelItems[index].poly;
+        if (!rotated && rawRotation !== 0 && poly) {
+          const restoredTilted = window.LitMTrans.LayoutImages.restoreRotatedImageLabel?.(
+            pixels,
+            canvas.width,
+            canvas.height,
+            poly,
+            protectedBoxes,
+            label.dataset.sourceText,
+            labelItems.filter((_, other) => other !== index)
+          );
+          if (!restoredTilted) continue;
+          window.LitMTrans.LayoutImages.applyRestoredImageLabel?.(combined.data, pixels, canvas.width, canvas.height, restoredTilted);
+          drawItems.push({
+            text: label.textContent,
+            tilted: true,
+            angle: restoredTilted.angle,
+            center: restoredTilted.center,
+            width: restoredTilted.width,
+            height: restoredTilted.height,
+            sourceHeight: restoredTilted.sourceHeight,
+            color: restoredTilted.color
+          });
+          continue;
+        }
         if (rotated && !rotatedPixels) {
           const turn = document.createElement("canvas");
           turn.width = canvas.height;
@@ -9414,16 +9500,20 @@
           color: [20, 20, 20],
           fallback: true
         };
-        const [x0, y0, x1, y1] = restored.box;
-        for (let y = 0; y < restored.height; y++) {
-          for (let x = 0; x < restored.width; x++) {
-            const at = (y * restored.width + x) * 4;
-            const target = rotated
-              ? ((canvas.height - 1 - (x0 + x)) * canvas.width + y0 + y) * 4
-              : ((y0 + y) * canvas.width + x0 + x) * 4;
-            if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
-              && restored.pixels[at + 2] === pixels[target + 2]) continue;
-            for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+        if (window.LitMTrans.LayoutImages.applyRestoredImageLabel) {
+          window.LitMTrans.LayoutImages.applyRestoredImageLabel(combined.data, pixels, canvas.width, canvas.height, restored, rotated);
+        } else {
+          const [x0, y0] = restored.box;
+          for (let y = 0; y < restored.height; y++) {
+            for (let x = 0; x < restored.width; x++) {
+              const at = (y * restored.width + x) * 4;
+              const target = rotated
+                ? ((canvas.height - 1 - (x0 + x)) * canvas.width + y0 + y) * 4
+                : ((y0 + y) * canvas.width + x0 + x) * 4;
+              if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
+                && restored.pixels[at + 2] === pixels[target + 2]) continue;
+              for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+            }
           }
         }
         drawItems.push({
@@ -9440,6 +9530,22 @@
       ctx.textBaseline = "middle";
       ctx.textAlign = "center";
       for (const item of drawItems) {
+        if (item.tilted) {
+          const labelWidth = Math.max(1, item.width);
+          const labelHeight = Math.max(1, item.height);
+          let size = Math.min(labelHeight, item.sourceHeight) * 0.8;
+          ctx.font = `${size}px ${fontFamily}`;
+          size *= Math.min(1, labelWidth / Math.max(1, ctx.measureText(item.text).width));
+          size = Math.max(size, Math.min(labelHeight * 0.75, 8));
+          ctx.font = `${size}px ${fontFamily}`;
+          ctx.save();
+          ctx.translate(item.center[0], item.center[1]);
+          ctx.rotate(item.angle * Math.PI / 180);
+          ctx.fillStyle = `rgb(${item.color.join(",")})`;
+          ctx.fillText(item.text, 0, 0);
+          ctx.restore();
+          continue;
+        }
         const [x0, y0, x1, y1] = item.restored.box;
         const labelWidth = Math.max(1, x1 - x0);
         const labelHeight = Math.max(1, y1 - y0);

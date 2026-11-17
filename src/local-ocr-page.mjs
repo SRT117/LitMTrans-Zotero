@@ -195,16 +195,12 @@ const normalCanvas = document.createElement("canvas");
 const rotatedCanvas = document.createElement("canvas");
 
 function lines(result, rotated) {
+  const parser = window.LitMTrans?.LayoutImages?.ocrLineFromPolygon;
   return result.items.flatMap(item => {
-    const xs = item.poly.map(p => p[0]), ys = item.poly.map(p => p[1]);
-    const width = result.image.width, height = result.image.height;
-    const box = [Math.max(0, Math.min(...xs) / width), Math.max(0, Math.min(...ys) / height),
-      Math.min(1, Math.max(...xs) / width), Math.min(1, Math.max(...ys) / height)];
-    if (!item.text.trim() || item.score < .5 || box[2] <= box[0] || box[3] <= box[1]
-      || (box[2] - box[0]) * width < (box[3] - box[1]) * height * 1.2
-      || Math.abs(item.poly[1][1] - item.poly[0][1]) > (box[3] - box[1]) * height * .15) return [];
-    return [{ text: item.text.trim(), score: item.score,
-      bbox: rotated ? [box[1], 1 - box[2], box[3], 1 - box[0]] : box, ...(rotated ? { rotation: -90 } : {}) }];
+    const line = parser?.(item.text, item.score, item.poly, result.image.width, result.image.height, {
+      clamp: true, minAspect: 1.2, minScore: .5, rotated
+    });
+    return line ? [line] : [];
   });
 }
 

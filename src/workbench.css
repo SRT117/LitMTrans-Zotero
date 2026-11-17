@@ -311,6 +311,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   #translation-layout .layout-page:not(.layout-print-source) {
     --layout-paper: var(--surface);
     --layout-ink: var(--ink);
+    --layout-link: var(--link);
     --layout-code-bg: var(--surface-3);
     --layout-code-ink: var(--ink-2);
     --layout-table-border: var(--line-strong);
@@ -350,6 +351,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     --surface-3: color-mix(in srgb, var(--reader-paper) 92%, var(--reader-ink));
     --line: color-mix(in srgb, var(--reader-ink) 25%, var(--reader-paper));
     --line-strong: color-mix(in srgb, var(--reader-ink) 50%, var(--reader-paper));
+    --link: color-mix(in srgb, var(--reader-ink) 25%, #3b82f6);
     background: var(--reader-paper);
   }
 }
@@ -367,9 +369,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   #translation-layout .layout-page.has-themed-pdf-bg [data-pdf-screen-retained="1"] img,
   #translation-layout .layout-page.has-themed-pdf-bg [data-pdf-screen-retained="1"] .reader-image-overlay { opacity: 0; }
   #translation-layout .layout-page.has-themed-pdf-bg:not(.layout-print-source) [data-pdf-background-rgb],
+  #translation-layout .layout-page.has-themed-pdf-bg:not(.layout-print-source) [data-themed-background-ink="1"] { color: var(--layout-background-ink, var(--reader-ink)) !important; }
   #translation-layout .layout-page.has-themed-pdf-bg:not(.layout-print-source) [data-pdf-background-rgb] a,
-  #translation-layout .layout-page.has-themed-pdf-bg:not(.layout-print-source) [data-themed-background-ink="1"],
-  #translation-layout .layout-page.has-themed-pdf-bg:not(.layout-print-source) [data-themed-background-ink="1"] a { color: var(--layout-background-ink, var(--reader-ink)) !important; }
+  #translation-layout .layout-page.has-themed-pdf-bg:not(.layout-print-source) [data-themed-background-ink="1"] a { color: color-mix(in srgb, var(--layout-background-ink, var(--reader-ink)) 25%, #3b82f6) !important; }
 }
 .layout-page.has-pdf-bg [data-bg-redundant="1"] { opacity: 0 !important; pointer-events: none !important; user-select: none !important; }
 .layout-page.has-pdf-bg .layout-block[data-on-dark-bg="1"],

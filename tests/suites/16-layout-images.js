@@ -35,13 +35,17 @@ module.exports = function (env) {
   };
 
   function OCRCoordinatesAndUncertainInput() {
-    const record = { prunedResult: { rec_texts: ["Readable", "Low score", "Tilted", "Outside"], rec_scores: [.99, .2, .99, .99], rec_polys: [
+    const record = { prunedResult: { rec_texts: ["Readable", "Low score", "Tilted", "Tilted noise", "Outside"], rec_scores: [.99, .2, .99, .72, .99], rec_polys: [
       [[10, 10], [60, 10], [60, 25], [10, 25]], [[10, 30], [60, 30], [60, 45], [10, 45]],
-      [[10, 50], [60, 65], [60, 80], [10, 65]], [[-10, 1], [10, 1], [10, 20], [-10, 20]]
+      [[10, 50], [60, 65], [60, 80], [10, 65]], [[10, 82], [60, 92], [60, 99], [10, 89]], [[-10, 1], [10, 1], [10, 20], [-10, 20]]
     ] } };
     const before = JSON.stringify(record);
     const accepted = I.linesFromOCR(record, { width: 100, height: 100 });
-    assert.equal(accepted.length, 1);assert.equal(accepted[0].text, "Readable");
+    assert.equal(accepted.length, 2);
+    assert.equal(accepted[0].text, "Readable");
+    assert.equal(accepted[0].rotation, undefined);
+    assert.equal(accepted[1].text, "Tilted");
+    assert(accepted[1].rotation > 15 && Array.isArray(accepted[1].poly) && accepted[1].poly.length === 4, "高置信度斜向标签应保留真实旋转角与四顶点");
     assert.equal(JSON.stringify(record), before);
     assert.equal(I.linesFromOCR({ prunedResult: { rec_texts: ["Text"] } }, { width: 100, height: 100 }).length, 0);
   }
@@ -352,7 +356,7 @@ module.exports = function (env) {
       assert(layoutJS.includes("image-ocr.v1.json") && layoutJS.includes("LayoutImages.attach("));
       assert(workbench.includes("layout-image-ocr-debug-box") && workbench.includes("alignImageOCRDebugBoxes"));
       assert(css.includes(".layout-debug .layout-image-ocr-debug-box"));
-      assert(localOCR.includes("item.poly[1][1] - item.poly[0][1]"), "本地 OCR 应与在线 OCR 一致过滤斜向排版文字");
+      assert(localOCR.includes("ocrLineFromPolygon"), "本地 OCR 应复用共享的多边形解析逻辑支持任意倾斜角度标签");
 
       // 斜向膨胀框在 restoreImageLabel 失败时应隐藏并保留原图，避免大面积涂白破坏圆弧边界。
       const { document: fitDoc } = require("linkedom").parseHTML('<html><body><div class="layout-page"><div class="layout-block" data-image-source-width="618"><div class="layout-image-translation"><img src="fixture.png"><span class="layout-image-label" hidden data-box="[0.247,0.674,0.909,0.992]">无反射边界</span></div></div></div></body></html>');
@@ -439,6 +443,79 @@ module.exports = function (env) {
         { text: "-0.2", bbox: [0.1, 0.3, 0.2, 0.4], score: 0.9 }
       ]);
       assert.deepEqual(normalized.map(item => item.text), ["10g Calculation", "55g Calculation", "-0.2"]);
+
+      // 4) 倾斜标签全链路：平行叠放倾斜框互不误判重叠、局部旋正擦除保留附近弧线、网页/预览按真实斜角渲染。
+      const figW = 240, figH = 240;
+      const boundary = I.ocrLineFromPolygon("Non-reflection boundary", .98, [[40, 190], [170, 90], [186, 110], [56, 210]], figW, figH, { clamp: true, minAspect: 1.2, minScore: .5 });
+      const condition = I.ocrLineFromPolygon("condition", .99, [[92, 182], [154, 134], [170, 154], [108, 202]], figW, figH, { clamp: true, minAspect: 1.2, minScore: .5 });
+      const tiltedNoise = I.ocrLineFromPolygon("人心", .74, [[40, 60], [100, 40], [106, 58], [46, 78]], figW, figH, { clamp: true, minAspect: 1.2, minScore: .5 });
+      assert(boundary && boundary.rotation < -30 && boundary.poly?.length === 4);
+      assert(condition && condition.rotation < -30 && condition.poly?.length === 4);
+      assert.equal(tiltedNoise, null, "低置信度斜向误检应被过滤");
+      assert.equal(I.mergeImageLines([boundary], [condition]).length, 2, "外接框嵌套但斜向四顶点不重叠的平行标签不应误去重");
+
+      const diagPixels = new Uint8ClampedArray(figW * figH * 4);
+      for (let y = 0; y < figH; y++) for (let x = 0; x < figW; x++) {
+        const at = (y * figW + x) * 4;
+        diagPixels[at] = 230; diagPixels[at + 1] = 254; diagPixels[at + 2] = 255; diagPixels[at + 3] = 255;
+      }
+      // 画一条穿越整块区域的黑色斜/弧边界线
+      for (let x = 20; x < 220; x++) {
+        const arcY = Math.round(230 - (x - 30) * .78);
+        if (arcY >= 0 && arcY < figH) {
+          const at = (arcY * figW + x) * 4;
+          diagPixels[at] = diagPixels[at + 1] = diagPixels[at + 2] = 15;
+        }
+      }
+      // 在线框上方画倾斜文字笔画（沿 -37° 方向排列的黑色像素团）
+      const p0 = [55, 175], ux = Math.cos(-37 * Math.PI / 180), uy = Math.sin(-37 * Math.PI / 180), nx = -uy, ny = ux;
+      for (let s = 12; s <= 112; s += 16) for (let ds = 0; ds < 8; ds++) for (let dt = -6; dt <= 6; dt++) {
+        const px = Math.round(p0[0] + (s + ds) * ux + dt * nx), py = Math.round(p0[1] + (s + ds) * uy + dt * ny);
+        const at = (py * figW + px) * 4;
+        diagPixels[at] = diagPixels[at + 1] = diagPixels[at + 2] = 20;
+      }
+      const tiltedPoly = [
+        [p0[0] - 10 * nx, p0[1] - 10 * ny],
+        [p0[0] + 130 * ux - 10 * nx, p0[1] + 130 * uy - 10 * ny],
+        [p0[0] + 130 * ux + 10 * nx, p0[1] + 130 * uy + 10 * ny],
+        [p0[0] + 10 * nx, p0[1] + 10 * ny]
+      ].map(([x, y]) => [x / figW, y / figH]);
+      const restoredTilted = I.restoreRotatedImageLabel(diagPixels, figW, figH, tiltedPoly, [], "Non-reflection boundary", []);
+      assert(restoredTilted && restoredTilted.changed > 100 && Math.abs(restoredTilted.angle + 37) < 2, "倾斜标签应局部旋正擦除并保留真实斜角");
+      const diagOut = new Uint8ClampedArray(diagPixels);
+      I.applyRestoredImageLabel(diagOut, diagPixels, figW, figH, restoredTilted);
+      const midStrokeAt = (Math.round(p0[1] + 20 * uy) * figW + Math.round(p0[0] + 20 * ux)) * 4;
+      assert(diagOut[midStrokeAt] > 215 && diagOut[midStrokeAt + 1] > 240, "原斜向文字笔画应恢复为浅青底色");
+      const arcCheckX = 120, arcCheckY = Math.round(230 - (arcCheckX - 30) * .78);
+      assert.equal(diagOut[(arcCheckY * figW + arcCheckX) * 4], 15, "贯穿长边界线必须保持原像素不被擦断");
+
+      // 工作台 DOM 支持任意斜角 data-rotation + data-poly。
+      const { document: tiltDoc } = require("linkedom").parseHTML(
+        `<html><body><div class="layout-page"><div class="layout-block" data-image-source-width="${figW}"><div class="layout-image-translation"><img src="fixture.png"><span class="layout-image-label" hidden data-box="[0.2,0.4,0.8,0.8]" data-poly='${JSON.stringify(tiltedPoly)}' data-rotation="-37" data-source-text="Non-reflection boundary">无反射边界</span></div></div></div></body></html>`
+      );
+      const tiltPage = tiltDoc.querySelector(".layout-page"), tiltHost = tiltDoc.querySelector(".layout-image-translation"), tiltImg = tiltHost.querySelector("img"), tiltLabel = tiltHost.querySelector("span");
+      Object.defineProperties(tiltHost, { clientWidth: { value: 240 }, clientHeight: { value: 240 } });
+      Object.defineProperties(tiltHost.closest(".layout-block"), { clientWidth: { value: 240 } });
+      Object.defineProperties(tiltImg, { complete: { get: () => true }, naturalWidth: { get: () => figW }, naturalHeight: { get: () => figH } });
+      Object.defineProperties(tiltLabel, {
+        clientWidth: { get: () => Math.round(parseFloat(tiltLabel.style.width)) },
+        clientHeight: { get: () => Math.round(parseFloat(tiltLabel.style.height)) },
+        scrollWidth: { get: () => tiltLabel.clientWidth },
+        scrollHeight: { get: () => tiltLabel.clientHeight }
+      });
+      const tiltCreate = tiltDoc.createElement.bind(tiltDoc);
+      tiltDoc.createElement = name => name !== "canvas" ? tiltCreate(name) : {
+        width: figW, height: figH, toDataURL: () => "data:image/png;base64,tilted",
+        getContext: () => ({ drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray(diagPixels) }), createImageData: () => ({ data: new Uint8ClampedArray(diagPixels.length) }), putImageData() {}, measureText: () => ({ width: 40 }) })
+      };
+      const tiltFitFn = vm.runInNewContext(fitFns.join("\n") + "\nfitLayoutImageLabels", {
+        document: tiltDoc, state: { settings: { translateImages: true } },
+        getComputedStyle: () => ({ fontFamily: "serif", width: "240px", height: "240px" }),
+        window: { LitMTrans: { LayoutImages: I } }
+      });
+      tiltFitFn([tiltPage]);
+      assert.equal(tiltLabel.hidden, false, "斜向标签应按真实角度显示在擦除后的底图上");
+      assert(tiltLabel.style.cssText.includes("transform:rotate(-37deg)"), `应保留斜向旋转角度，实际=${tiltLabel.style.cssText}`);
     } finally { delete context.DOMParser; }
   }
 
@@ -1234,6 +1311,9 @@ module.exports = function (env) {
       ["translate", 120, 40], ["rotate", -Math.PI / 2], ["rect", -80, -10, 160, 20],
       ["background", "white", -80, -10, 160, 20], ["text", "center", "normal 16px serif", "纵轴译文", 0, 0]
     ], "弹窗需保留纵轴旋转、留白偏移、字号与遮盖底色");
+    label.dataset.rotation = "-37.5";
+    calls.length = 0;preview(host);
+    assert(calls.some(call => call[0] === "rotate" && Math.abs(call[1] + 37.5 * Math.PI / 180) < 1e-9), "弹窗预览应支持任意倾斜角度旋转");
     label.dataset.rotation = "0";
     for (const [value, textAlign, x] of [["flex-start", "left", -80], ["flex-end", "right", 80]]) {
       calls.length = 0;align = value;overflow = "visible";preview(host);
