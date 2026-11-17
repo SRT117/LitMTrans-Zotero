@@ -3,9 +3,9 @@
     "litmtrans@srt117.github.io": {
       "updates": [
         {
-          "version": "2.1.7",
-          "update_link": "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/v2.1.7/litmtrans-2.1.7.xpi",
-          "update_hash": "sha256:7da8fb2487622a5d663f79efcb5d8f416a67f82b6247266a04f53b11464f4eb7",
+          "version": "2.1.8",
+          "update_link": "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/v2.1.8/litmtrans-2.1.8.xpi",
+          "update_hash": "sha256:0b883bcc5cad6c00bfe651ca59065f4cfde0079271cebf676e0fc36735b6faa0",
           "applications": {
             "zotero": {
               "strict_min_version": "7.0",
