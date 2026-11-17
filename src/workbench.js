@@ -8336,6 +8336,7 @@
         else state.layoutPDFGenerationKey = "";
       }
       catch (error) {
+        if (state.layoutPDFGenerationKey === key) state.layoutPDFGenerationKey = "";
         const message = `排版译文已完成，但PDF附件生成失败：${error.message || error}`;
         addLog(message, "error");
         toast(message, "warning");
@@ -11561,6 +11562,7 @@
       lastActionError = "";
       state.reasoning = "";
       if (method === "parse" && !await ensureParserTokenForParse()) return null;
+      const publicationRevision = state.layoutPublicationRevision;
       const result = await hostCall(method, payload);
       if ((method === "parse" || method === "supplement-paddle-lines") && result?.state) setData(result.state);
       else if (method === "translate") {
@@ -11569,7 +11571,6 @@
         await refreshState();
       }
       else if (method === "translate-layout") {
-        const publicationRevision = state.layoutPublicationRevision;
         state.data.layout = { ...(state.data.layout || {}), ...result };
         // The completed layout event is normally delivered before this bridge
         // response. Publish from the response only if that event was lost;
@@ -11589,7 +11590,7 @@
       else if (method === "manual-translation-import") {
         if (payload.mode === "layout") {
           state.data.layout = { ...(state.data.layout || {}), ...result };
-          renderLayoutPanes();
+          if (state.layoutPublicationRevision === publicationRevision) renderLayoutPanes();
           if (result?.meta?.complete) queueLayoutPDFAttachmentsAfterFinalPublication();
         }
         else {

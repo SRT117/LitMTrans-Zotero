@@ -764,6 +764,52 @@ module.exports = function (env) {
     assert.equal(pageState({ blocks: [{ type: "image" }] }, true).showAwaitingOverlay, false);
   }
 
+  async function layoutPublicationDoesNotRemountBeforePDF() {
+    const source = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
+    const action = source.slice(source.indexOf("  async function runAction("), source.indexOf("  async function refreshChatSessions("));
+    for (const method of ["translate-layout", "manual-translation-import"]) {
+      for (const eventDelivered of [true, false]) {
+        const state = { layoutPublicationRevision: 4, data: { layout: {} } };
+        let mounts = 0, queued = 0;
+        const sandbox = { state, hostCall: async () => {
+          if (eventDelivered) { state.layoutPublicationRevision++; mounts++; }
+          return { meta: { complete: true } };
+        }, renderLayoutPanes: () => { mounts++; },
+          refreshState: async options => assert.equal(options.preserveLayout, true),
+          queueLayoutPDFAttachmentsAfterFinalPublication: () => { queued++; },
+          toast: message => assert.fail(message), setStatus() {}, addLog() {} };
+        vm.runInNewContext('let lastActionError="";\n' + action + '\nthis.run=runAction;', sandbox);
+        const result = await sandbox.run(method, { mode: "layout" });
+        assert.equal(result.meta.complete, true);
+        assert.equal(mounts, 1, `${method}: completed event and response must share one mounted layout`);
+        assert.equal(queued, 1, "the response must retain the PDF-generation fallback");
+      }
+    }
+  }
+
+  async function failedLayoutPDFCanBeQueuedAgain() {
+    const source = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
+    const pdf = source.slice(source.indexOf("  function queueLayoutPDFAttachmentsAfterFinalPublication("), source.indexOf("  function tableDocumentKey("));
+    const state = { data: { item: { documentID: "paper" }, layout: { model: { pages: [{}] } } } };
+    let attempts = 0;
+    const sandbox = { state, tableDocumentKey: () => "paper", layoutPDFExportIdentity: () => "new",
+      createLayoutPDFAttachmentsAfterTranslation: async () => {
+        if (++attempts === 1) throw new Error("排版在PDF准备期间发生变化，请重试");
+        return { translationTitle: "译文", comparisonTitle: "对照" };
+      }, addLog() {}, toast() {} };
+    vm.runInNewContext('let tableInteraction=false,tablePreferenceSaving=false,tableOpenResolved="paper",imageOpenResolved="paper";\n'
+      + pdf + '\nthis.queue=queueLayoutPDFAttachmentsAfterFinalPublication;', sandbox);
+    sandbox.queue();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(state.layoutPDFGenerationKey, "", "a failed export must release its generation key");
+    sandbox.queue();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(attempts, 2);
+    assert.equal(state.data.item.layoutPDFIdentity, "new");
+    sandbox.queue();
+    assert.equal(attempts, 2, "successful PDF generation must remain deduplicated");
+  }
+
   async function tableOpenCheckResumesDeferredPDF() {
     const source = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
     const keyAndWait = source.slice(source.indexOf("  function tableDocumentKey("), source.indexOf("  function tableDecision("));
@@ -960,5 +1006,5 @@ module.exports = function (env) {
     assert.deepEqual(Array.from(T.fitColumnWidths([30, 30], [30, 30], 100)), [50, 50]);
   }
 
-  return { gridAndProtection, paddedCachedTableFormulasRender, rejectUncertainStructures, translationAndCache, paddlePreservesStructure, legacyPaddleTablePipeline, batchingAndCancellation, invalidTablesNeverAddRetries, unchangedTableResponsesAreComplete, sharedMachineAndFastGrouping, manualCommandsMergeAndImport, manualBoundariesAndTableOnly, entryPointCoverage, tableOnlyAvailability, tablePreviewExports, tablePreviewImageOnly, tablePreviewCompare, tableSupplementPreservesPublishedBody, partialTablesOnlyRetryMissing, tableDialogQueueWaitsForOtherModals, tableOnlyPagesDoNotShowWaitingOverlay, tableOpenCheckResumesDeferredPDF, tableSupplementWithoutPDFAllowsLaterBodyExport, sameDocumentTranslationLock, tableDisplaySwitchRetainsDOMAndMeasurements, tableResponsesBypassBodyRepair, columnAllocation };
+  return { gridAndProtection, paddedCachedTableFormulasRender, rejectUncertainStructures, translationAndCache, paddlePreservesStructure, legacyPaddleTablePipeline, batchingAndCancellation, invalidTablesNeverAddRetries, unchangedTableResponsesAreComplete, sharedMachineAndFastGrouping, manualCommandsMergeAndImport, manualBoundariesAndTableOnly, entryPointCoverage, tableOnlyAvailability, tablePreviewExports, tablePreviewImageOnly, tablePreviewCompare, tableSupplementPreservesPublishedBody, partialTablesOnlyRetryMissing, tableDialogQueueWaitsForOtherModals, tableOnlyPagesDoNotShowWaitingOverlay, layoutPublicationDoesNotRemountBeforePDF, failedLayoutPDFCanBeQueuedAgain, tableOpenCheckResumesDeferredPDF, tableSupplementWithoutPDFAllowsLaterBodyExport, sameDocumentTranslationLock, tableDisplaySwitchRetainsDOMAndMeasurements, tableResponsesBypassBodyRepair, columnAllocation };
 };
