@@ -3040,6 +3040,21 @@
   // repeating the measurement whenever the user switches reading modes.
   const LAYOUT_FIT_SNAPSHOT_VERSION = 26;
   const layoutFitSnapshots = new Map();
+  let legacyFitStorageCleaned = false;
+  function pruneLegacyLayoutFitStorage() {
+    if (legacyFitStorageCleaned || typeof localStorage === "undefined") return;
+    legacyFitStorageCleaned = true;
+    const prefix = "litmtrans-layout-fit-runtime:snapshot-v";
+    const currentPrefix = `${prefix}${LAYOUT_FIT_SNAPSHOT_VERSION}:`;
+    try {
+      const obsolete = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(prefix) && !key.startsWith(currentPrefix)) obsolete.push(key);
+      }
+      for (const key of obsolete) localStorage.removeItem(key);
+    } catch (_) {}
+  }
   function layoutFitSnapshotKey(pane = "translation") {
     const documentID = String(state.data?.item?.documentID || "");
     const model = state.data?.layout?.model || {};
@@ -3179,6 +3194,7 @@
       })
     };
     layoutFitSnapshots.set(key, snapshot);
+    pruneLegacyLayoutFitStorage();
     try { localStorage.setItem(layoutFitStorageKey(key), JSON.stringify(snapshot)); } catch (_) {}
     hostCall("save-layout-cache", { key, data: snapshot }).catch(() => {});
     // Keep the in-memory cache bounded across documents opened in one window.

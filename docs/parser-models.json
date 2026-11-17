@@ -14,7 +14,7 @@
   },
   "localOCR": {
     "version": "v1",
-    "minPluginVersion": "2.1.5",
+    "minPluginVersion": "2.1.6",
     "files": {
       "ort-wasm-simd-threaded.jsep.mjs": {
         "size": 47250,
