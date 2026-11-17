@@ -63,25 +63,34 @@ jobs:
 
       - name: Sync source and tag to Gitee
         run: |
+          retry() {
+            for attempt in 1 2 3; do
+              if "$@"; then return 0; fi
+              if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi
+            done
+            return 1
+          }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config http.postBuffer 524288000
+          git config http.lowSpeedLimit 1024
+          git config http.lowSpeedTime 60
           git remote add gitee "https://gitee.com/$GITEE_REPOSITORY.git"
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0="http.https://gitee.com/.extraheader"
           GITEE_OWNER="${GITEE_REPOSITORY%%/*}"
           GITEE_BASIC="$(printf '%s:%s' "$GITEE_OWNER" "$GITEE_ACCESS_TOKEN" | base64 -w0)"
           export GIT_CONFIG_VALUE_0="Authorization: Basic $GITEE_BASIC"
-          if git ls-remote --exit-code --heads gitee main >/dev/null 2>&1; then
-            git fetch gitee main
+          if retry git ls-remote --exit-code --heads gitee main >/dev/null 2>&1; then
+            retry git fetch -4 gitee main
             git checkout -B gitee-sync FETCH_HEAD
             git merge --no-edit --no-ff "$RELEASE_TAG"
           else
             git checkout -B gitee-sync "$RELEASE_TAG"
           fi
-          git push gitee gitee-sync:main
+          retry git push -4 gitee gitee-sync:main
           if ! git ls-remote --exit-code --tags gitee "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            git push gitee "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            retry git push -4 gitee "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           fi
 
       - name: Create Gitee Release and publish update manifest
@@ -95,6 +104,8 @@ jobs:
 
       - name: Verify public Gitee update manifest
         run: |
-          curl --fail --silent --show-error --location \
+          curl -4 --retry 3 --retry-delay 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 60 \
+            --fail --silent --show-error --location \
             "https://gitee.com/$GITEE_REPOSITORY/raw/main/update.json" \
             | node -e 'let d=""; process.stdin.on("data", c => d += c); process.stdin.on("end", () => { const j = JSON.parse(d); if (!j?.addons) process.exit(1); })'

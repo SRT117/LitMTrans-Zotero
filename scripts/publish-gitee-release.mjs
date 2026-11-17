@@ -27,28 +27,59 @@ const headers = {
   Authorization: `Bearer ${token}`
 };
 
+const CURL_TRANSFER_FLAGS = [
+  "-4",
+  "--retry", "3",
+  "--retry-delay", "3",
+  "--retry-all-errors",
+  "--fail",
+  "--silent",
+  "--show-error",
+  "--location",
+  "--connect-timeout", "20",
+  "--speed-limit", "1024",
+  "--speed-time", "60",
+  "--max-time", "600"
+];
+
 async function request(pathname, options = {}) {
-  const response = await fetch(`${apiBase}${pathname}`, {
-    signal: AbortSignal.timeout(30000),
-    ...options,
-    headers: { ...headers, ...(options.headers || {}) }
-  });
-  const text = await response.text();
-  let body = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch (_) {}
-  if (!response.ok) {
-    const error = new Error(`Gitee API ${response.status} ${options.method || "GET"} ${pathname}: ${body?.message || "request failed"}`);
-    error.status = response.status;
-    throw error;
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(`${apiBase}${pathname}`, {
+        signal: AbortSignal.timeout(45000),
+        ...options,
+        headers: { ...headers, ...(options.headers || {}) }
+      });
+      const text = await response.text();
+      let body = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch (_) {}
+      if (!response.ok) {
+        const error = new Error(`Gitee API ${response.status} ${options.method || "GET"} ${pathname}: ${body?.message || "request failed"}`);
+        error.status = response.status;
+        if ((response.status === 429 || response.status >= 500) && attempt < 3) {
+          lastError = error;
+          await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+          continue;
+        }
+        throw error;
+      }
+      return body;
+    } catch (error) {
+      if (error.status && error.status !== 429 && error.status < 500) throw error;
+      lastError = error;
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+    }
   }
-  return body;
+  throw lastError;
 }
 
 async function findRelease() {
   try {
-    return await request(`${repoPath}/releases/tags/${encodeURIComponent(tag)}`);
+    const release = await request(`${repoPath}/releases/tags/${encodeURIComponent(tag)}`);
+    return release?.id ? release : null;
   } catch (error) {
     if (error.status === 404) return null;
     throw error;
@@ -81,8 +112,7 @@ function digest(bytes) {
 }
 
 function verifyDownload(url, expected) {
-  const bytes = execFileSync("curl", ["--fail", "--silent", "--show-error", "--location",
-    "--connect-timeout", "15", "--max-time", "120", url], { maxBuffer: 100 * 1024 * 1024 });
+  const bytes = execFileSync("curl", [...CURL_TRANSFER_FLAGS, url], { maxBuffer: 100 * 1024 * 1024 });
   if (digest(bytes) !== expected) throw new Error(`Download hash mismatch: ${url}`);
 }
 
@@ -111,16 +141,11 @@ async function uploadAttachment(releaseId, filePath, attachmentName = path.basen
   const url = `${apiBase}${repoPath}/releases/${releaseId}/attach_files`;
   try {
     execFileSync("curl", [
-    "--fail",
-    "--silent",
-    "--show-error",
-    "--location",
-    "--connect-timeout", "15",
-    "--max-time", "120",
-    "-X", "POST",
-    "--config", "-",
-    "-F", `file=@${filePath};filename=${filename}`,
-    url
+      ...CURL_TRANSFER_FLAGS,
+      "-X", "POST",
+      "--config", "-",
+      "-F", `file=@${filePath};filename=${filename}`,
+      url
     ], { input: `header = "Authorization: Bearer ${token}"\n`, stdio: ["pipe", "pipe", "pipe"] });
   } catch (error) {
     throw new Error(`Gitee attachment upload failed (curl exit ${error.status ?? "unknown"})`);
@@ -141,6 +166,7 @@ async function readRemoteFile() {
 async function publishUpdateManifest() {
   const current = await readRemoteFile();
   const content = (await readFile(updateManifestPath)).toString("base64");
+  if (String(current?.content || "").replace(/\s+/g, "") === content) return;
   const body = {
     content,
     message: `发布 ${tag} 自动更新清单`,
