@@ -269,7 +269,6 @@ npm run build:windows
 
 LitMTrans-Zotero 的实现离不开以下开源项目与工具的启发和支持：
 
-- [LitMTrans (Desktop)](https://github.com/SRT117/LitMTrans)：LitMTrans 独立桌面端版本，为插件版提供了核心排版算法与架构基础；
 - [MinerU](https://github.com/opendatalab/MinerU)：高质量的文档视觉解析与结构化提取支持；
 - [PDFMathTranslate / pdf2zh](https://github.com/PDFMathTranslate/PDFMathTranslate) 与 [BabelDOC](https://github.com/funstory-ai/BabelDOC)：学术文献双语排版翻译的先驱工作与思路启发；
 - [RetainPDF](https://github.com/wxyhgk/retain-pdf)：从原文 PDF 中提取非文字元素并原样嵌入排版译文的思路，受到该项目的启发；
