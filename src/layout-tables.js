@@ -235,7 +235,8 @@
       if (!Array.isArray(item) || item.length !== 2 || !wanted.has(item[0]) || seen.has(item[0]) || typeof item[1] !== "string") return null;
       const source = wanted.get(item[0]);
       const tokens = (source.match(/⟦\d+⟧/g) || []).map(marker => ({ marker }));
-      if (!validText({ text: source, tokens }, item[1])) return null;
+      if (!(record.type === "image_labels" && item[1].trim() === "无需翻译")
+        && !validText({ text: source, tokens }, item[1])) return null;
       seen.add(item[0]);
     }
     return JSON.stringify(items);

@@ -1530,9 +1530,207 @@ async function testSettingsAutoSaveIsolationAndFailure() {
   assert(!fs.readFileSync(path.join(root, "src", "preferences.xhtml"), "utf8").includes('id="litmtrans-pref-save"'));
 }
 
+function testFigureAndTableLinkHoverPreviews() {
+  const { parseHTML } = require('linkedom');
+  const { document, Node } = parseHTML('<html><body></body></html>');
+  const workbench = fs.readFileSync(path.join(root, 'src', 'workbench.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src', 'workbench.css'), 'utf8');
+  const linkifySource = workbench.slice(workbench.indexOf('  function linkifyLayoutDocument('), workbench.indexOf('  function buildLayoutDocument('));
+  const previewSource = workbench.slice(workbench.indexOf('  function parseLayoutBlockBox('), workbench.indexOf('  function bindLayoutInteractions('));
+  const state = { settings: { translateTables: true, translateImages: false } };
+  const sandbox = {
+    document,
+    Node,
+    NodeFilter: { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+    state,
+    translatedImagePreviewDataURL: host => host._mockTranslatedURL || ''
+  };
+  vm.runInNewContext(
+    linkifySource + '\n' + previewSource
+    + '\nthis.figures = linkifyLayoutFigures; this.equations = linkifyLayoutEquations; this.stream = linkifyStreamDocument; this.resolve = resolveLinkPreviewPayload;',
+    sandbox
+  );
+
+  document.body.innerHTML = `
+    <div class="layout-page">
+      <div class="layout-flow-stream" style="left:5%;top:5%;width:40%;height:15%">
+        <div class="flow-para">参见图3、表5和式 (1)。</div>
+      </div>
+      <div class="layout-block type-image_body layout-image" style="left:52%;top:8%;width:40%;height:26%">
+        <div class="layout-image-translation">
+          <img src="resource://doc/fig3-orig.png" />
+          <span class="layout-image-label" hidden="hidden">压力/MPa</span>
+        </div>
+      </div>
+      <div class="layout-block layout-caption type-image_caption" style="left:52%;top:35%;width:40%;height:5%">图3. 压力变化曲线。</div>
+      <div class="layout-block layout-caption type-table_caption" style="left:5%;top:46%;width:40%;height:5%">表5. 反应产物。</div>
+      <div class="layout-block type-table_body layout-table layout-table-translation-host" style="left:5%;top:52%;width:40%;height:20%">
+        <div class="layout-table-original" hidden="hidden"><img src="resource://doc/table5-orig.png" /></div>
+        <div class="layout-translated-table"><table><tr><th>编号</th><th>产物</th></tr><tr><td>1</td><td>水</td></tr></table></div>
+      </div>
+      <div class="layout-block layout-formula" data-formula-tex="a = b \\tag{1}" style="left:5%;top:80%;width:40%;height:6%"><span class="layout-equation-number">(1)</span></div>
+    </div>
+  `;
+  sandbox.figures(document.body, 'translation');
+  sandbox.equations(document.body, 'translation');
+  const figHost = document.querySelector('.layout-image-translation');
+  figHost._mockTranslatedURL = 'data:image/png;base64,TRANSLATED_FIG3';
+
+  const links = [...document.querySelectorAll('.flow-para a')];
+  assert.equal(links[0].dataset.layoutReferenceKind, 'figure');
+  assert.equal(links[1].dataset.layoutReferenceKind, 'table');
+  assert.equal(links[2].dataset.layoutReferenceKind, 'equation');
+
+  // 翻译图片关闭 -> 显示原图；翻译表格开启 -> 显示译文表
+  const figOriginal = sandbox.resolve(links[0]);
+  assert.equal(figOriginal.kind, 'figure');
+  assert.equal(figOriginal.imageURL, 'resource://doc/fig3-orig.png');
+  assert.equal(figOriginal.caption, '图3. 压力变化曲线。');
+
+  const tableTranslated = sandbox.resolve(links[1]);
+  assert.equal(tableTranslated.kind, 'table');
+  assert(tableTranslated.table.textContent.includes('产物'));
+
+  // 切换为：翻译图片开启 + 翻译表格关闭
+  state.settings.translateImages = true;
+  state.settings.translateTables = false;
+  const figTranslated = sandbox.resolve(links[0]);
+  assert.equal(figTranslated.imageURL, 'data:image/png;base64,TRANSLATED_FIG3');
+
+  const tableOriginal = sandbox.resolve(links[1]);
+  assert.equal(tableOriginal.imageURL, 'resource://doc/table5-orig.png');
+  assert.equal(tableOriginal.table, undefined);
+
+  const singleEq = sandbox.resolve(links[2]);
+  assert.equal(singleEq.kind, 'equation');
+  assert.deepEqual(singleEq.equations, [{ tex: 'a = b', number: '(1)' }]);
+
+  // 公式范围与独立标号块测试（如 式(1)-(3)、Eqs. (4) and (5)）
+  document.body.innerHTML = `
+    <div class="layout-page">
+      <div class="layout-flow-stream" style="left:5%;top:5%;width:45%;height:15%">
+        <div class="flow-para">由式(1)-(3)与Eqs. (4) and (5)可知。</div>
+      </div>
+      <div class="layout-block layout-formula" data-formula-tex="a = 1 \\tag{1}" style="left:5%;top:24%;width:40%;height:5%"><span class="layout-equation-number">(1)</span></div>
+      <div class="layout-block layout-formula" data-formula-tex="b = 2 \\tag{2}" style="left:5%;top:31%;width:40%;height:5%"><span class="layout-equation-number">(2)</span></div>
+      <div class="layout-block layout-formula" data-formula-tex="c = 3 \\tag{3}" style="left:5%;top:38%;width:40%;height:5%"><span class="layout-equation-number">(3)</span></div>
+      <div class="layout-block layout-formula" data-formula-tex="\\frac{D\\rho}{Dt} = -\\rho \\nabla \\cdot \\boldsymbol{v}" style="left:10%;top:48%;width:30%;height:6%"></div>
+      <div class="layout-block type-formula_number" style="left:45%;top:49%;width:5%;height:4%">(4)</div>
+      <div class="layout-block layout-formula" data-formula-tex="e = 5 \\tag{5}" style="left:5%;top:58%;width:40%;height:5%"><span class="layout-equation-number">(5)</span></div>
+    </div>
+  `;
+  sandbox.equations(document.body, 'translation');
+  const eqLinks = [...document.querySelectorAll('.flow-para a')];
+  assert.deepEqual(eqLinks.map(a => a.textContent), ['式(1)-(3)', 'Eqs. (4)', '(5)']);
+  const rangePreview = sandbox.resolve(eqLinks[0]);
+  assert.equal(rangePreview.kind, 'equation');
+  assert.deepEqual(rangePreview.equations, [
+    { tex: 'a = 1', number: '(1)' },
+    { tex: 'b = 2', number: '(2)' },
+    { tex: 'c = 3', number: '(3)' }
+  ]);
+  const pairedPreview = sandbox.resolve(eqLinks[1]);
+  assert.deepEqual(pairedPreview.equations, [
+    { tex: '\\frac{D\\rho}{Dt} = -\\rho \\nabla \\cdot \\boldsymbol{v}', number: '(4)' }
+  ]);
+
+  // 独立“表1”窄标题 + 续行标题块 + 居中表格（以及 .type-table 区块）不应被续行阻断
+  document.body.innerHTML = `
+    <div class="layout-page">
+      <div class="layout-flow-stream" style="left:5%;top:5%;width:40%;height:10%">
+        <div class="flow-para">参数如表1所示。</div>
+      </div>
+      <div class="layout-block layout-caption type-table_caption" style="left:6%;top:20%;width:8%;height:3%">表1</div>
+      <div class="layout-block layout-caption type-table_caption" style="left:6%;top:24%;width:38%;height:4%">TNT状态方程的一些材料参数。</div>
+      <div class="layout-block type-table layout-table-translation-host" style="left:22%;top:30%;width:60%;height:18%">
+        <div class="layout-table-original" hidden="hidden"><img src="resource://doc/t1-orig.png" /></div>
+        <div class="layout-translated-table"><table><tr><th>参数</th><th>数值</th></tr><tr><td>A</td><td>371</td></tr></table></div>
+      </div>
+    </div>
+  `;
+  sandbox.figures(document.body, 'translation');
+  const splitTableLink = document.querySelector('.flow-para a');
+  state.settings.translateTables = true;
+  const splitTablePayload = sandbox.resolve(splitTableLink);
+  assert.equal(splitTablePayload.kind, 'table');
+  assert(splitTablePayload.table.textContent.includes('371'));
+  assert.equal(splitTablePayload.caption, '表1 TNT状态方程的一些材料参数。');
+
+  // 流式阅读模式图/表匹配
+  document.body.innerHTML = `
+    <div id="translation-content">
+      <p>见图 1 与表 2。</p>
+      <figure class="litmtrans-figure"><img src="resource://doc/stream-fig1.png" /><figcaption>图 1. 流式图。</figcaption></figure>
+      <p class="caption-like">表 2. 流式表。</p>
+      <div class="litmtrans-table-wrap"><table><tr><th>列</th></tr><tr><td>值</td></tr></table></div>
+    </div>
+  `;
+  sandbox.stream(document.body, 'stream-translation');
+  const streamLinks = [...document.querySelectorAll('p a')];
+  const streamFig = sandbox.resolve(streamLinks[0]);
+  assert.equal(streamFig.imageURL, 'resource://doc/stream-fig1.png');
+  const streamTable = sandbox.resolve(streamLinks[1]);
+  assert(streamTable.table.textContent.includes('值'));
+
+  assert(css.includes('.layout-link-preview') && css.includes('.layout-link-preview-table-wrap'));
+}
+
+function testLayoutSyncScrollAlignmentAndCoalescing() {
+  const workbench = fs.readFileSync(path.join(root, "src", "workbench.js"), "utf8");
+  const controller = fs.readFileSync(path.join(root, "src", "controller.js"), "utf8");
+  const slice = workbench.slice(
+    workbench.indexOf("  function layoutPageAtViewportAnchor("),
+    workbench.indexOf("  function renderMode(")
+  );
+  const wraps = [
+    { dataset: { page: "1" }, offsetTop: 6, offsetHeight: 800 },
+    { dataset: { page: "2" }, offsetTop: 816, offsetHeight: 800 }
+  ];
+  let queryCount = 0;
+  const scroll = {
+    scrollTop: 0,
+    scrollHeight: 1628,
+    clientHeight: 600,
+    clientWidth: 500,
+    querySelectorAll(selector) {
+      assert.equal(selector, ".layout-page-wrap");
+      queryCount++;
+      return wraps;
+    }
+  };
+  for (const wrap of wraps) wrap.offsetParent = scroll;
+  const sandbox = {
+    state: { mode: "layout", layoutPageZoom: 1 },
+    performance: { now: () => 1000 }
+  };
+  vm.runInNewContext(slice, sandbox);
+
+  // 焦点线落在第 1 页与第 2 页间隙前半段（600 * 0.35 + 600 = 810，第 1 页底 806、第 2 页顶 816）
+  scroll.scrollTop = 599;
+  const firstHalfGap = sandbox.layoutPageAtViewportAnchor(scroll, 0.35);
+  assert.equal(firstHalfGap.page, 1);
+  assert(firstHalfGap.pageRatio > 1, "缝隙前半段应保留超出 1 的平滑偏移，不能卡死在 1");
+
+  // 焦点线跨过缝隙中点 811 进入后半段
+  scroll.scrollTop = 603;
+  const secondHalfGap = sandbox.layoutPageAtViewportAnchor(scroll, 0.35);
+  assert.equal(secondHalfGap.page, 2);
+  assert(secondHalfGap.pageRatio < 0, "缝隙后半段应保留负向平滑偏移，不能突变或卡死在 0");
+
+  // 对齐同一锚点应回到完全一致的 scrollTop，且命中缓存不再重复 querySelectorAll
+  assert.equal(sandbox.alignLayoutPagePosition(scroll, secondHalfGap.page, secondHalfGap.pageRatio, 0.35), true);
+  assert(Math.abs(scroll.scrollTop - 603) < 0.01);
+  assert.equal(queryCount, 1, "连续滚动定位应复用缓存页坐标，避免热路径查询与回流");
+
+  assert(controller.includes("runtime.pdfSyncSuppression"), "PDF 预览跳转必须设置程序化滚动抑制，避免回声互锁");
+  assert(!controller.includes("performance.now("), "controller.js 运行在 Zotero 特权上下文，不能依赖 DOM 全局 performance.now()");
+  assert(workbench.includes("readerJumpInFlight") && workbench.includes("pendingReaderJump"), "排版模式跳转须合并在途 IPC，避免滚动队列积压");
+}
+
   return {
     testLayoutReferencePreviewsAndFigureLinks,
     testExtendedLayoutAndStreamHyperlinks,
+    testFigureAndTableLinkHoverPreviews,
     testPDFReaderThemeCrossWindowAndFailureIsolation,
     testReaderThemeWithoutPreviewAndLegacyContentSwitch,
     testCustomReaderThemeNotificationUpdatesPreviewBeforeEmission,
@@ -1560,5 +1758,6 @@ async function testSettingsAutoSaveIsolationAndFailure() {
     testPaddleModelCatalogSync,
     testPaddleModelCatalogPublication,
     testSettingsAutoSaveIsolationAndFailure,
+    testLayoutSyncScrollAlignmentAndCoalescing,
   };
 };

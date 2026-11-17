@@ -234,6 +234,214 @@ module.exports = function (env) {
     } finally { delete context.DOMParser; }
   }
 
+  async function imageAIKeepsUnneededLabelsUntouched() {
+    context.DOMParser = DOMParser;
+    try {
+      const { service, documentID } = fixture();
+      const ocr = await service.imageService.ensure();
+      const { records, imagePlan } = await service.manualTranslationInput(documentID);
+      const record = imagePlan.records[0];
+      const row = { id: record.wireID, cells: record.cells.map(([, text], index) =>
+        [index + 1, text === "RAW INPUT" ? "原始输入" : "无需翻译"]) };
+      const received = service.parseTranslationResponse(JSON.stringify({ translations: [row] }), records).translations;
+      assert(received[record.id], "带保护标记的图片标签也能返回无需翻译");
+      const manual = service.parseManualTranslationResponse(
+        JSON.stringify({ request: records.requestCode }) + "\n" + JSON.stringify(row), records).translations;
+      assert.equal(manual[record.id], received[record.id]);
+      assert(service.manualTableInstruction(records).includes("无需翻译"));
+      const cache = I.cacheFromRecords(imagePlan, received, ocr.sourceFingerprint, "简体中文");
+      const before = JSON.stringify(cache);
+      assert.equal(I.cachedRecords(imagePlan, cache, ocr.sourceFingerprint)[record.id], received[record.id], "跳过结果可复用，避免重复补译");
+      const model = await service.buildBaseModel();
+      const block = I.attach(model, cache).pages[0].blocks[0];
+      assert.equal(block.translatedImageLabels.length, 1);
+      assert.equal(block.translatedImageLabels[0].text, "原始输入");
+      assert.equal(block.imageProtectedBoxes.length, lines.length - 1);
+      assert.equal(JSON.stringify(cache), before, "显示时保留缓存原貌");
+      const layout = await service.loadLayout(documentID);
+      const machinePlan = I.requestPlan(ocr, layout, true);
+      const machineCached = I.cachedRecords(machinePlan, cache, ocr.sourceFingerprint);
+      assert.equal(Object.keys(machineCached).length, 1, "机翻不复用 AI 的跳过标记");
+      const table = { type: "table_cells", cells: [[0, "Rate ⟦0⟧"]] };
+      assert.equal(context.LitMTrans.LayoutTables.responseCells(table, { cells: [[0, "无需翻译"]] }), null, "表格仍校验保护标记");
+      const skipped = I.cacheFromRecords(imagePlan, { [record.id]: JSON.stringify(record.cells.map(([index]) => [index, "无需翻译"])) }, ocr.sourceFingerprint, "简体中文");
+      assert.equal(I.attach(model, skipped).pages[0].blocks[0].translatedImageLabels, undefined);
+      assert(I.cachedRecords(imagePlan, skipped, ocr.sourceFingerprint)[record.id]);
+    } finally { delete context.DOMParser; }
+  }
+
+  async function unchangedImageLabelsAndOCRDebugBoxes() {
+    context.DOMParser = DOMParser;
+    try {
+      const { service, documentID } = fixture();
+      const ocr = await service.imageService.ensure();
+      const { records, imagePlan } = await service.manualTranslationInput(documentID);
+      const record = imagePlan.records[0];
+      const row = {
+        id: record.wireID,
+        cells: record.cells.map(([, text], index) => [index + 1, text === "RAW INPUT" ? "原始输入" : text])
+      };
+      const received = service.parseTranslationResponse(JSON.stringify({ translations: [row] }), records).translations;
+      const cache = I.cacheFromRecords(imagePlan, received, ocr.sourceFingerprint, "简体中文");
+      const model = await service.buildBaseModel();
+
+      // 原样回传时必须跳过擦除重绘，但在调试框中保留识别框状态分类。
+      const block = I.attach(model, cache, "", null, ocr).pages[0].blocks[0];
+      assert.equal(block.translatedImageLabels.length, 1);
+      assert.equal(block.translatedImageLabels[0].text, "原始输入");
+      assert.equal(block.imageProtectedBoxes.length, lines.length - 1);
+      assert.equal(block.imageOCRDebugBoxes.length, lines.length);
+      assert.equal(block.imageOCRDebugBoxes.filter(item => item.status === "translated").length, 1);
+      assert(block.imageOCRDebugBoxes.some(item => item.status === "skipped"));
+      assert(block.imageOCRDebugBoxes.some(item => item.status === "protected"));
+
+      // 仅加载 OCR 结果（尚未有译文缓存）时，同样能为调试框提供“ocr”状态框。
+      const ocrOnlyBlock = I.attach(model, null, "", null, ocr).pages[0].blocks[0];
+      assert.equal(ocrOnlyBlock.translatedImageLabels, undefined);
+      assert.equal(ocrOnlyBlock.imageOCRDebugBoxes.length, lines.length);
+      assert(ocrOnlyBlock.imageOCRDebugBoxes.every(item => item.status === "ocr"));
+
+      // 均匀浅青底色 [230,254,255] 上高度约 0.4 * expected 的连写小写笔画应完整擦除，且邻框墨迹落入顶部采样带时不产生灰污。
+      const w = 140, h = 90;
+      const pixels = new Uint8ClampedArray(w * h * 4);
+      const fill = (x, y, r, g, b) => {
+        const at = (y * w + x) * 4;
+        pixels[at] = r; pixels[at + 1] = g; pixels[at + 2] = b; pixels[at + 3] = 255;
+      };
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) fill(x, y, 230, 254, 255);
+      // 邻框深色文字恰好落入上方边缘采样带 y=22..25
+      for (let y = 22; y <= 25; y++) for (let x = 25; x <= 110; x++) fill(x, y, 20, 20, 20);
+      // 目标连写小写字母团：高 10px（约为 24px 框高的 0.42 倍），宽 48px
+      for (let y = 34; y < 44; y++) for (let x = 36; x < 84; x++) fill(x, y, 24, 28, 28);
+      // 边缘轻微抗锯齿像素，不应对空洞扩散出深灰污染
+      for (let x = 35; x <= 84; x++) { fill(x, 33, 140, 155, 155); fill(x, 44, 140, 155, 155); }
+      const targetBox = [25 / w, 26 / h, 110 / w, 50 / h];
+      const neighborBox = [20 / w, 10 / h, 115 / w, 27 / h];
+      const paleRestored = I.restoreImageLabel(pixels, w, h, targetBox, [], "Measuring point", [neighborBox]);
+      assert(paleRestored && paleRestored.changed > 300, "均匀浅青底上的连写小写字符必须被识别并擦除");
+      for (let y = 34 - paleRestored.box[1]; y < 44 - paleRestored.box[1]; y++) {
+        for (let x = 36 - paleRestored.box[0]; x < 84 - paleRestored.box[0]; x++) {
+          const at = (y * paleRestored.width + x) * 4;
+          assert(Math.abs(paleRestored.pixels[at] - 230) <= 4 && Math.abs(paleRestored.pixels[at + 1] - 254) <= 4,
+            `浅青背景修复后应还原原生底色，实际=${paleRestored.pixels[at]},${paleRestored.pixels[at + 1]},${paleRestored.pixels[at + 2]}`);
+        }
+      }
+
+      // 白底与浅青双色交界处不得用纯白覆盖下半部分浅青底色。
+      const splitPixels = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const at = (y * w + x) * 4;
+        const cyan = y >= 40;
+        splitPixels[at] = cyan ? 230 : 255; splitPixels[at + 1] = cyan ? 254 : 255; splitPixels[at + 2] = 255; splitPixels[at + 3] = 255;
+      }
+      for (let y = 30; y < 46; y++) for (let x = 44; x < 92; x += 8) for (let dx = 0; dx < 4; dx++) {
+        const at = (y * w + x + dx) * 4;
+        splitPixels[at] = 20; splitPixels[at + 1] = 20; splitPixels[at + 2] = 20;
+      }
+      const splitRestored = I.restoreImageLabel(splitPixels, w, h, [40 / w, 28 / h, 96 / w, 48 / h], [], "Free surface", []);
+      assert(splitRestored);
+      const lowY = 44 - splitRestored.box[1], lowX = 45 - splitRestored.box[0];
+      const lowAt = (lowY * splitRestored.width + lowX) * 4;
+      assert(splitRestored.pixels[lowAt] < 245, "白青交界下半区域应保留浅青底色而非整块涂白");
+
+      // 工作台 UI 与布局挂载契约检查。
+      const workbench = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
+      const css = fs.readFileSync(path.join(root, "src/workbench.css"), "utf8");
+      const layoutJS = fs.readFileSync(path.join(root, "src/layout.js"), "utf8");
+      const localOCR = fs.readFileSync(path.join(root, "src/local-ocr-page.mjs"), "utf8");
+      assert(layoutJS.includes("image-ocr.v1.json") && layoutJS.includes("LayoutImages.attach("));
+      assert(workbench.includes("layout-image-ocr-debug-box") && workbench.includes("alignImageOCRDebugBoxes"));
+      assert(css.includes(".layout-debug .layout-image-ocr-debug-box"));
+      assert(localOCR.includes("item.poly[1][1] - item.poly[0][1]"), "本地 OCR 应与在线 OCR 一致过滤斜向排版文字");
+
+      // 斜向膨胀框在 restoreImageLabel 失败时应隐藏并保留原图，避免大面积涂白破坏圆弧边界。
+      const { document: fitDoc } = require("linkedom").parseHTML('<html><body><div class="layout-page"><div class="layout-block" data-image-source-width="618"><div class="layout-image-translation"><img src="fixture.png"><span class="layout-image-label" hidden data-box="[0.247,0.674,0.909,0.992]">无反射边界</span></div></div></div></body></html>');
+      const fitPage = fitDoc.querySelector(".layout-page"), fitHost = fitDoc.querySelector(".layout-image-translation"), fitImg = fitHost.querySelector("img"), fitLabel = fitHost.querySelector("span");
+      Object.defineProperties(fitHost, { clientWidth: { value: 300 }, clientHeight: { value: 500 } });
+      Object.defineProperties(fitHost.closest(".layout-block"), { clientWidth: { value: 300 } });
+      Object.defineProperties(fitImg, { complete: { get: () => true }, naturalWidth: { get: () => 618 }, naturalHeight: { get: () => 1053 } });
+      const origCreate = fitDoc.createElement.bind(fitDoc);
+      fitDoc.createElement = name => name !== "canvas" ? origCreate(name) : {
+        width: 618, height: 1053,
+        getContext: () => ({ drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray(618 * 1053 * 4) }), createImageData: () => ({ data: new Uint8ClampedArray(618 * 1053 * 4) }), putImageData() {}, measureText: () => ({ width: 10 }) })
+      };
+      const ts = require("typescript"), ast = ts.createSourceFile("workbench.js", workbench, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      const fitFns = [];
+      (function visit(n) { if (ts.isFunctionDeclaration(n) && ["medianByte", "fitLayoutImageLabels"].includes(n.name?.text)) fitFns.push(n.getText(ast)); ts.forEachChild(n, visit); })(ast);
+      const fitFn = vm.runInNewContext(fitFns.join("\n") + "\nfitLayoutImageLabels", {
+        document: fitDoc, state: { settings: { translateImages: true } },
+        getComputedStyle: () => ({ fontFamily: "serif" }),
+        window: { LitMTrans: { LayoutImages: { restoreImageLabel: () => null } } }
+      });
+      fitFn([fitPage]);
+      assert.equal(fitLabel.hidden, true, "斜向膨胀大框无法还原背景时应保留原图而不涂白");
+      assert.equal(fitImg.style.visibility, "", "无其他标签覆盖时应直接显示原图");
+
+      // 相邻且左边缘相近的垂直列表：对齐到众数最优左边缘、统一字号并消除上下微弱重叠。
+      const stackUpdates = I.planAlignedImageLabelGroups([
+        { index: 0, rotated: false, box: [39, 444, 420, 471], align: "center", fontSize: 18 },
+        { index: 1, rotated: false, box: [38, 472, 286, 499], align: "center", fontSize: 18 },
+        { index: 2, rotated: false, box: [38, 498, 213, 521], align: "center", fontSize: 15 },
+        { index: 3, rotated: false, box: [37, 522, 272, 549], align: "center", fontSize: 18 },
+        { index: 4, rotated: false, box: [38, 548, 171, 575], align: "center", fontSize: 18 },
+        { index: 5, rotated: false, box: [38, 576, 316, 599], align: "center", fontSize: 15 },
+        { index: 6, rotated: false, box: [38, 600, 154, 623], align: "center", fontSize: 15 },
+        { index: 7, rotated: false, box: [38, 628, 266, 654], align: "center", fontSize: 17 },
+        { index: 8, rotated: false, box: [38, 654, 216, 678], align: "center", fontSize: 16 },
+        { index: 9, rotated: false, box: [39, 677, 287, 704], align: "center", fontSize: 18 },
+        { index: 10, rotated: false, box: [39, 702, 146, 728], align: "center", fontSize: 17 },
+        { index: 11, rotated: false, box: [310, 444, 430, 471], align: "center", fontSize: 18 }
+      ]);
+      assert.equal(stackUpdates.length, 11, "仅聚合同列相邻标签，不混入右侧远端标签");
+      assert(stackUpdates.every(item => item.box[0] === 38), "应选择最集中出现的众数左边缘 38px");
+      assert(stackUpdates.every(item => item.align === "flex-start"), "组内标签应统一左对齐");
+      const unifiedSize = stackUpdates[0].fontSize;
+      assert(unifiedSize <= 15 && stackUpdates.every(item => item.fontSize === unifiedSize), "同组字号应统一受最小可用字号约束");
+      for (let i = 0; i + 1 < stackUpdates.length; i++) {
+        assert(stackUpdates[i].box[3] <= stackUpdates[i + 1].box[1], `相邻标签行 ${i} 与 ${i + 1} 不应上下重叠`);
+      }
+
+      // 1) OCR 误吞左侧图例短线导致某一行左边缘偏左时，仍应被纳入同列并纠偏回众数左边缘 152px。
+      const outlierUpdates = I.planAlignedImageLabelGroups([
+        { index: 0, rotated: false, box: [152, 25, 374, 61], align: "center", fontSize: 20 },
+        { index: 1, rotated: false, box: [152, 65, 385, 101], align: "center", fontSize: 20 },
+        { index: 2, rotated: false, box: [153, 104, 394, 140], align: "center", fontSize: 20 },
+        { index: 3, rotated: false, box: [153, 143, 338, 173], align: "center", fontSize: 17 },
+        { index: 4, rotated: false, box: [108, 182, 349, 212], align: "center", fontSize: 17 },
+        { index: 5, rotated: false, box: [152, 222, 357, 251], align: "center", fontSize: 16 }
+      ]);
+      assert.equal(outlierUpdates.length, 6, "左侧偏左吞入线形的异常框应纳入同组并纠偏");
+      assert(outlierUpdates.every(item => item.box[0] === 152 && item.align === "flex-start" && item.fontSize === 16));
+
+      // 2) 左右图例被中间彩色虚线桥接误合为一行时，应沿中间无黑字宽隙自动拆分为两列且保留中间线形。
+      const mw = 260, mh = 50;
+      const mPixels = new Uint8ClampedArray(mw * mh * 4).fill(255);
+      const paintInk = (px0, py0, pw, ph, rgb) => {
+        for (let y = py0; y < py0 + ph; y++) for (let x = px0; x < px0 + pw; x++) {
+          const at = (y * mw + x) * 4;
+          mPixels[at] = rgb[0]; mPixels[at + 1] = rgb[1]; mPixels[at + 2] = rgb[2]; mPixels[at + 3] = 255;
+        }
+      };
+      paintInk(16, 12, 84, 24, [20, 20, 20]);
+      paintInk(112, 22, 36, 3, [0, 220, 220]);
+      paintInk(158, 12, 86, 24, [20, 20, 20]);
+      const splitResult = I.splitMergedImageLabel(mPixels, mw, mh, [12 / mw, 10 / mh, 248 / mw, 40 / mh],
+        "35g Experiment[5]---35g Calculation", "35g 实验[5]--35g 计算");
+      assert(splitResult && splitResult.length === 2, "合并行应拆分为左右两列");
+      assert.equal(splitResult[0].text, "35g 实验[5]");
+      assert.equal(splitResult[1].text, "35g 计算");
+      assert(splitResult[0].bbox[2] * mw < 120 && splitResult[1].bbox[0] * mw > 145, "拆分结果应绕开中间彩色图例线");
+
+      // 3) 清理开头误识的图例线形前缀（如 .10g、--55g），但不误伤负数 -0.2。
+      const normalized = I.normalizeImageLines([
+        { text: ".10g Calculation", bbox: [0.5, 0.1, 0.9, 0.2], score: 0.9 },
+        { text: "--55g Calculation", bbox: [0.5, 0.2, 0.9, 0.3], score: 0.9 },
+        { text: "-0.2", bbox: [0.1, 0.3, 0.2, 0.4], score: 0.9 }
+      ]);
+      assert.deepEqual(normalized.map(item => item.text), ["10g Calculation", "55g Calculation", "-0.2"]);
+    } finally { delete context.DOMParser; }
+  }
+
   async function OCRSniffsImageContentAndReusesSidecar() {
     const { storage, documentID, service } = fixture();
     storage.getDocumentMeta = async () => ({ parseProvider: "paddle" });
@@ -1479,7 +1687,7 @@ module.exports = function (env) {
     assert.equal(context.LitMTrans.Updater.normalizeParserModels(badManifest)?.localOCR, undefined);
   }
 
-  return { OCRCoordinatesAndUncertainInput, pageFurnitureSkipsOCRTranslationAndCachedOverlay, sharedBatchCacheAndImageOnlyCompletion, missingImageResponseRetainsBodyAndPriorImageCache,
+  return { OCRCoordinatesAndUncertainInput, imageAIKeepsUnneededLabelsUntouched, pageFurnitureSkipsOCRTranslationAndCachedOverlay, sharedBatchCacheAndImageOnlyCompletion, missingImageResponseRetainsBodyAndPriorImageCache,
     paddleImagesShareOneMultipageRequest, paddleRequestSplitsOnlyAtDocumentLimits,
     taskLanguageKeepsMediaCacheAligned,
     imagePreferenceSkipsOCRAndSupplementsOnlyImages,
@@ -1492,5 +1700,6 @@ module.exports = function (env) {
     shortIDsDenseIndicesAndManualTaskBinding, OCRSniffsImageContentAndReusesSidecar, mineruOnlyOCRAndTemporaryCleanup, imageLabelsFitActualFontAndRejectMixedBackground, translatedImagePreviewPreservesLabelLayout, translatedImageHostOpensOriginalPreview, translatedPreviewKeepsOriginalForChat,
     publicationRestoresOldFilesOnDiskFailure, translationChainsStageMediaWithoutExtraRequests, adjacentSubfigureEdgeOverlapCleansPartialResidueAndPreservesPriorLabel,
     duplicateImageLabelsDeduplicateAndExpandAcrossChains,
+    unchangedImageLabelsAndOCRDebugBoxes,
     parserRoutingAndLocalOCRReadinessChecks };
 };

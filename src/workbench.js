@@ -35,6 +35,8 @@
     readerSyncPage: 0,
     readerSyncPageRatio: 0,
     readerSyncUntil: 0,
+    layoutSyncLeader: "",
+    layoutSyncLeaderUntil: 0,
     announcements: null,
     nativePDFSelection: null,
     swapped: false,
@@ -232,6 +234,7 @@
       "save-provider-card", "apply-provider-card",
       "image-preview-dialog", "image-preview-images", "image-preview-original", "image-preview-image", "image-preview-compare", "image-preview-scale", "image-preview-zoom-out", "image-preview-zoom-in",
       "image-preview-fit", "image-preview-reuse", "image-preview-copy", "image-preview-save", "image-preview-close",
+      "table-preview-tables", "table-preview-original", "table-preview-original-image", "table-preview-original-content", "table-preview-original-body",
       "table-preview-content", "table-preview-body", "table-preview-copy", "table-preview-save-html",
       "prompt-library-dialog", "prompt-library-close", "prompt-library-done", "prompt-library-list", "prompt-library-new",
       "prompt-library-delete", "prompt-library-title", "prompt-library-content", "prompt-library-copy", "prompt-library-save-state",
@@ -1018,15 +1021,20 @@
     }
     if (type === "reader-user-scroll") {
       state.readerSyncUntil = 0;
+      state.layoutSyncLeader = "source";
+      state.layoutSyncLeaderUntil = performance.now() + 900;
+      els["translation-scroll"]._litmtransProgrammaticUntil = 0;
       return;
     }
     if (type === "reader-location") {
       const page = Math.max(1, Math.trunc(Number(event.page || 1)));
-      const pageRatio = Math.max(0, Math.min(1, Number(event.pageRatio || 0)));
+      const pageRatio = Math.max(-0.15, Math.min(1.15, Number(event.pageRatio || 0)));
       const anchorRatio = Math.max(0, Math.min(1, Number(event.anchorRatio ?? .35)));
-      state.readerSyncPage = page;
-      state.readerSyncPageRatio = pageRatio;
-      if (state.mode === "layout" && state.syncScroll && performance.now() >= state.readerSyncUntil) {
+      const now = performance.now();
+      const translationDriving = state.layoutSyncLeader === "translation" && now < state.layoutSyncLeaderUntil;
+      if (state.mode === "layout" && state.syncScroll && now >= state.readerSyncUntil && !translationDriving) {
+        state.readerSyncPage = page;
+        state.readerSyncPageRatio = pageRatio;
         alignLayoutPagePosition(els["translation-scroll"], page, pageRatio, anchorRatio);
       }
       return;
@@ -1603,11 +1611,19 @@
         + `<div class="layout-translated-table" hidden="hidden">${block.translatedTableHTML}</div>`;
     }
     if (block.kind === "image" && block.imageURL) {
+      const ocrDebugHTML = useTranslation && block.imageOCRDebugBoxes?.length
+        ? block.imageOCRDebugBoxes.map(item => {
+          const statusLabel = item.status === "translated" ? "已翻译" : item.status === "skipped" ? "未翻译/跳过" : item.status === "protected" ? "保留原文" : "仅识别";
+          const tip = [`OCR识别（${statusLabel}）`, `原文：${item.text || "(空)"}`, item.translatedText ? `译文：${item.translatedText}` : ""].filter(Boolean).join("\n");
+          return `<span class="layout-image-ocr-debug-box" data-box="${U.escapeAttribute(JSON.stringify(item.bbox))}" data-ocr-status="${U.escapeAttribute(item.status || "ocr")}" data-debug-title="${U.escapeAttribute(tip)}"></span>`;
+        }).join("")
+        : "";
       if (useTranslation && block.translatedImageLabels?.length) {
         return `<div class="layout-image-translation" data-protected-boxes="${U.escapeAttribute(JSON.stringify(block.imageProtectedBoxes || []))}"><img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`
-          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}" data-rotation="${label.rotation === -90 ? -90 : 0}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("") + "</div>";
+          + block.translatedImageLabels.map(label => `<span class="layout-image-label" hidden="hidden" data-box="${U.escapeAttribute(JSON.stringify(label.bbox))}" data-rotation="${label.rotation === -90 ? -90 : 0}" data-source-text="${U.escapeAttribute(label.sourceText || '')}">${U.escapeHTML(label.text)}</span>`).join("")
+          + `</div>${ocrDebugHTML}`;
       }
-      return `<img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />`;
+      return `<img src="${U.escapeAttribute(block.imageURL)}" alt="" loading="lazy" decoding="async" />${ocrDebugHTML}`;
     }
     if (block.kind === "table" && block.tableHTML) {
       return `<div class="layout-table-wrap">${block.tableHTML}</div>`;
@@ -1967,8 +1983,10 @@
 
   function setPreviewTableMode(enabled) {
     els["image-preview-images"].hidden = enabled;
-    els["image-preview-compare"].hidden = enabled || !state.previewImage?.displayURL;
-    els["table-preview-content"].hidden = !enabled;
+    els["image-preview-compare"].hidden = enabled
+      ? !(state.previewTable?.isTranslated && (state.previewTable.imageURL || state.previewTable.originalHTML))
+      : !state.previewImage?.displayURL;
+    els["table-preview-tables"].hidden = !enabled;
     els["image-preview-copy"].hidden = enabled;
     els["image-preview-save"].hidden = enabled;
     els["table-preview-copy"].hidden = !enabled;
@@ -1978,25 +1996,160 @@
     els["image-preview-reuse"].title = enabled && !state.previewTable?.imageURL ? "当前表格没有可用原图" : "";
     els["image-preview-dialog"].setAttribute("aria-label", enabled ? "表格预览" : "图片预览");
     els["image-preview-dialog"].querySelector(".image-preview-toolbar").setAttribute("aria-label", enabled ? "表格操作" : "图片操作");
-    els["table-preview-content"].closest(".image-preview-stage").classList.toggle("table-preview-stage", enabled);
+    els["table-preview-tables"].closest(".image-preview-stage").classList.toggle("table-preview-stage", enabled);
+  }
+
+  function fitPreviewTableAspect(body, baseWidth, targetRatio) {
+    body.style.width = `${baseWidth}px`;
+    body.style.lineHeight = "";
+    body.style.removeProperty("--table-preview-pad-y");
+    let w = body.offsetWidth || baseWidth;
+    let h = body.offsetHeight || 1;
+    if (!(targetRatio > 0) || !h) return { width: w, height: h, layoutScale: 1 };
+
+    const ratio = () => (body.offsetWidth || baseWidth) / Math.max(1, body.offsetHeight || 1);
+    if (ratio() < targetRatio * 0.98) {
+      for (const [padY, lineHeight] of [[3.5, "1.3"], [2, "1.22"]]) {
+        body.style.setProperty("--table-preview-pad-y", `${padY}px`);
+        body.style.lineHeight = lineHeight;
+        if (ratio() >= targetRatio * 0.98) break;
+      }
+      if (ratio() < targetRatio * 0.98) {
+        let low = baseWidth;
+        let high = Math.min(2200, Math.max(baseWidth, Math.round(baseWidth * Math.max(2.2, targetRatio / Math.max(0.1, ratio()) * 1.3))));
+        for (let step = 0; step < 8 && high - low > 6; step++) {
+          const mid = Math.round((low + high) / 2);
+          body.style.width = `${mid}px`;
+          if (ratio() >= targetRatio) high = mid;
+          else low = mid;
+        }
+        body.style.width = `${high}px`;
+      }
+    } else if (ratio() > targetRatio * 1.02) {
+      const minWidth = Math.max(420, Math.round(baseWidth * 0.65));
+      let low = minWidth;
+      let high = baseWidth;
+      for (let step = 0; step < 7 && high - low > 6; step++) {
+        const mid = Math.round((low + high) / 2);
+        body.style.width = `${mid}px`;
+        const overflows = body.scrollWidth > body.clientWidth + 1;
+        if (overflows || ratio() < targetRatio) low = mid;
+        else high = mid;
+      }
+      body.style.width = `${high}px`;
+      w = body.offsetWidth || high;
+      h = body.offsetHeight || 1;
+      if (w / h > targetRatio * 1.02) {
+        const rows = Math.max(1, body.querySelectorAll("tr").length);
+        const targetH = w / targetRatio;
+        const padY = Math.min(36, 5 + Math.max(0, targetH - h) / (2 * rows));
+        body.style.setProperty("--table-preview-pad-y", `${padY.toFixed(2)}px`);
+      }
+    }
+    w = body.offsetWidth || baseWidth;
+    h = body.offsetHeight || 1;
+    const layoutScale = baseWidth / w;
+    return {
+      width: baseWidth,
+      height: Math.max(1, Math.round(h * layoutScale)),
+      layoutScale
+    };
+  }
+
+  function syncTablePreviewLayout() {
+    const tableState = state.previewTable;
+    const body = els["table-preview-body"];
+    if (!tableState || !body) return;
+    const baseWidth = Number(tableState.baseWidth || tableState.width || 640);
+    if (els["table-preview-original"].hidden) {
+      body.style.width = `${baseWidth}px`;
+      body.style.lineHeight = "";
+      body.style.removeProperty("--table-preview-pad-y");
+      tableState.width = body.offsetWidth || baseWidth;
+      tableState.height = body.offsetHeight || tableState.baseHeight || 1;
+      tableState.layoutScale = 1;
+      return;
+    }
+    if (!els["table-preview-original-content"].hidden) {
+      const originalBody = els["table-preview-original-body"];
+      tableState.compareWidth = originalBody.offsetWidth || baseWidth;
+      tableState.compareHeight = originalBody.offsetHeight || tableState.baseHeight || 1;
+    } else if (!els["table-preview-original-image"].hidden) {
+      const img = els["table-preview-original-image"];
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        tableState.compareWidth = baseWidth;
+        tableState.compareHeight = Math.max(1, Math.round(baseWidth * img.naturalHeight / img.naturalWidth));
+      }
+    }
+    const targetRatio = Number(tableState.compareWidth || 0) / Math.max(1, Number(tableState.compareHeight || 0));
+    const fitted = fitPreviewTableAspect(body, baseWidth, targetRatio);
+    tableState.width = fitted.width;
+    tableState.height = fitted.height;
+    tableState.layoutScale = fitted.layoutScale;
   }
 
   function openLayoutTableViewer(target) {
     const table = target.querySelector(".layout-translated-table table") || (target.matches("table") ? target : target.querySelector("table"));
     if (!table) return;
     const data = tablePreviewData(table);
-    const originalHTML = target.closest(".layout-table-translation-host")?.litmtransOriginalTableHTML;
-    const originalImage = target.closest(".layout-table-translation-host")?.querySelector(".layout-table-original img");
-    state.previewTable = { ...data, originalHTML: originalHTML || "", imageURL: originalImage?.currentSrc || originalImage?.src || "",
-      name: target.closest("[data-block-id]")?.dataset.blockId || "table" };
+    const host = target.closest(".layout-table-translation-host");
+    const originalHTML = host?.litmtransOriginalTableHTML;
+    const originalImage = host?.querySelector(".layout-table-original img");
+    const originalTableEl = host?.querySelector(".layout-table-original table");
+    const resolvedOriginalHTML = originalHTML || (originalTableEl ? tablePreviewData(originalTableEl).html : "");
+    const imageURL = originalImage?.currentSrc || originalImage?.src || "";
+    const isTranslated = Boolean(table.closest(".layout-translated-table"));
+    const baseWidth = Math.max(640, Number(target.dataset.tableSourceWidth || table.clientWidth) * 1.5);
+    state.previewTable = {
+      ...data,
+      originalHTML: resolvedOriginalHTML,
+      imageURL,
+      isTranslated,
+      baseWidth,
+      layoutScale: 1,
+      name: target.closest("[data-block-id]")?.dataset.blockId || "table"
+    };
     setPreviewTableMode(true);
+    els["image-preview-compare"].setAttribute("aria-pressed", "false");
+    els["table-preview-original"].hidden = true;
+    els["table-preview-original-image"].hidden = true;
+    els["table-preview-original-image"].removeAttribute("src");
+    els["table-preview-original-content"].hidden = true;
+    els["table-preview-original-body"].replaceChildren();
+
     const body = els["table-preview-body"];
     safeSetElementHTML(body, data.html);
-    body.style.width = Math.max(640, Number(target.dataset.tableSourceWidth || table.clientWidth) * 1.5) + "px";
+    const bodyWidth = baseWidth + "px";
+    body.style.width = bodyWidth;
+    body.style.lineHeight = "";
+    body.style.removeProperty("--table-preview-pad-y");
     body.style.transform = "";
     els["image-preview-dialog"].showModal();
-    state.previewTable.width = body.offsetWidth;
-    state.previewTable.height = body.offsetHeight;
+    state.previewTable.baseWidth = body.offsetWidth || baseWidth;
+    state.previewTable.baseHeight = body.offsetHeight;
+    state.previewTable.width = state.previewTable.baseWidth;
+    state.previewTable.height = state.previewTable.baseHeight;
+
+    if (isTranslated && imageURL) {
+      els["table-preview-original-image"].src = imageURL;
+      els["table-preview-original-image"].hidden = false;
+      const naturalW = Number(originalImage?.naturalWidth || 0);
+      const naturalH = Number(originalImage?.naturalHeight || 0);
+      if (naturalW > 0 && naturalH > 0) {
+        state.previewTable.compareWidth = state.previewTable.baseWidth;
+        state.previewTable.compareHeight = Math.max(1, Math.round(state.previewTable.baseWidth * naturalH / naturalW));
+      } else {
+        state.previewTable.compareWidth = state.previewTable.baseWidth;
+        state.previewTable.compareHeight = state.previewTable.baseHeight;
+      }
+    } else if (isTranslated && resolvedOriginalHTML) {
+      const originalBody = els["table-preview-original-body"];
+      safeSetElementHTML(originalBody, resolvedOriginalHTML);
+      originalBody.style.width = bodyWidth;
+      originalBody.style.transform = "";
+      els["table-preview-original-content"].hidden = false;
+    }
+
     fitPreviewImage();
     syncDeepSeekWebBounds();
   }
@@ -2105,10 +2258,49 @@
           const scale = Math.min(hostWidth / canvas.width, hostHeight / canvas.height);
           const offsetX = (hostWidth - canvas.width * scale) / 2, offsetY = (hostHeight - canvas.height * scale) / 2;
           const protectedBoxes = JSON.parse(host.dataset.protectedBoxes || '[]');
-          const labels = [...host.querySelectorAll(".layout-image-label")];
+          const baseLabels = [...host.querySelectorAll(".layout-image-label:not([data-split-child='1'])")];
+          const labels = [];
+          for (const label of baseLabels) {
+            if (!label.dataset.splitOrigText) {
+              label.dataset.splitOrigText = label.textContent;
+              label.dataset.splitOrigBox = label.dataset.box || "[]";
+              label.dataset.splitOrigSource = label.dataset.sourceText || "";
+            }
+            const origBox = JSON.parse(label.dataset.splitOrigBox);
+            const splitParts = Number(label.dataset.rotation) !== -90
+              ? window.LitMTrans?.LayoutImages?.splitMergedImageLabel?.(pixels, canvas.width, canvas.height, origBox, label.dataset.splitOrigSource, label.dataset.splitOrigText)
+              : null;
+            if (splitParts?.length === 2) {
+              label.textContent = splitParts[0].text;
+              label.dataset.sourceText = splitParts[0].sourceText;
+              label.dataset.box = JSON.stringify(splitParts[0].bbox);
+              let sibling = label._litmtransSplitSibling;
+              if (!sibling) {
+                sibling = document.createElement("span");
+                sibling.className = "layout-image-label";
+                sibling.hidden = true;
+                sibling.dataset.splitChild = "1";
+                label.after?.(sibling);
+                if (!sibling.parentNode) host.appendChild(sibling);
+                label._litmtransSplitSibling = sibling;
+              }
+              sibling.textContent = splitParts[1].text;
+              sibling.dataset.sourceText = splitParts[1].sourceText;
+              sibling.dataset.box = JSON.stringify(splitParts[1].bbox);
+              sibling.dataset.rotation = label.dataset.rotation || "0";
+              labels.push(label, sibling);
+            } else {
+              label.textContent = label.dataset.splitOrigText;
+              label.dataset.sourceText = label.dataset.splitOrigSource;
+              label.dataset.box = label.dataset.splitOrigBox;
+              if (label._litmtransSplitSibling) label._litmtransSplitSibling.hidden = true;
+              labels.push(label);
+            }
+          }
           const labelBoxes = labels.map(label => JSON.parse(label.dataset.box));
           const rotateBox = box => [1 - box[3], box[0], 1 - box[1], box[2]];
           let rotatedPixels = null;
+          const fittedItems = [];
           for (const [index, label] of labels.entries()) {
             label.hidden = true;
             const rotated = Number(label.dataset.rotation) === -90;
@@ -2122,9 +2314,17 @@
             const sourceWidth = rotated ? canvas.height : canvas.width, sourceHeight = rotated ? canvas.width : canvas.height;
             const box = rotated ? rotateBox(labelBoxes[index]) : [...labelBoxes[index]];
             if (!rotated) box[2] = Math.min(1, box[2] + 4 / canvas.width);
-            const restored = window.LitMTrans.LayoutImages.restoreImageLabel(rotated ? rotatedPixels : pixels, sourceWidth, sourceHeight, box,
+            const restoredRaw = window.LitMTrans.LayoutImages.restoreImageLabel(rotated ? rotatedPixels : pixels, sourceWidth, sourceHeight, box,
               rotated ? protectedBoxes.map(rotateBox) : protectedBoxes, label.dataset.sourceText,
-              labelBoxes.filter((_, other) => other !== index).map(other => rotated ? rotateBox(other) : other)) || {
+              labelBoxes.filter((_, other) => other !== index).map(other => rotated ? rotateBox(other) : other));
+            const rawBox = labelBoxes[index];
+            // 斜向文字外接框高度或面积异常膨胀时，若无法擦除底色，绝不用实心白底遮毁原图几何曲线。
+            if (!restoredRaw && !rotated && ((rawBox[3] - rawBox[1]) > .22 || (rawBox[2] - rawBox[0]) * (rawBox[3] - rawBox[1]) > .10)) {
+              label.hidden = true;
+              label.style.backgroundColor = "";
+              continue;
+            }
+            const restored = restoredRaw || {
                 box: box.map((value, axis) => Math.round(value * (axis % 2 ? sourceHeight : sourceWidth))),
                 width: 0, height: 0, pixels: [], color: [20, 20, 20], fallback: true
               };
@@ -2166,6 +2366,7 @@
               label.style.fontSize = `${size}px`;
             }
             if (label.scrollWidth > label.clientWidth + 1 || label.scrollHeight > label.clientHeight + 1) label.style.overflow = "visible";
+            fittedItems.push({ index, label, rotated, box: [x0, y0, x1, y1], align: label.style.justifyContent || "center", fontSize: size, minimum });
             hasLabels = true;
             for (let y = 0; y < restored.height; y++) for (let x = 0; x < restored.width; x++) {
               const at = (y * restored.width + x) * 4;
@@ -2174,6 +2375,24 @@
                 && restored.pixels[at + 2] === pixels[target + 2]) continue;
               for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
             }
+          }
+          // 同图内左边缘相近的相邻垂直图例/列表统一到众数左边缘、统一字号并消除微弱上下叠边。
+          const alignedUpdates = window.LitMTrans?.LayoutImages?.planAlignedImageLabelGroups?.(
+            fittedItems.map(({ index, rotated, box: itemBox, align, fontSize }) => ({ index, rotated, box: itemBox, align, fontSize }))
+          ) || [];
+          for (const update of alignedUpdates) {
+            const entry = fittedItems.find(item => item.index === update.index);
+            if (!entry) continue;
+            const [ax0, ay0, ax1, ay1] = update.box;
+            const unifiedSize = Math.max(entry.minimum, update.fontSize);
+            entry.label.style.left = `${offsetX + ax0 * scale}px`;
+            entry.label.style.top = `${offsetY + ay0 * scale}px`;
+            entry.label.style.width = `${Math.max(1, (ax1 - ax0) * scale)}px`;
+            entry.label.style.height = `${Math.max(1, (ay1 - ay0) * scale)}px`;
+            entry.label.style.justifyContent = update.align;
+            entry.label.style.textAlign = "left";
+            entry.label.style.fontSize = `${unifiedSize}px`;
+            entry.label.style.overflow = (entry.label.scrollWidth > entry.label.clientWidth + 1 || entry.label.scrollHeight > entry.label.clientHeight + 1) ? "visible" : "hidden";
           }
           // 清理相邻子图裁切重叠带入的边缘英文残片，并在后绘图片覆盖先绘译文时透明让位。
           const blockRect = item => {
@@ -3823,6 +4042,7 @@
         anchor.textContent = match[0];
         anchor.setAttribute('href', `#${target}`);
         anchor.dataset.layoutReferenceTarget = target;
+        anchor.dataset.layoutReferenceKind = key.startsWith('table-') ? 'table' : 'figure';
         fragment.appendChild(anchor);
         cursor = match.index + match[0].length;
       }
@@ -3966,7 +4186,7 @@
     let serial = 0;
     const register = (number, element) => {
       const key = String(number || '').replace(/\s+/g, '').replace(/^[(\[（]+|[)\]）]+$/g, '');
-      if (!/^[A-Za-z]?\d+(?:\.\d+)*[a-z]?$/.test(key)) return;
+      if (!/^[A-Za-z]?\d+(?:[.\-]\d+)*[a-z]?$/.test(key)) return;
       element.id ||= `litmtrans-equation-${pane}-${serial++}`;
       equations.set(key, equations.has(key) ? null : element.id);
     };
@@ -3986,29 +4206,112 @@
         || block.getAttribute?.('title')
         || block.querySelector?.('annotation[encoding="application/x-tex"]')?.textContent
         || '';
-      const tagMatch = tex.match(/\\tag\s*\{\s*([^{}]+?)\s*\}/);
-      if (tagMatch) register(tagMatch[1], block);
+      const tagMatches = [...tex.matchAll(/\\tag\s*\{\s*([^{}]+?)\s*\}/g)];
+      for (const tagMatch of tagMatches) register(tagMatch[1], block);
     }
     if (!equations.size) return;
+    const expandRange = (startKey, endKey) => {
+      if (!startKey || !endKey || startKey === endKey) return null;
+      if (/^\d+$/.test(startKey) && /^\d+$/.test(endKey)) {
+        const start = Number(startKey), end = Number(endKey);
+        if (end <= start || end - start > 12 || !equations.get(startKey) || !equations.get(endKey)) return null;
+        const ids = [];
+        for (let n = start; n <= end; n++) {
+          const target = equations.get(String(n));
+          if (target) ids.push(target);
+        }
+        return ids.length >= 2 ? ids : null;
+      }
+      const startAlpha = startKey.match(/^(.+?)([a-z])$/), endAlpha = endKey.match(/^(.+?)([a-z])$/);
+      if (startAlpha && endAlpha && startAlpha[1] === endAlpha[1]) {
+        const startCode = startAlpha[2].charCodeAt(0), endCode = endAlpha[2].charCodeAt(0);
+        if (endCode <= startCode || endCode - startCode > 8 || !equations.get(startKey) || !equations.get(endKey)) return null;
+        const ids = [];
+        for (let code = startCode; code <= endCode; code++) {
+          const target = equations.get(`${startAlpha[1]}${String.fromCharCode(code)}`);
+          if (target) ids.push(target);
+        }
+        return ids.length >= 2 ? ids : null;
+      }
+      return null;
+    };
+    const makeAnchor = (label, targets) => {
+      const anchor = document.createElement('a');
+      anchor.className = 'litmtrans-link';
+      anchor.textContent = label;
+      anchor.setAttribute('href', `#${targets[0]}`);
+      anchor.dataset.layoutReferenceTarget = targets[0];
+      anchor.dataset.layoutReferenceKind = 'equation';
+      if (targets.length > 1) anchor.dataset.layoutReferenceTargets = targets.join(',');
+      return anchor;
+    };
+    const keyToken = '[A-Za-z]?\\d+(?:[.\\-]\\d+)*[a-z]?';
+    const parenItem = `[(（]\\s*${keyToken}\\s*[)）]`;
+    const rangeJoin = '\\s*(?:[-–−—~～]|至|到)\\s*';
+    const listSep = '\\s*(?:[,，、;；]\\s*(?:and|&|和|与)?\\s*|\\s+(?:and|&)\\s+|\\s*[和与]\\s*)';
+    const enItem = `(?:${parenItem}|${keyToken}(?![.\\d]))`;
+    const cnPattern = `(?:公式|方程|等式|式)\\s*(${parenItem}(?:${rangeJoin}${parenItem})?(?:${listSep}${parenItem}(?:${rangeJoin}${parenItem})?)*)`;
+    const enPattern = `\\b(?:Equations?|Eqs?\\.?)\\s+(${enItem}(?:${rangeJoin}${enItem})?(?:${listSep}${enItem}(?:${rangeJoin}${enItem})?)*)`;
+    const pattern = new RegExp(`${enPattern}|${cnPattern}`, 'gi');
+    const itemPattern = new RegExp(
+      `([(（]\\s*(${keyToken})\\s*[)）])(?:${rangeJoin}([(（]\\s*(${keyToken})\\s*[)）]))?|(${keyToken})(?:${rangeJoin}(${keyToken}))?`,
+      'g'
+    );
+    const resolveSegment = segment => {
+      itemPattern.lastIndex = 0;
+      const parts = itemPattern.exec(segment);
+      if (!parts) return null;
+      const firstKey = parts[2] || parts[5] || '';
+      const secondKey = parts[4] || parts[6] || '';
+      if (secondKey) {
+        if (!parts[1] && equations.get(`${firstKey}-${secondKey}`)) {
+          const single = equations.get(`${firstKey}-${secondKey}`);
+          return single ? [single] : null;
+        }
+        return expandRange(firstKey, secondKey);
+      }
+      const single = firstKey ? equations.get(firstKey) : null;
+      return single ? [single] : null;
+    };
     const nodes = collectLayoutTextNodes(
       root,
       'a, sup, code, pre, .layout-formula, .type-formula_number, .katex, .litmtrans-math, .refs, .flow-ref, .type-ref_text, .layout-line-debug-box, .layout-collision-debug-layer'
     );
-    const pattern = /\b(?:Equations?|Eqs?\.?)\s*(?:[(（]\s*([A-Za-z]?\d+(?:\.\d+)*[a-z]?)\s*[)）]|([A-Za-z]?\d+(?:\.\d+)*[a-z]?)(?![.\d]))|(?:公式|方程|等式|式)\s*[(（]\s*([A-Za-z]?\d+(?:\.\d+)*[a-z]?)\s*[)）]/gi;
     for (const node of nodes) {
       const text = node.textContent, fragment = document.createDocumentFragment();
       let cursor = 0;
       for (const match of text.matchAll(pattern)) {
-        const key = match[1] || match[2] || match[3];
-        const target = key ? equations.get(key) : null;
-        if (!target) continue;
+        const listRaw = match[1] || match[2] || '';
+        const segPattern = new RegExp(
+          `${parenItem}(?:${rangeJoin}${parenItem})?|${keyToken}(?:${rangeJoin}${keyToken})?`,
+          'g'
+        );
+        const segments = [...listRaw.matchAll(segPattern)];
+        const resolved = segments.map(segment => resolveSegment(segment[0]));
+        if (!resolved.some(Boolean)) continue;
         fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
-        const anchor = document.createElement('a');
-        anchor.className = 'litmtrans-link';
-        anchor.textContent = match[0];
-        anchor.setAttribute('href', `#${target}`);
-        anchor.dataset.layoutReferenceTarget = target;
-        fragment.appendChild(anchor);
+        if (segments.length === 1) {
+          fragment.appendChild(makeAnchor(match[0], resolved[0]));
+        } else {
+          const listOffset = match[0].indexOf(listRaw);
+          const leadText = match[0].slice(0, listOffset);
+          const includePrefixInFirst = Boolean(leadText && resolved[0]);
+          if (!includePrefixInFirst && leadText) fragment.appendChild(document.createTextNode(leadText));
+          let pos = 0;
+          segments.forEach((segment, index) => {
+            const gap = listRaw.slice(pos, segment.index);
+            if (gap) fragment.appendChild(document.createTextNode(gap));
+            const targets = resolved[index];
+            if (targets) {
+              const label = index === 0 && includePrefixInFirst ? leadText + segment[0] : segment[0];
+              fragment.appendChild(makeAnchor(label, targets));
+            } else {
+              fragment.appendChild(document.createTextNode(segment[0]));
+            }
+            pos = segment.index + segment[0].length;
+          });
+          fragment.appendChild(document.createTextNode(listRaw.slice(pos) + match[0].slice(listOffset + listRaw.length)));
+        }
         cursor = match.index + match[0].length;
       }
       if (cursor) {
@@ -4069,7 +4372,9 @@
     };
     for (const anchor of root.querySelectorAll('a[data-layout-reference-target]')) {
       const target = anchor.dataset.layoutReferenceTarget;
-      const ids = [target];
+      const ids = anchor.dataset.layoutReferenceTargets
+        ? anchor.dataset.layoutReferenceTargets.split(',').filter(Boolean)
+        : [target];
       const match = target.match(/^(litmtrans-reference-.+-)(\d+)$/);
       const end = Number(anchor.dataset.layoutReferenceEnd);
       if (match && end > Number(match[2])) {
@@ -4246,6 +4551,8 @@
             }
             wrap.style.height = `${Math.max(1, canonical * sourceHeight / Math.max(1, sourceWidth) * pageScale)}px`;
           }
+          const scroll = documentRoot?.closest?.(".document-scroll");
+          if (scroll) scroll._litmtransLayoutPageIndex = null;
           applyLayoutPageRenderScale(pageNode, pageScale);
         };
         // Kept on the page node so a known visibility/rail-width transition
@@ -4441,7 +4748,7 @@
     "header", "page_header", "footer", "page_footer", "page_number", "aside_text"
   ]);
   const LAYOUT_BG_RENDER_SCALE = 2;
-  const LAYOUT_BG_CACHE_LIMIT = 4;
+  const LAYOUT_BG_CACHE_LIMIT = 12;
   const layoutPageBgCache = new Map();
   const layoutPageBgInFlight = new Map();
   const layoutPageBgRenderLanes = [Promise.resolve(), Promise.resolve()];
@@ -4830,6 +5137,23 @@
     let disconnected = false;
     let printing = false;
     const visible = new Set();
+    let scrollActiveUntil = 0;
+    let scrollIdleTimer = 0;
+    const scheduleIdleRefresh = () => {
+      if (!scroll) return;
+      if (scrollIdleTimer && typeof clearTimeout === "function") clearTimeout(scrollIdleTimer);
+      if (typeof setTimeout !== "function") return;
+      scrollIdleTimer = setTimeout(() => {
+        scrollIdleTimer = 0;
+        if (disconnected || printing) return;
+        for (const wrap of visible) void renderWrap(wrap);
+      }, 120);
+    };
+    const onScroll = () => {
+      scrollActiveUntil = performance.now() + 120;
+      scheduleIdleRefresh();
+    };
+    scroll?.addEventListener?.("scroll", onScroll, { passive: true });
     const releasePage = pageNode => {
       if (!pageNode) return;
       pageNode._litmtransBgVersion = (pageNode._litmtransBgVersion || 0) + 1;
@@ -4852,7 +5176,10 @@
         for (const entry of entries) {
           if (entry.isIntersecting) {
             visible.add(entry.target);
-            if (!printing) void renderWrap(entry.target);
+            if (!printing) {
+              if (!scroll || performance.now() >= scrollActiveUntil) void renderWrap(entry.target);
+              else scheduleIdleRefresh();
+            }
           } else {
             visible.delete(entry.target);
             if (!printing) releasePage(entry.target.querySelector(".layout-page"));
@@ -4896,6 +5223,9 @@
       },
       disconnect() {
         disconnected = true;
+        if (scrollIdleTimer && typeof clearTimeout === "function") clearTimeout(scrollIdleTimer);
+        scrollIdleTimer = 0;
+        scroll?.removeEventListener?.("scroll", onScroll);
         observer?.disconnect();
         for (const wrap of wraps) releasePage(wrap.querySelector(".layout-page"));
       }
@@ -4936,6 +5266,7 @@
     // too, so an older task must not restore its scroll state afterwards.
     const renderVersion = (Number(container.dataset.layoutRenderVersion || "0") || 0) + 1;
     container.dataset.layoutRenderVersion = String(renderVersion);
+    if (scroll) scroll._litmtransLayoutPageIndex = null;
     if (!model?.pages?.length) {
       cleanupLayoutObservers(container);
       container.replaceChildren();
@@ -4989,46 +5320,79 @@
 
   function layoutPageAtViewportAnchor(scroll, anchorRatio = .5) {
     if (!scroll) return null;
-    const viewport = scroll.getBoundingClientRect();
-    const focusY = viewport.top + scroll.clientHeight * anchorRatio;
-    const wraps = [...scroll.querySelectorAll(".layout-page-wrap")];
-    const wrap = wraps.find(node => {
-      const page = node.querySelector(".layout-page") || node;
-      const rect = page.getBoundingClientRect();
-      return rect.top <= focusY && rect.bottom >= focusY;
-    }) || wraps.reduce((closest, node) => {
-      if (!closest) return node;
-      const current = (node.querySelector(".layout-page") || node).getBoundingClientRect();
-      const best = (closest.querySelector(".layout-page") || closest).getBoundingClientRect();
-      return Math.abs((current.top + current.bottom) / 2 - focusY) < Math.abs((best.top + best.bottom) / 2 - focusY)
-        ? node
-        : closest;
-    }, null);
-    if (!wrap) return null;
-    const page = wrap.querySelector(".layout-page") || wrap;
-    const rect = page.getBoundingClientRect();
+    const metrics = getLayoutPageMetrics(scroll);
+    const entries = metrics?.entries;
+    if (!entries?.length) return null;
+    const focusY = scroll.scrollTop + scroll.clientHeight * anchorRatio;
+    let lo = 0;
+    let hi = entries.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (entries[mid].bottom < focusY) lo = mid + 1;
+      else hi = mid;
+    }
+    let target = entries[lo];
+    if (focusY < target.top && lo > 0) {
+      const prev = entries[lo - 1];
+      if (focusY <= (prev.bottom + target.top) / 2) target = prev;
+    }
+    const rawRatio = (focusY - target.top) / Math.max(1, target.height);
     return {
-      page: Math.max(1, Number(wrap.dataset.page || 1)),
-      pageRatio: Math.max(0, Math.min(1, (focusY - rect.top) / Math.max(1, rect.height))),
-      pageHeight: rect.height,
+      page: target.page,
+      pageRatio: Math.max(-0.15, Math.min(1.15, rawRatio)),
+      pageHeight: target.height,
       anchorRatio
     };
   }
 
+  function getLayoutPageMetrics(scroll) {
+    if (!scroll) return null;
+    const signature = `${scroll.scrollHeight}:${scroll.clientHeight}:${scroll.clientWidth}:${state.layoutPageZoom}`;
+    const cached = scroll._litmtransLayoutPageIndex;
+    if (cached?.signature === signature) return cached;
+    const wraps = [...scroll.querySelectorAll(".layout-page-wrap")];
+    if (!wraps.length) return null;
+    const scrollRect = wraps.some(node => node.offsetParent !== scroll) ? scroll.getBoundingClientRect() : null;
+    const entries = [];
+    const byPage = new Map();
+    for (const wrap of wraps) {
+      const page = Math.max(1, Number(wrap.dataset.page || 1));
+      let top = 0;
+      let height = 0;
+      if (wrap.offsetParent === scroll) {
+        top = wrap.offsetTop;
+        height = wrap.offsetHeight;
+      } else {
+        const pageNode = wrap.querySelector(".layout-page") || wrap;
+        const rect = pageNode.getBoundingClientRect();
+        top = scroll.scrollTop + rect.top - scrollRect.top;
+        height = rect.height;
+      }
+      if (!(height > 0)) continue;
+      const entry = { page, wrap, top, height, bottom: top + height };
+      entries.push(entry);
+      if (!byPage.has(page)) byPage.set(page, entry);
+    }
+    if (!entries.length) return null;
+    entries.sort((a, b) => a.top - b.top);
+    const result = { signature, entries, byPage };
+    scroll._litmtransLayoutPageIndex = result;
+    return result;
+  }
+
   function alignLayoutPagePosition(scroll, pageNumber, pageRatio = 0, anchorRatio = .35) {
     if (!scroll) return false;
-    const wrap = [...scroll.querySelectorAll(".layout-page-wrap")]
-      .find(node => Number(node.dataset.page || 0) === Number(pageNumber));
-    const page = wrap?.querySelector(".layout-page") || wrap;
-    if (!page) return false;
-    const scrollRect = scroll.getBoundingClientRect();
-    const rect = page.getBoundingClientRect();
+    const metrics = getLayoutPageMetrics(scroll);
+    const entry = metrics?.byPage.get(Number(pageNumber));
+    if (!entry) return false;
     const range = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
-    const pageTop = scroll.scrollTop + rect.top - scrollRect.top;
-    const top = pageTop + rect.height * Math.max(0, Math.min(1, Number(pageRatio || 0)))
-      - scroll.clientHeight * Math.max(0, Math.min(1, Number(anchorRatio || 0)));
-    scroll._litmtransProgrammaticUntil = performance.now() + 220;
-    scroll.scrollTop = Math.max(0, Math.min(range, top));
+    const clampedPageRatio = Math.max(-0.15, Math.min(1.15, Number(pageRatio || 0)));
+    const clampedAnchorRatio = Math.max(0, Math.min(1, Number(anchorRatio || 0)));
+    const top = entry.top + entry.height * clampedPageRatio - scroll.clientHeight * clampedAnchorRatio;
+    const target = Math.max(0, Math.min(range, top));
+    scroll._litmtransProgrammaticUntil = performance.now() + 240;
+    scroll._litmtransProgrammaticTarget = target;
+    if (Math.abs(scroll.scrollTop - target) > 0.5) scroll.scrollTop = target;
     return true;
   }
 
@@ -5046,19 +5410,16 @@
   function restoreLayoutScrollPosition(scroll, position) {
     if (!scroll || !position || state.mode !== "layout") return;
     const range = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
-    const wrap = position.page
-      ? [...scroll.querySelectorAll(".layout-page-wrap")].find(node => String(node.dataset.page || "") === position.page)
-      : null;
-    const page = wrap?.querySelector(".layout-page") || wrap;
+    const metrics = position.page ? getLayoutPageMetrics(scroll) : null;
+    const entry = position.page ? metrics?.byPage.get(Number(position.page)) : null;
     let top = Number(position.ratio || 0) * range;
-    if (page) {
-      const scrollRect = scroll.getBoundingClientRect();
-      const rect = page.getBoundingClientRect();
-      const pageTop = scroll.scrollTop + rect.top - scrollRect.top;
-      top = pageTop + rect.height * Number(position.pageRatio || 0) - scroll.clientHeight * .5;
+    if (entry) {
+      top = entry.top + entry.height * Number(position.pageRatio || 0) - scroll.clientHeight * .5;
     }
+    const target = Math.max(0, Math.min(range, top));
     scroll._litmtransProgrammaticUntil = performance.now() + 140;
-    scroll.scrollTop = Math.max(0, Math.min(range, top));
+    scroll._litmtransProgrammaticTarget = target;
+    scroll.scrollTop = target;
   }
 
   function renderMode() {
@@ -5377,8 +5738,9 @@
 
   function applyPreviewScale(scale, anchor = null) {
     const image = state.previewTable ? els["table-preview-content"] : els["image-preview-image"];
+    const anchorTarget = state.previewTable ? els["table-preview-tables"] : image;
     const stage = image.closest(".image-preview-stage");
-    const oldRect = image.getBoundingClientRect();
+    const oldRect = anchorTarget.getBoundingClientRect();
     const stageRect = stage?.getBoundingClientRect();
     const anchorX = anchor && oldRect.width
       ? Math.max(0, Math.min(1, (anchor.clientX - oldRect.left) / oldRect.width))
@@ -5395,10 +5757,25 @@
       els["image-preview-original"].style.width = image.style.width;
       els["image-preview-original"].style.height = image.style.height;
     }
-    if (state.previewTable) els["table-preview-body"].style.transform = `scale(${state.previewScale})`;
+    if (state.previewTable) {
+      const bodyScale = state.previewScale * Number(state.previewTable.layoutScale || 1);
+      els["table-preview-body"].style.transform = `scale(${bodyScale})`;
+      if (!els["table-preview-original"].hidden) {
+        const compareWidth = Math.max(1, Math.round(Number(state.previewTable.compareWidth || naturalWidth) * state.previewScale));
+        const compareHeight = Math.max(1, Math.round(Number(state.previewTable.compareHeight || naturalHeight) * state.previewScale));
+        if (!els["table-preview-original-image"].hidden) {
+          els["table-preview-original-image"].style.width = `${compareWidth}px`;
+          els["table-preview-original-image"].style.height = `${compareHeight}px`;
+        } else if (!els["table-preview-original-content"].hidden) {
+          els["table-preview-original-content"].style.width = `${compareWidth}px`;
+          els["table-preview-original-content"].style.height = `${compareHeight}px`;
+          els["table-preview-original-body"].style.transform = `scale(${state.previewScale})`;
+        }
+      }
+    }
     els["image-preview-scale"].textContent = `${Math.round(state.previewScale * 100)}%`;
     if (anchor && stage && stageRect) {
-      const nextRect = image.getBoundingClientRect();
+      const nextRect = anchorTarget.getBoundingClientRect();
       stage.scrollLeft += nextRect.left + nextRect.width * anchorX - anchor.clientX;
       stage.scrollTop += nextRect.top + nextRect.height * anchorY - anchor.clientY;
     }
@@ -5410,9 +5787,15 @@
     const width = state.previewTable?.width || image.naturalWidth;
     const height = state.previewTable?.height || image.naturalHeight;
     if (!width || !height || !stage) return;
+    const comparingTable = Boolean(state.previewTable && !els["table-preview-original"].hidden);
+    const comparingImage = Boolean(!state.previewTable && !els["image-preview-original"].hidden);
+    const compareGap = (comparingTable || comparingImage) ? 16 : 0;
+    const totalWidth = comparingTable
+      ? width + Number(state.previewTable.compareWidth || width)
+      : width * (comparingImage ? 2 : 1);
     const scale = Math.min(
       1,
-      Math.max(.1, (stage.clientWidth - 34 - (!state.previewTable && !els["image-preview-original"].hidden ? 16 : 0)) / (width * (!state.previewTable && !els["image-preview-original"].hidden ? 2 : 1))),
+      Math.max(.1, (stage.clientWidth - 34 - compareGap) / totalWidth),
       state.previewTable ? 1 : Math.max(.1, (stage.clientHeight - 34) / height)
     );
     applyPreviewScale(scale);
@@ -7178,6 +7561,7 @@
       #litmtrans-layout-paint-print-root .layout-paint-print-page:last-child { break-after:auto; page-break-after:auto; }
       #litmtrans-layout-paint-print-root .layout-page { zoom:1 !important; transform:scale(${printScale}) !important; transform-origin:top left !important; box-shadow:none !important; print-color-adjust:exact; }
       #litmtrans-layout-paint-print-root .layout-line-debug-box,
+      #litmtrans-layout-paint-print-root .layout-image-ocr-debug-box,
       #litmtrans-layout-paint-print-root .layout-collision-debug-layer,
       #litmtrans-layout-paint-print-root .layout-awaiting-overlay { display:none !important; }
     }`;
@@ -7274,7 +7658,7 @@
         clone.style.zoom = "1";
         clone.style.transform = `scale(${printScale})`;
         clone.style.transformOrigin = "top left";
-        clone.querySelectorAll(".layout-line-debug-box, .layout-collision-debug-layer, .layout-awaiting-overlay")
+        clone.querySelectorAll(".layout-line-debug-box, .layout-image-ocr-debug-box, .layout-collision-debug-layer, .layout-awaiting-overlay")
           .forEach(node => node.remove());
         await copyLayoutCanvasPaint(page, clone);
         sheet.appendChild(clone);
@@ -8835,6 +9219,621 @@
     void exportCurrentReaderPDF(pane);
   }
 
+  function parseLayoutBlockBox(element) {
+    if (!element?.style) return null;
+    const left = parseFloat(element.style.left);
+    const top = parseFloat(element.style.top);
+    const width = parseFloat(element.style.width);
+    const height = parseFloat(element.style.height);
+    if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+    return {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      cx: left + width / 2,
+      cy: top + height / 2
+    };
+  }
+
+  function findLayoutMediaBlockForCaption(captionElement, kind) {
+    if (!captionElement) return null;
+    const page = captionElement.closest(".layout-page");
+    if (page) {
+      const captionBoxNode = captionElement.closest(".layout-block, .layout-flow-stream") || captionElement;
+      const capBox = parseLayoutBlockBox(captionBoxNode);
+      if (!capBox) return null;
+      const selector = kind === "table"
+        ? ".layout-block.type-table_body, .layout-block.type-table, .layout-block.layout-table, .layout-block.layout-table-translation-host"
+        : ".layout-block.layout-image:not(.type-table_body):not(.type-table), .layout-block.type-image_body, .layout-block.type-chart_body";
+      const numberedCaptionPattern = /^(?:(?:fig(?:ure)?s?[.,]?|tables?[.,]?)(?![a-z])|[图表])\s*(?:[1-9]\d*|[IVXⅠ-Ⅻ]+|[一二三四五六七八九十]{1,3})\b/i;
+      // 仅将其他带编号的题注视为间隔屏障；同一图/表的续行说明（如单独拆出的 "表1" + 标题行）不阻断匹配。
+      const numberedCaptions = [...page.querySelectorAll(".type-image_caption, .type-chart_caption, .type-table_caption, .layout-caption")]
+        .filter(node => node !== captionElement && node !== captionBoxNode && numberedCaptionPattern.test(node.textContent.replace(/\s+/g, " ").trim()))
+        .map(node => parseLayoutBlockBox(node))
+        .filter(Boolean);
+      let best = null;
+      let bestScore = Infinity;
+      const narrowCaption = capBox.width < 22;
+      for (const candidate of page.querySelectorAll(selector)) {
+        const hasMedia = kind === "table"
+          ? Boolean(candidate.querySelector("table, img"))
+          : Boolean(candidate.querySelector("img"));
+        if (!hasMedia) continue;
+        const candBox = parseLayoutBlockBox(candidate);
+        if (!candBox) continue;
+        const hOverlap = Math.max(0, Math.min(capBox.right, candBox.right) - Math.max(capBox.left, candBox.left));
+        const vOverlap = Math.max(0, Math.min(capBox.bottom, candBox.bottom) - Math.max(capBox.top, candBox.top));
+        const vGap = Math.max(0, candBox.top - capBox.bottom, capBox.top - candBox.bottom);
+        const hGap = Math.max(0, candBox.left - capBox.right, capBox.left - candBox.right);
+        const verticalMatch = narrowCaption
+          ? (vGap <= 28 && (hOverlap > 0 || hGap <= 25))
+          : ((hOverlap > 0 && vGap <= 26) || (hGap <= 8 && vGap <= 18));
+        const horizontalMatch = vOverlap > 0 && hGap <= 14;
+        if (!verticalMatch && !horizontalMatch) continue;
+        const minY = Math.min(capBox.cy, candBox.cy);
+        const maxY = Math.max(capBox.cy, candBox.cy);
+        const blockedByCaption = verticalMatch && numberedCaptions.some(other =>
+          other.cy > minY && other.cy < maxY
+          && Math.min(other.right, candBox.right) > Math.max(other.left, candBox.left)
+        );
+        if (blockedByCaption) continue;
+        // 常规排版中图注多在图下方、表注多在表上方，作为同距候选的偏向。
+        const directionPenalty = (kind === "figure" && candBox.top >= capBox.bottom - 0.5)
+          || (kind === "table" && capBox.top >= candBox.bottom - 0.5)
+          ? 3 : 0;
+        const score = vGap + hGap * 1.2 + directionPenalty - Math.min(hOverlap, 20) * 0.05;
+        if (score < bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+      return best;
+    }
+    if (kind === "figure") {
+      const figure = captionElement.closest("figure.litmtrans-figure");
+      if (figure?.querySelector("img")) return figure;
+    }
+    const isStreamBoundary = node => !node || node.matches("h1, h2, h3, h4, h5, h6, .caption-like, figcaption");
+    const matchStreamTable = node => {
+      if (node.matches(".litmtrans-table-wrap, table")) return node;
+      return node.querySelector?.(".litmtrans-table-wrap, table") || null;
+    };
+    const matchStreamImage = node => {
+      if (node.matches("figure.litmtrans-figure, img")) return node;
+      return node.querySelector?.("img") ? node : null;
+    };
+    const directions = kind === "table"
+      ? ["nextElementSibling", "previousElementSibling"]
+      : ["previousElementSibling", "nextElementSibling"];
+    const scanStream = (matcher) => {
+      for (const direction of directions) {
+        let cursor = captionElement[direction];
+        let steps = 0;
+        while (cursor && steps < 3) {
+          if (!cursor.classList?.contains("litmtrans-sync-anchor")) {
+            if (isStreamBoundary(cursor)) break;
+            const hit = matcher(cursor);
+            if (hit) return hit;
+            steps++;
+          }
+          cursor = cursor[direction];
+        }
+      }
+      return null;
+    };
+    if (kind === "table") {
+      return scanStream(matchStreamTable)
+        || scanStream(node => (node.matches("figure.litmtrans-figure") && !node.querySelector("figcaption") && node.querySelector("img") ? node : null));
+    }
+    return scanStream(matchStreamImage);
+  }
+
+  function cleanPreviewTableClone(table) {
+    const clone = table.cloneNode(true);
+    clone.querySelector("colgroup[data-layout-fit-columns]")?.remove();
+    clone.style.removeProperty("width");
+    clone.style.removeProperty("height");
+    clone.style.removeProperty("table-layout");
+    clone.style.removeProperty("font-size");
+    return clone;
+  }
+
+  async function renderOffscreenTranslatedImageURL(host) {
+    const ready = translatedImagePreviewDataURL(host);
+    if (ready) return ready;
+    const image = host?.querySelector("img:not(.layout-image-cleaned)");
+    const src = image?.getAttribute("src") || image?.dataset?.layoutImageSrc || "";
+    if (!src) return "";
+    const labels = [...(host?.querySelectorAll(".layout-image-label") || [])];
+    if (!labels.length || host?._litmtransImageLabelFit || !window.LitMTrans?.LayoutImages?.restoreImageLabel) {
+      return src;
+    }
+    const signature = `${src}|${labels.map(label => label.textContent).join("\u001f")}`;
+    if (host._litmtransTranslatedPreviewCache?.signature === signature) {
+      return host._litmtransTranslatedPreviewCache.url;
+    }
+    const loaded = await new Promise(resolve => {
+      const probe = new Image();
+      probe.onload = () => resolve(probe);
+      probe.onerror = () => resolve(null);
+      probe.src = src;
+    });
+    if (!loaded?.naturalWidth || !loaded?.naturalHeight) return src;
+    const canvas = document.createElement("canvas");
+    canvas.width = loaded.naturalWidth;
+    canvas.height = loaded.naturalHeight;
+    try {
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(loaded, 0, 0);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const combined = ctx.createImageData(canvas.width, canvas.height);
+      combined.data.set(pixels);
+      const protectedBoxes = JSON.parse(host.dataset.protectedBoxes || "[]");
+      const labelBoxes = labels.map(label => JSON.parse(label.dataset.box));
+      const rotateBox = box => [1 - box[3], box[0], 1 - box[1], box[2]];
+      let rotatedPixels = null;
+      const drawItems = [];
+      for (const [index, label] of labels.entries()) {
+        const rotated = Number(label.dataset.rotation) === -90;
+        if (rotated && !rotatedPixels) {
+          const turn = document.createElement("canvas");
+          turn.width = canvas.height;
+          turn.height = canvas.width;
+          const turnCtx = turn.getContext("2d");
+          turnCtx.translate(turn.width, 0);
+          turnCtx.rotate(Math.PI / 2);
+          turnCtx.drawImage(loaded, 0, 0);
+          rotatedPixels = turnCtx.getImageData(0, 0, turn.width, turn.height).data;
+          turn.width = turn.height = 1;
+        }
+        const sourceWidth = rotated ? canvas.height : canvas.width;
+        const sourceHeight = rotated ? canvas.width : canvas.height;
+        const box = rotated ? rotateBox(labelBoxes[index]) : [...labelBoxes[index]];
+        if (!rotated) box[2] = Math.min(1, box[2] + 4 / canvas.width);
+        const restoredRaw = window.LitMTrans.LayoutImages.restoreImageLabel(
+          rotated ? rotatedPixels : pixels,
+          sourceWidth,
+          sourceHeight,
+          box,
+          rotated ? protectedBoxes.map(rotateBox) : protectedBoxes,
+          label.dataset.sourceText,
+          labelBoxes.filter((_, other) => other !== index).map(other => rotated ? rotateBox(other) : other)
+        );
+        const rawBox = labelBoxes[index];
+        if (!restoredRaw && !rotated && ((rawBox[3] - rawBox[1]) > .22 || (rawBox[2] - rawBox[0]) * (rawBox[3] - rawBox[1]) > .10)) {
+          continue;
+        }
+        const restored = restoredRaw || {
+          box: box.map((value, axis) => Math.round(value * (axis % 2 ? sourceHeight : sourceWidth))),
+          width: 0,
+          height: 0,
+          pixels: [],
+          color: [20, 20, 20],
+          fallback: true
+        };
+        const [x0, y0, x1, y1] = restored.box;
+        for (let y = 0; y < restored.height; y++) {
+          for (let x = 0; x < restored.width; x++) {
+            const at = (y * restored.width + x) * 4;
+            const target = rotated
+              ? ((canvas.height - 1 - (x0 + x)) * canvas.width + y0 + y) * 4
+              : ((y0 + y) * canvas.width + x0 + x) * 4;
+            if (restored.pixels[at] === pixels[target] && restored.pixels[at + 1] === pixels[target + 1]
+              && restored.pixels[at + 2] === pixels[target + 2]) continue;
+            for (let c = 0; c < 4; c++) combined.data[target + c] = restored.pixels[at + c];
+          }
+        }
+        drawItems.push({
+          text: label.textContent,
+          rotated,
+          box,
+          sourceHeight,
+          restored
+        });
+      }
+      if (!drawItems.length) return src;
+      ctx.putImageData(combined, 0, 0);
+      const fontFamily = getComputedStyle(host).fontFamily || "sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      for (const item of drawItems) {
+        const [x0, y0, x1, y1] = item.restored.box;
+        const labelWidth = Math.max(1, x1 - x0);
+        const labelHeight = Math.max(1, y1 - y0);
+        const cx = item.rotated ? (y0 + y1) / 2 : (x0 + x1) / 2;
+        const cy = item.rotated ? canvas.height - (x0 + x1) / 2 : (y0 + y1) / 2;
+        let size = Math.min(labelHeight, (item.box[3] - item.box[1]) * item.sourceHeight) * 0.8;
+        ctx.font = `${size}px ${fontFamily}`;
+        size *= Math.min(1, labelWidth / Math.max(1, ctx.measureText(item.text).width));
+        size = Math.max(size, Math.min(labelHeight * 0.75, 8));
+        ctx.font = `${size}px ${fontFamily}`;
+        ctx.save();
+        ctx.translate(cx, cy);
+        if (item.rotated) ctx.rotate(-Math.PI / 2);
+        if (item.restored.fallback) {
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(-labelWidth / 2, -labelHeight / 2, labelWidth, labelHeight);
+        }
+        ctx.fillStyle = `rgb(${item.restored.color.join(",")})`;
+        ctx.fillText(item.text, 0, 0);
+        ctx.restore();
+      }
+      const dataURL = canvas.toDataURL("image/png");
+      host._litmtransTranslatedPreviewCache = { signature, url: dataURL };
+      return dataURL;
+    } catch (_) {
+      return src;
+    } finally {
+      canvas.width = canvas.height = 1;
+    }
+  }
+
+  function findFormulaBlockForNumber(numberBlock) {
+    if (!numberBlock?.classList?.contains("type-formula_number")) return null;
+    const page = numberBlock.closest(".layout-page");
+    const numBox = parseLayoutBlockBox(numberBlock);
+    if (!page || !numBox) return null;
+    let best = null;
+    let bestScore = Infinity;
+    for (const candidate of page.querySelectorAll(".layout-block.layout-formula, .layout-block.layout-image.type-interline_equation, .layout-block.layout-image.type-equation")) {
+      const candBox = parseLayoutBlockBox(candidate);
+      if (!candBox || candBox.left > numBox.right + 2) continue;
+      const vOverlap = Math.max(0, Math.min(numBox.bottom, candBox.bottom) - Math.max(numBox.top, candBox.top));
+      const vGap = Math.max(0, candBox.top - numBox.bottom, numBox.top - candBox.bottom);
+      if (vOverlap <= 0 && vGap > 2.5) continue;
+      const hGap = Math.max(0, numBox.left - candBox.right);
+      const score = Math.abs(numBox.cy - candBox.cy) * 3 + vGap * 4 + hGap * 0.25;
+      if (score < bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  function resolveEquationPreviewItem(target) {
+    if (!target) return null;
+    const paired = target.classList?.contains("type-formula_number") ? findFormulaBlockForNumber(target) : null;
+    const source = paired || target;
+    const tex = source.dataset?.formulaTex
+      || source.querySelector?.("[data-formula-tex]")?.dataset?.formulaTex
+      || source.getAttribute?.("title")
+      || source.querySelector?.('annotation[encoding="application/x-tex"]')?.textContent
+      || "";
+    if (tex) {
+      const clean = tex.trim().replace(/^\\\[|\\\]$/g, "").replace(/^\$\$|\$\$$/g, "").trim();
+      const tagMatch = clean.match(/\\tag\s*\{([^{}]+)\}\s*,?\s*$/);
+      const body = tagMatch ? clean.slice(0, tagMatch.index).replace(/,\s*$/, "").trim() : clean;
+      const numberText = tagMatch
+        ? `(${String(tagMatch[1] || "").trim()})`
+        : (paired ? target.textContent.replace(/\s+/g, " ").trim() : "");
+      return { tex: body || clean, number: numberText };
+    }
+    const img = source.querySelector?.("img:not(.layout-image-cleaned)");
+    const imageURL = img?.getAttribute("src") || img?.dataset?.layoutImageSrc || "";
+    if (imageURL) {
+      return {
+        imageURL,
+        number: paired ? target.textContent.replace(/\s+/g, " ").trim() : ""
+      };
+    }
+    return null;
+  }
+
+  function resolveLayoutCaptionText(captionElement, kind) {
+    const base = captionElement.textContent.replace(/\s+/g, " ").trim();
+    const page = captionElement.closest(".layout-page");
+    if (!page || base.length > 20) return base;
+    const capBox = parseLayoutBlockBox(captionElement.closest(".layout-block, .layout-flow-stream") || captionElement);
+    if (!capBox) return base;
+    const continuationSelector = kind === "table"
+      ? ".layout-block.type-table_caption, .layout-block.layout-caption"
+      : ".layout-block.type-image_caption, .layout-block.type-chart_caption, .layout-block.layout-caption";
+    const numberedPattern = /^(?:(?:fig(?:ure)?s?[.,]?|tables?[.,]?)(?![a-z])|[图表])\s*(?:[1-9]\d*|[IVXⅠ-Ⅻ]+|[一二三四五六七八九十]{1,3})\b/i;
+    const extra = [...page.querySelectorAll(continuationSelector)]
+      .filter(node => node !== captionElement && !numberedPattern.test(node.textContent.replace(/\s+/g, " ").trim()))
+      .map(node => ({ node, box: parseLayoutBlockBox(node) }))
+      .filter(({ box }) => box && box.top >= capBox.top - 1 && box.top - capBox.bottom <= 5
+        && Math.min(box.right, capBox.right + 35) > Math.max(box.left, capBox.left - 5))
+      .sort((a, b) => a.box.top - b.box.top)[0];
+    if (!extra) return base;
+    const tail = extra.node.textContent.replace(/\s+/g, " ").trim();
+    return tail ? `${base} ${tail}` : base;
+  }
+
+  function resolveLinkPreviewPayload(link) {
+    const targetId = link?.dataset?.layoutReferenceTarget || "";
+    const target = targetId ? document.getElementById(targetId) : null;
+    if (!target) return null;
+    const kind = link.dataset.layoutReferenceKind
+      || (target.classList.contains("type-table_caption") ? "table"
+        : (targetId.startsWith("litmtrans-figure-") ? "figure"
+          : (targetId.startsWith("litmtrans-equation-") ? "equation" : "")));
+    if (kind === "equation") {
+      const ids = link.dataset.layoutReferenceTargets
+        ? link.dataset.layoutReferenceTargets.split(",").filter(Boolean)
+        : [targetId];
+      const equations = ids.map(id => resolveEquationPreviewItem(document.getElementById(id))).filter(Boolean);
+      return equations.length ? { kind: "equation", equations } : null;
+    }
+    if (kind !== "figure" && kind !== "table") return null;
+    const media = findLayoutMediaBlockForCaption(target, kind);
+    if (!media) return null;
+    const caption = resolveLayoutCaptionText(target, kind);
+    if (kind === "table") {
+      const showTranslatedTable = state.settings?.translateTables !== false;
+      if (media.classList.contains("layout-table-translation-host")) {
+        if (showTranslatedTable) {
+          const translatedTable = media.querySelector(".layout-translated-table table");
+          if (translatedTable) return { kind, caption, table: cleanPreviewTableClone(translatedTable) };
+        }
+        const originalHost = media.querySelector(".layout-table-original");
+        const originalTable = originalHost?.querySelector("table");
+        if (originalTable) return { kind, caption, table: cleanPreviewTableClone(originalTable) };
+        const originalImg = originalHost?.querySelector("img");
+        const imageURL = originalImg?.getAttribute("src") || originalImg?.dataset?.layoutImageSrc || "";
+        return imageURL ? { kind, caption, imageURL } : null;
+      }
+      const table = media.matches("table") ? media : media.querySelector("table");
+      if (table) return { kind, caption, table: cleanPreviewTableClone(table) };
+      const img = media.querySelector("img");
+      const imageURL = img?.getAttribute("src") || img?.dataset?.layoutImageSrc || "";
+      return imageURL ? { kind, caption, imageURL } : null;
+    }
+    const imageHost = media.matches(".layout-image-translation")
+      ? media
+      : media.querySelector(".layout-image-translation");
+    const rawImg = (imageHost || media).querySelector("img:not(.layout-image-cleaned)");
+    const originalURL = rawImg?.getAttribute("src") || rawImg?.dataset?.layoutImageSrc || "";
+    if (!originalURL) return null;
+    const showTranslatedImage = Boolean(state.settings?.translateImages);
+    if (imageHost && showTranslatedImage) {
+      const readyURL = translatedImagePreviewDataURL(imageHost);
+      return {
+        kind,
+        caption,
+        imageURL: readyURL || originalURL,
+        asyncImageURL: readyURL ? null : () => renderOffscreenTranslatedImageURL(imageHost)
+      };
+    }
+    return { kind, caption, imageURL: originalURL };
+  }
+
+  function positionLinkPreviewCard(card, anchorRect, anchorElement = null) {
+    const margin = 10;
+    const gap = 8;
+    const container = anchorElement?.closest?.("#reader-split, .reader-workspace")
+      || document.getElementById("reader-split")
+      || document.querySelector(".reader-workspace");
+    const containerRect = container?.getBoundingClientRect?.();
+    const minLeft = Math.max(margin, (containerRect?.left ?? 0) + margin);
+    const maxRight = Math.min(window.innerWidth - margin, (containerRect?.right ?? window.innerWidth) - margin);
+    const minTop = Math.max(margin, (containerRect?.top ?? 0) + margin);
+    const maxBottom = Math.min(window.innerHeight - margin, (containerRect?.bottom ?? window.innerHeight) - margin);
+    const availWidth = Math.max(200, maxRight - minLeft);
+    const availHeight = Math.max(160, maxBottom - minTop);
+    card.style.maxWidth = `${Math.round(Math.min(560, availWidth))}px`;
+    card.style.maxHeight = `${Math.round(Math.min(460, availHeight))}px`;
+
+    const rect = card.getBoundingClientRect();
+    const spaceBelow = maxBottom - (anchorRect.bottom + gap);
+    const spaceAbove = (anchorRect.top - gap) - minTop;
+    const spaceRight = maxRight - (anchorRect.right + gap);
+    const spaceLeft = (anchorRect.left - gap) - minLeft;
+    const fitsBelow = rect.height <= spaceBelow;
+    const fitsAbove = rect.height <= spaceAbove;
+    const fitsRight = rect.width <= spaceRight;
+    const fitsLeft = rect.width <= spaceLeft;
+
+    let left;
+    let top;
+    if (fitsBelow || fitsAbove) {
+      top = (fitsBelow && (!fitsAbove || spaceBelow >= spaceAbove || anchorRect.bottom + gap + rect.height <= maxBottom))
+        ? anchorRect.bottom + gap
+        : anchorRect.top - gap - rect.height;
+      left = Math.max(minLeft, Math.min(maxRight - rect.width, anchorRect.left));
+    } else if (fitsLeft || fitsRight) {
+      left = (fitsLeft && (!fitsRight || spaceLeft >= spaceRight))
+        ? anchorRect.left - gap - rect.width
+        : anchorRect.right + gap;
+      top = Math.max(minTop, Math.min(maxBottom - rect.height, anchorRect.top));
+    } else {
+      // 上下左右均不足以完整容纳时，选垂直空间更大一侧并收缩卡片高度，避免覆盖超链接或越界被侧栏遮挡。
+      const putBelow = spaceBelow >= spaceAbove;
+      const clampedHeight = Math.max(120, Math.min(460, putBelow ? spaceBelow : spaceAbove));
+      card.style.maxHeight = `${Math.round(clampedHeight)}px`;
+      const resized = card.getBoundingClientRect();
+      top = putBelow
+        ? anchorRect.bottom + gap
+        : Math.max(minTop, anchorRect.top - gap - resized.height);
+      left = Math.max(minLeft, Math.min(maxRight - resized.width, anchorRect.left));
+    }
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(top)}px`;
+  }
+
+  function bindReferenceLinkPreview() {
+    let card = document.getElementById("layout-link-preview");
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "layout-link-preview";
+      card.className = "layout-link-preview";
+      card.setAttribute("role", "tooltip");
+      card.hidden = true;
+      document.body.appendChild(card);
+    }
+    let activeLink = null;
+    let showTimer = null;
+    let hideTimer = null;
+    let serial = 0;
+
+    const suppressTitle = link => {
+      if (!link || link.dataset.savedPreviewTitle !== undefined) return;
+      const current = link.getAttribute("title");
+      if (current != null) {
+        link.dataset.savedPreviewTitle = current;
+        link.removeAttribute("title");
+      }
+    };
+    const restoreTitle = link => {
+      if (!link || link.dataset.savedPreviewTitle === undefined) return;
+      link.setAttribute("title", link.dataset.savedPreviewTitle);
+      delete link.dataset.savedPreviewTitle;
+    };
+    const hideCard = () => {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      showTimer = null;
+      hideTimer = null;
+      serial++;
+      if (activeLink) {
+        restoreTitle(activeLink);
+        activeLink = null;
+      }
+      card.hidden = true;
+      card.replaceChildren();
+    };
+    const scheduleHide = () => {
+      clearTimeout(showTimer);
+      showTimer = null;
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(hideCard, 180);
+    };
+    const showForLink = link => {
+      const payload = resolveLinkPreviewPayload(link);
+      if (!payload) return;
+      const currentSerial = ++serial;
+      if (activeLink && activeLink !== link) restoreTitle(activeLink);
+      activeLink = link;
+      suppressTitle(link);
+
+      const content = document.createDocumentFragment();
+      let imgEl = null;
+      if (payload.kind === "equation" && payload.equations?.length) {
+        const list = document.createElement("div");
+        list.className = "layout-link-preview-equations";
+        for (const item of payload.equations) {
+          const row = document.createElement("div");
+          row.className = "layout-link-preview-equation-row";
+          if (item.tex) {
+            const math = document.createElement("div");
+            math.className = "layout-link-preview-equation-math";
+            const rendered = Markdown?.renderTeX
+              ? Markdown.renderTeX(item.tex, true)
+              : U.escapeHTML(item.tex);
+            safeSetElementHTML(math, rendered);
+            row.appendChild(math);
+          } else if (item.imageURL) {
+            const eqImg = document.createElement("img");
+            eqImg.className = "layout-link-preview-equation-image";
+            eqImg.alt = item.number || "";
+            eqImg.src = item.imageURL;
+            eqImg.addEventListener("load", () => {
+              if (currentSerial === serial && !card.hidden && activeLink?.isConnected) {
+                positionLinkPreviewCard(card, activeLink.getBoundingClientRect(), activeLink);
+              }
+            }, { once: true });
+            row.appendChild(eqImg);
+          }
+          if (item.number) {
+            const num = document.createElement("span");
+            num.className = "layout-link-preview-equation-num";
+            num.textContent = item.number;
+            row.appendChild(num);
+          }
+          list.appendChild(row);
+        }
+        content.appendChild(list);
+      } else if (payload.table) {
+        const wrap = document.createElement("div");
+        wrap.className = "layout-link-preview-table-wrap";
+        wrap.appendChild(payload.table);
+        content.appendChild(wrap);
+      } else if (payload.imageURL) {
+        imgEl = document.createElement("img");
+        imgEl.className = "layout-link-preview-image";
+        imgEl.alt = payload.caption || "";
+        imgEl.src = payload.imageURL;
+        imgEl.addEventListener("load", () => {
+          if (currentSerial === serial && !card.hidden && activeLink?.isConnected) {
+            positionLinkPreviewCard(card, activeLink.getBoundingClientRect(), activeLink);
+          }
+        }, { once: true });
+        content.appendChild(imgEl);
+      }
+      if (payload.caption) {
+        const caption = document.createElement("div");
+        caption.className = "layout-link-preview-caption";
+        caption.textContent = payload.caption;
+        content.appendChild(caption);
+      }
+      card.replaceChildren(content);
+      card.hidden = false;
+      positionLinkPreviewCard(card, link.getBoundingClientRect(), link);
+      if (imgEl && payload.asyncImageURL) {
+        void payload.asyncImageURL().then(url => {
+          if (currentSerial !== serial || card.hidden || !imgEl.isConnected || !url || url === imgEl.src) return;
+          imgEl.addEventListener("load", () => {
+            if (currentSerial === serial && !card.hidden && activeLink?.isConnected) {
+              positionLinkPreviewCard(card, activeLink.getBoundingClientRect(), activeLink);
+            }
+          }, { once: true });
+          imgEl.src = url;
+        }).catch(() => {});
+      }
+    };
+
+    document.addEventListener("mouseover", event => {
+      const link = event.target?.closest?.("a[data-layout-reference-target]");
+      if (!link) return;
+      const targetId = link.dataset.layoutReferenceTarget || "";
+      const kind = link.dataset.layoutReferenceKind
+        || (targetId.startsWith("litmtrans-figure-") ? "figure"
+          : (targetId.startsWith("litmtrans-equation-") ? "equation" : ""));
+      if (!kind) return;
+      clearTimeout(hideTimer);
+      hideTimer = null;
+      if (activeLink === link && !card.hidden) return;
+      clearTimeout(showTimer);
+      showTimer = setTimeout(() => {
+        if (!link.isConnected) return;
+        showForLink(link);
+      }, 90);
+    });
+    document.addEventListener("mouseout", event => {
+      const fromLink = event.target?.closest?.("a[data-layout-reference-target]");
+      if (!fromLink) return;
+      const to = event.relatedTarget;
+      if (to && (fromLink.contains(to) || card.contains(to))) return;
+      if (activeLink === fromLink || showTimer) scheduleHide();
+    });
+    card.addEventListener("mouseenter", () => {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    });
+    card.addEventListener("mouseleave", event => {
+      const to = event.relatedTarget;
+      if (to && activeLink && activeLink.contains(to)) return;
+      scheduleHide();
+    });
+    document.addEventListener("scroll", event => {
+      if (card.hidden) return;
+      if (event.target instanceof Node && card.contains(event.target)) return;
+      hideCard();
+    }, true);
+    document.addEventListener("click", event => {
+      if (card.hidden) return;
+      if (event.target instanceof Node && card.contains(event.target)) return;
+      hideCard();
+    }, true);
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !card.hidden) hideCard();
+    });
+  }
+
   function bindLayoutInteractions() {
     let menu = null;
     const removeMenu = () => {
@@ -8862,7 +9861,7 @@
         return;
       }
       const image = event.target?.closest?.(".layout-block.layout-image img, #source-content img, #translation-content img")
-        || event.target?.closest?.(".layout-image-translation")?.querySelector("img:not(.layout-image-cleaned)");
+        || event.target?.closest?.(".layout-image-translation, .layout-block.layout-image")?.querySelector("img:not(.layout-image-cleaned)");
       if (image) {
         event.preventDefault();
         const pane = readerPaneForTarget(image);
@@ -10831,30 +11830,82 @@
     bind(els["source-scroll"], els["translation-scroll"]);
     bind(els["translation-scroll"], els["source-scroll"]);
     let readerJumpFrame = null;
+    let readerJumpInFlight = false;
+    let pendingReaderJump = null;
+    let layoutSyncSettleTimer = 0;
     const translationScroll = els["translation-scroll"];
-    const allowTranslationScroll = () => { translationScroll._litmtransProgrammaticUntil = 0; };
-    translationScroll.addEventListener("wheel", allowTranslationScroll, { passive: true });
-    translationScroll.addEventListener("pointerdown", allowTranslationScroll, { passive: true });
+    const markTranslationLayoutIntent = () => {
+      translationScroll._litmtransProgrammaticUntil = 0;
+      state.readerSyncUntil = 0;
+      if (state.mode === "layout") {
+        state.layoutSyncLeader = "translation";
+        state.layoutSyncLeaderUntil = performance.now() + 900;
+      }
+    };
+    translationScroll.addEventListener("wheel", markTranslationLayoutIntent, { passive: true });
+    translationScroll.addEventListener("pointerdown", markTranslationLayoutIntent, { passive: true });
+    translationScroll.addEventListener("touchstart", markTranslationLayoutIntent, { passive: true });
+    translationScroll.addEventListener("keydown", markTranslationLayoutIntent, { passive: true });
+    const flushReaderJump = () => {
+      if (state.mode !== "layout" || !state.syncScroll || state.layoutSyncLeader === "source") {
+        pendingReaderJump = null;
+        return;
+      }
+      if (readerJumpInFlight || !pendingReaderJump) return;
+      const next = pendingReaderJump;
+      pendingReaderJump = null;
+      readerJumpInFlight = true;
+      state.readerSyncUntil = performance.now() + 260;
+      state.readerSyncPage = next.page;
+      state.readerSyncPageRatio = next.pageRatio;
+      void hostCall("reader-preview-jump", {
+        page: next.page,
+        pageRatio: next.pageRatio,
+        anchorRatio: next.anchorRatio,
+        syncScroll: true
+      }).catch(() => {}).finally(() => {
+        readerJumpInFlight = false;
+        if (pendingReaderJump) flushReaderJump();
+      });
+    };
+    const syncTranslationToSource = (force = false) => {
+      if (state.mode !== "layout" || !state.syncScroll || state.layoutSyncLeader === "source") {
+        pendingReaderJump = null;
+        return;
+      }
+      const location = layoutPageAtViewportAnchor(translationScroll, .35);
+      if (!location) return;
+      const page = location.page;
+      if (!force && page === state.readerSyncPage && Math.abs(location.pageRatio - state.readerSyncPageRatio) * location.pageHeight < 1) return;
+      pendingReaderJump = {
+        page,
+        pageRatio: location.pageRatio,
+        anchorRatio: location.anchorRatio
+      };
+      flushReaderJump();
+    };
     els["translation-scroll"].addEventListener("scroll", () => {
       if (state.mode !== "layout" || !state.syncScroll) return;
-      if (performance.now() < Number(els["translation-scroll"]._litmtransProgrammaticUntil || 0)) return;
+      const now = performance.now();
+      const programmaticUntil = Number(translationScroll._litmtransProgrammaticUntil || 0);
+      const programmaticTarget = Number(translationScroll._litmtransProgrammaticTarget);
+      if (now < programmaticUntil) {
+        if (!Number.isFinite(programmaticTarget) || Math.abs(translationScroll.scrollTop - programmaticTarget) <= 3) return;
+        markTranslationLayoutIntent();
+      }
+      state.layoutSyncLeader = "translation";
+      state.layoutSyncLeaderUntil = now + 900;
+      clearTimeout(layoutSyncSettleTimer);
+      layoutSyncSettleTimer = setTimeout(() => {
+        layoutSyncSettleTimer = 0;
+        if (state.mode === "layout" && state.syncScroll && state.layoutSyncLeader === "translation") {
+          syncTranslationToSource(true);
+        }
+      }, 110);
       if (readerJumpFrame) return;
       readerJumpFrame = requestAnimationFrame(() => {
         readerJumpFrame = null;
-        if (state.mode !== "layout" || !state.syncScroll) return;
-        const location = layoutPageAtViewportAnchor(translationScroll, .35);
-        if (!location) return;
-        const page = location.page;
-        if (page === state.readerSyncPage && Math.abs(location.pageRatio - state.readerSyncPageRatio) * location.pageHeight < 1) return;
-        state.readerSyncUntil = performance.now() + 120;
-        state.readerSyncPage = page;
-        state.readerSyncPageRatio = location.pageRatio;
-        void hostCall("reader-preview-jump", {
-          page,
-          pageRatio: location.pageRatio,
-          anchorRatio: location.anchorRatio,
-          syncScroll: true
-        }).catch(() => {});
+        syncTranslationToSource(false);
       });
     }, { passive: true });
   }
@@ -11171,6 +12222,7 @@
 
   function bindEvents() {
     bindEditableContextMenu();
+    bindReferenceLinkPreview();
     document.addEventListener("click", event => {
       const link = event.target?.closest?.("a");
       if (!link) return;
@@ -11181,12 +12233,26 @@
       }
       if (link.dataset.layoutReferenceTarget) {
         event.preventDefault();
-        const target = document.getElementById(link.dataset.layoutReferenceTarget);
-        if (target) {
+        const ids = link.dataset.layoutReferenceTargets
+          ? link.dataset.layoutReferenceTargets.split(',').filter(Boolean)
+          : [link.dataset.layoutReferenceTarget];
+        const targets = ids.map(id => document.getElementById(id)).filter(Boolean);
+        if (targets.length) {
           for (const entry of document.querySelectorAll('.layout-reference-focus')) entry.classList.remove('layout-reference-focus');
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          target.classList.add('layout-reference-focus');
-          setTimeout(() => target.classList.remove('layout-reference-focus'), 2000);
+          const primary = (targets[0].classList?.contains('type-formula_number') ? findFormulaBlockForNumber(targets[0]) : null) || targets[0];
+          primary.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          for (const target of targets) {
+            target.classList.add('layout-reference-focus');
+            const paired = target.classList?.contains('type-formula_number') ? findFormulaBlockForNumber(target) : null;
+            if (paired) paired.classList.add('layout-reference-focus');
+          }
+          setTimeout(() => {
+            for (const target of targets) {
+              target.classList.remove('layout-reference-focus');
+              const paired = target.classList?.contains('type-formula_number') ? findFormulaBlockForNumber(target) : null;
+              if (paired) paired.classList.remove('layout-reference-focus');
+            }
+          }, 2000);
         }
         return;
       }
@@ -12039,7 +13105,37 @@
     els["image-preview-zoom-in"].addEventListener("click", () => applyPreviewScale(state.previewScale * 1.2));
     els["image-preview-zoom-out"].addEventListener("click", () => applyPreviewScale(state.previewScale / 1.2));
     els["image-preview-fit"].addEventListener("click", fitPreviewImage);
+    els["table-preview-original-image"].addEventListener("load", () => {
+      if (!state.previewTable) return;
+      if (!els["table-preview-original"].hidden) {
+        syncTablePreviewLayout();
+        fitPreviewImage();
+      }
+    });
+    els["table-preview-original-image"].addEventListener("error", () => {
+      if (!state.previewTable?.originalHTML) return;
+      const img = els["table-preview-original-image"];
+      img.hidden = true;
+      img.removeAttribute("src");
+      const originalBody = els["table-preview-original-body"];
+      safeSetElementHTML(originalBody, state.previewTable.originalHTML);
+      originalBody.style.width = `${state.previewTable.baseWidth || 640}px`;
+      originalBody.style.transform = "";
+      els["table-preview-original-content"].hidden = false;
+      if (!els["table-preview-original"].hidden) {
+        syncTablePreviewLayout();
+        fitPreviewImage();
+      }
+    });
     els["image-preview-compare"].addEventListener("click", () => {
+      if (state.previewTable) {
+        const original = els["table-preview-original"];
+        original.hidden = !original.hidden;
+        els["image-preview-compare"].setAttribute("aria-pressed", String(!original.hidden));
+        syncTablePreviewLayout();
+        fitPreviewImage();
+        return;
+      }
       const original = els["image-preview-original"];
       original.hidden = !original.hidden;
       els["image-preview-compare"].setAttribute("aria-pressed", String(!original.hidden));
@@ -12055,9 +13151,16 @@
       els["image-preview-image"].removeAttribute("src");
       els["image-preview-original"].removeAttribute("src");
       els["image-preview-original"].hidden = true;
+      els["table-preview-original"].hidden = true;
+      els["table-preview-original-image"].removeAttribute("src");
+      els["table-preview-original-image"].hidden = true;
+      els["table-preview-original-content"].hidden = true;
+      els["table-preview-original-body"].replaceChildren();
       els["image-preview-compare"].setAttribute("aria-pressed", "false");
       state.previewImage = null;
       state.previewTable = null;
+      els["table-preview-body"].style.lineHeight = "";
+      els["table-preview-body"].style.removeProperty("--table-preview-pad-y");
       els["table-preview-body"].replaceChildren();
       setPreviewTableMode(false);
       state.previewScale = 1;
@@ -13629,6 +14732,35 @@
         ? `${Math.round(Math.max(0, metrics.lastBottom) / node.clientHeight * 100)}%` : '—';
       node.dataset.debugLabel = `${type}，${fontText}，${occupancy}`;
       setDiagnosticTitle(node, `${node.dataset.debugLabel}（字号：pt；占用率：文字末行到框顶的高度／块高度）\n${node.dataset.bodyStyleInheritance || ''}\n${node.dataset.fitDebug || ''}`);
+      alignImageOCRDebugBoxes(node);
+    }
+  }
+
+  function alignImageOCRDebugBoxes(node) {
+    const boxes = [...node.querySelectorAll('.layout-image-ocr-debug-box')];
+    if (!boxes.length) return;
+    const image = node.querySelector('img:not(.layout-image-cleaned)');
+    const paint = () => {
+      const boxW = node.clientWidth, boxH = node.clientHeight;
+      const nw = image?.naturalWidth || 0, nh = image?.naturalHeight || 0;
+      const scale = boxW > 0 && boxH > 0 && nw > 0 && nh > 0 ? Math.min(boxW / nw, boxH / nh) : 0;
+      const dispW = scale ? nw * scale : boxW, dispH = scale ? nh * scale : boxH;
+      const offsetX = scale ? (boxW - dispW) / 2 : 0, offsetY = scale ? (boxH - dispH) / 2 : 0;
+      for (const boxNode of boxes) {
+        let box;
+        try { box = JSON.parse(boxNode.dataset.box || 'null'); } catch (_) { box = null; }
+        if (!Array.isArray(box) || box.length !== 4) continue;
+        boxNode.style.left = `${offsetX + box[0] * dispW}px`;
+        boxNode.style.top = `${offsetY + box[1] * dispH}px`;
+        boxNode.style.width = `${Math.max(2, (box[2] - box[0]) * dispW)}px`;
+        boxNode.style.height = `${Math.max(2, (box[3] - box[1]) * dispH)}px`;
+        if (boxNode.dataset.debugTitle) boxNode.title = boxNode.dataset.debugTitle;
+      }
+    };
+    if (!image || image.complete) paint();
+    else if (!node._litmtransOCRDebugWaiting) {
+      node._litmtransOCRDebugWaiting = true;
+      image.addEventListener('load', () => { node._litmtransOCRDebugWaiting = false; paint(); }, { once: true });
     }
   }
 

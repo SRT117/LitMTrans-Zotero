@@ -134,8 +134,19 @@ module.exports = function createSuite(env) {
       await assert.rejects(service.poll(task, "test", async v => persisted.push(clone(v)), {}, null, null), /500/);
       assert.equal(calls, 1);
       assert.equal(persisted[0].state, "failed");
-      H.requestJSON = async () => ({ code: 0, data: { state: "done", resultUrl: { jsonUrl: "https://example.invalid/result" } } });
-      assert.equal(await service.poll(task, "test", async () => {}, {}, null, null), "https://example.invalid/result");
+      const states = [
+        { state: "pending" },
+        { state: "running" },
+        { state: "running", extractProgress: { extractedPages: 2, totalPages: 5 } },
+        { state: "done", resultUrl: { jsonUrl: "https://example.invalid/result" } }
+      ];
+      const events = [];
+      H.requestJSON = async () => ({ code: 0, data: states.shift() });
+      assert.equal(await service.poll(task, "test", async () => {}, { pollIntervalMs: 0 }, event => events.push(event), null), "https://example.invalid/result");
+      assert.equal(events.length, 3);
+      assert.match(events[0].message, /正在等待Paddle解析结果（排队中，已等待 \d+ 秒）/);
+      assert.match(events[1].message, /正在等待Paddle解析结果（处理中，已等待 \d+ 秒）/);
+      assert.equal(events[2].message, "Paddle解析中：2/5 页");
       const controller = new AbortController(); controller.abort();
       await assert.rejects(service.poll(task, "test", async () => {}, {}, null, controller.signal), error => error.cancelled);
     }

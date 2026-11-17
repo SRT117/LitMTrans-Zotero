@@ -2266,9 +2266,10 @@
       const model = await this.buildBaseModel(documentID, translations, formulaReplacements, knownRevision, signal, emit);
       if (!LitMTrans.LayoutTables) return model;
       const paths = this.paths(documentID, knownRevision?.targetLanguage || this.llm.getSettings().targetLanguage);
-      const [cache, imageCache, documentMeta] = await Promise.all([
+      const [cache, imageCache, ocrCache, documentMeta] = await Promise.all([
         this.storage.readJSON(paths.tables, null),
         this.storage.readJSON(paths.images, null),
+        this.storage.readJSON(this.storage.path(documentID, "image-ocr.v1.json"), null),
         this.storage.getDocumentMeta?.(documentID)
       ]);
       let sourceLayout = null;
@@ -2277,7 +2278,7 @@
         try { sourceLayout = { pages: JSON.parse(rawLayout).pdf_info }; } catch (_) {}
       }
       const parseRevisionID = documentMeta?.parseRevisionID || "";
-      return LitMTrans.LayoutImages.attach(LitMTrans.LayoutTables.attach(model, cache), imageCache, parseRevisionID, sourceLayout);
+      return LitMTrans.LayoutImages.attach(LitMTrans.LayoutTables.attach(model, cache), imageCache, parseRevisionID, sourceLayout, ocrCache);
     }
 
     async buildBaseModel(documentID, translations = null, formulaReplacements = null, knownRevision = null, signal = null, emit = null) {
@@ -2838,7 +2839,9 @@
     manualTableInstruction(records, requestCode = records.requestCode) {
       return (requestCode ? `每轮回答的代码块首行原样输出 {"request":"${requestCode}"}，只输出一次任务码。\n` : "")
         + (records.some(record => ["table_cells", "image_labels"].includes(record.type))
-          ? 'T1、T2 是表格，I1、I2 是图片。每个 cells 内从 1 开始连续编号，按 [编号,译文] 返回，保留编号和 ⟦0⟧ 等标记：{"id":"I1","cells":[[1,"译文"]]}。\n' : "");
+          ? 'T1、T2 是表格，I1、I2 是图片。每个 cells 内从 1 开始连续编号，按 [编号,译文] 返回，保留编号和 ⟦0⟧ 等标记：{"id":"I1","cells":[[1,"译文"]]}。\n' : "")
+        + (records.some(record => record.type === "image_labels")
+          ? '对于图片 image_labels，逐个判断 cell 是否确实需要翻译：需要时返回译文并保留 ⟦0⟧ 等标记；纯公式、变量、单位、化学式、数值、无需翻译的缩写或已是目标语言的文字等，返回固定文本“无需翻译”，无需保留该 cell 内的标记。不要猜测或展开符号、缩写，也不要省略任何编号。含有需要翻译的自然语言时只翻译文字、保留符号和单位。“无需翻译”仅适用于图片标签，不适用于表格或正文。\n' : "");
     }
 
     async importManualTranslation(documentID, responses, emit = null) {
@@ -3157,6 +3160,9 @@
           : "") +
         (settings.hasTableTargets || settings.hasImageTargets
           ? "Translate the table_cells and image_labels records at the end last. These contain only supplied text, never reconstruct images or invent labels. Each record uses consecutive local cell indices starting at 1. Return {\"id\":\"...\",\"cells\":[[1,\"translation\"]]}, preserving each cell index and marker such as ⟦0⟧.\n"
+          : "") +
+        (group.some(record => record.type === "image_labels")
+          ? 'For image_labels only, judge each cell individually: translate it only if it actually needs translation. For formulas, variables, units, chemical formulas, numbers, abbreviations that need no translation, or text already in the target language, return exactly "无需翻译" as the cell value, without its protected markers. Do not guess or expand symbols or abbreviations. For mixed natural language and symbols, translate only the words that need translation and preserve the symbols, units, and protected markers. Keep every cell index, including skipped cells. Never use this sentinel for table_cells or body text.\n'
           : "") +
         "\nInput blocks JSON:\n" + this.formatRequestBlocks(requestRecords)
       );

@@ -4,6 +4,9 @@
   const U = L.Utils;
   const validBox = box => Array.isArray(box) && box.length === 4 && box.every(Number.isFinite) && box[2] > box[0] && box[3] > box[1];
   const fingerprint = layout => U.hashString(layout.rawText || "");
+  const noTranslation = value => typeof value === "string" && value.trim() === "无需翻译";
+  const unchangedImageText = (cell, value) => typeof value === "string" && value.trim() === String(cell?.text || "").trim();
+  const validImageText = (cell, value) => noTranslation(value) || L.LayoutTables.validText(cell, value);
 
   function isPageFurniture(block) {
     const source = block?.original || block;
@@ -359,7 +362,7 @@
 
   function normalizeImageLines(lines, geometry = true) {
     const cleaned = (geometry ? mergeAdjacentRotatedWords(lines) : lines)
-      .map(line => ({ ...line, text: line.text.replace(/^[\s|.·•\-–—─━]+(?=[A-Za-z])/, "") }));
+      .map(line => ({ ...line, text: line.text.replace(/^(?:[\s|·•─━]+|-{2,}|–{2,}|—+|\.(?=\d+[A-Za-z])|-(?=[A-Za-z]))+/, "") }));
     const candidates = cleaned.map(line => line.text).filter(text => /^[A-Za-z ]{10,}$/.test(text));
     const counts = new Map();
     for (const text of candidates) counts.set(text, (counts.get(text) || 0) + 1);
@@ -406,7 +409,7 @@
     });
   }
 
-  function repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background) {
+  function repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background, protectedMask = null) {
     const values = new Float32Array(w * h * 3), holes = [];
     const ink = [[], [], []];
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -418,7 +421,10 @@
     const inkColor = ink.map(channel => { channel.sort((a, b) => a - b);return channel[Math.floor(channel.length / 2)]; });
     const blocked = new Uint8Array(foreground);
     for (let i = 0; i < w * h; i++) {
-      if (!accepted[i] && Math.max(...inkColor.map((value, c) => Math.abs(values[i * 3 + c] - value))) < 38) blocked[i] = 1;
+      if (accepted[i]) continue;
+      if ((protectedMask && protectedMask[i])
+        || Math.max(...inkColor.map((value, c) => Math.abs(values[i * 3 + c] - value))) < 38
+        || [0, 1, 2].some(c => values[i * 3 + c] < background[i * 3 + c] - 32)) blocked[i] = 1;
     }
     // 从可用背景向笔画内部逐层初始化，避免旧的单列取样污染迭代初值。
     const ready = new Uint8Array(w * h), queue = new Uint32Array(w * h);
@@ -476,25 +482,50 @@
       const i = (Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))) * 4;
       return [pixels[i], pixels[i + 1], pixels[i + 2]];
     };
-    const edge = y => Array.from({ length: w }, (_, x) => {
-      const samples = [];
-      for (let dx = -3; dx <= 3; dx++) for (let dy = -1; dy <= 1; dy++) samples.push(sample(left + x + dx, y + dy));
-      return [0, 1, 2].map(channel => median(samples.map(rgb => rgb[channel])));
-    });
-    const upper = edge(top - 2), lower = edge(bottom + 1);
-    const background = new Uint8ClampedArray(size * 3), mask = new Uint8Array(size), chosen = new Uint8Array(size), graphics = new Uint8Array(size), queue = new Uint32Array(size);
     const protectedPixel = (x, y) => protectedBoxes.some(b => x >= b[0] * width - 1 && x <= b[2] * width + 1 && y >= b[1] * height - 1 && y <= b[3] * height + 1);
     const neighborPixel = (x, y) => neighborBoxes.some(b => validBox(b) && x >= b[0] * width && x < b[2] * width && y >= b[1] * height && y < b[3] * height);
-    const white = [[], [], []];
+    const edge = (y, altY) => Array.from({ length: w }, (_, x) => {
+      const clean = [], fallback = [], gapLight = [];
+      for (let dx = -3; dx <= 3; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const sx = left + x + dx, sy = y + dy;
+        const rgb = sample(sx, sy);
+        fallback.push(rgb);
+        if (!neighborPixel(sx, sy) && !protectedPixel(sx, sy)) clean.push(rgb);
+        if (Math.min(...rgb) >= 215) gapLight.push(rgb);
+      }
+      if (clean.length < 3 && Number.isFinite(altY)) {
+        for (let dx = -3; dx <= 3; dx++) for (let dy = 0; dy <= pad; dy++) {
+          const sy = y < altY ? y + 2 + dy : y - 2 - dy;
+          const rgb = sample(left + x + dx, sy);
+          if (Math.min(...rgb) >= 215) gapLight.push(rgb);
+        }
+      }
+      // 优先过滤邻行文字及暗色线条；若采样整行落入邻框，则回退到边界缝隙中的浅色原生底色。
+      const veryLight = clean.filter(rgb => Math.min(...rgb) >= 215);
+      const light = veryLight.length >= 3 ? veryLight : clean.filter(rgb => Math.max(...rgb) >= 180);
+      const pool = light.length >= 3 ? light : (clean.length ? clean : (gapLight.length >= 3 ? gapLight : fallback));
+      return [0, 1, 2].map(channel => median(pool.map(rgb => rgb[channel])));
+    });
+    const upper = edge(top - 2, top), lower = edge(bottom + 1, bottom);
+    const background = new Uint8ClampedArray(size * 3), mask = new Uint8Array(size), chosen = new Uint8Array(size), graphics = new Uint8Array(size), queue = new Uint32Array(size);
+    const outer = [[], [], []];
     let sampled = 0;
     for (let y = Math.max(0, top - pad); y < Math.min(height, bottom + pad); y++) for (let x = left; x < right; x++) {
       if ((x >= box[0] * width && x < box[2] * width && y >= box[1] * height && y < box[3] * height)
         || neighborPixel(x, y) || protectedPixel(x, y)) continue;
       sampled++;
       const rgb = sample(x, y);
-      if (rgb.every(value => value >= 235)) for (let c = 0; c < 3; c++) white[c].push(rgb[c]);
+      if (rgb.every(value => value >= 200)) for (let c = 0; c < 3; c++) outer[c].push(rgb[c]);
     }
-    const whiteColor = sampled && white[0].length >= 30 && white[0].length / sampled >= .65 ? white.map(median) : null;
+    let whiteColor = null;
+    if (sampled && outer[0].length >= 30 && outer[0].length / sampled >= .55) {
+      const candidate = outer.map(values => median([...values]));
+      let matching = 0;
+      for (let i = 0; i < outer[0].length; i++) {
+        if ([0, 1, 2].every(c => Math.abs(outer[c][i] - candidate[c]) <= 12)) matching++;
+      }
+      if (matching / outer[0].length >= .85) whiteColor = candidate;
+    }
     let neutralInk = 0, coloredInk = 0;
     for (let y = Math.max(0, Math.floor(box[1] * height)); y < Math.min(height, Math.ceil(box[3] * height)); y++) {
       for (let x = Math.max(0, Math.floor(box[0] * width)); x < Math.min(width, Math.ceil(box[2] * width)); x++) {
@@ -537,9 +568,9 @@
         }
       }
       const cw = x1 - x0, ch = y1 - y0;
-      // 长引线与跨出文字区域的图形保留；只擦除接近字高的小笔画连通域。
+      // 长引线与跨出文字区域的图形保留；只擦除接近字高的小笔画连通域，避免把连写小写单词误判为水平线。
       const graphic = ch > expected * 1.3 || tail > size * .35
-        || (cw > Math.max(ch * 3, expected * 1.4) && ch < expected * .5)
+        || (cw > Math.max(ch * 3, expected * 1.4) && (ch <= Math.max(4, expected * .25) || (ch < expected * .34 && tail / (cw * ch) > .78)))
         || (ch > cw * 5 && (y0 === 0 || y1 === h));
       if (graphic) { for (let i = 0; i < tail; i++) graphics[queue[i]] = 1;continue; }
       if (tail >= 2 && cw <= expected * .45 && ch <= expected * .45) {
@@ -574,33 +605,41 @@
     let x0 = Math.max(0, Math.min(...components.map(b => b[0])) - 3), y0 = Math.max(0, Math.min(...components.map(b => b[1])) - 3);
     let x1 = Math.min(w, Math.max(...components.map(b => b[2])) + 3), y1 = Math.min(h, Math.max(...components.map(b => b[3])) + 3);
     if (x1 <= x0 || y1 <= y0) return null;
-    repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background);
-    // 白底图中文字行相邻时，上下边缘可能采到另一行，优先用邻近的白色原生背景。
+    const protectedMask = new Uint8Array(size);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (protectedPixel(left + x, top + y) || neighborPixel(left + x, top + y) || coloredPixel(left + x, top + y)) protectedMask[y * w + x] = 1;
+    }
+    repairImageLabelBackground(pixels, width, left, top, w, h, accepted, chosen, foreground, background, protectedMask);
+    // 均匀浅底图中文字行相邻时，上下边缘可能采到另一行，优先用邻近的均匀原生背景。
     if (whiteColor) {
       const color = whiteColor;
-      // 白底下清理 OCR 框内遗漏的浅色抗锯齿，同时保留相邻行和已识别的图形。
-      const bx0 = Math.max(0, Math.floor(box[0] * width) - left), by0 = Math.max(0, Math.floor(box[1] * height) - top);
-      const bx1 = Math.min(w, Math.ceil(box[2] * width) - left), by1 = Math.min(h, Math.ceil(box[3] * height) - top);
+      // 浅色纯底下仅清理文字连通域外框内遗漏的浅色抗锯齿，保留引线等图形，也不把框外留白或引线纳入译文区域。
+      const bx0 = Math.max(x0, Math.floor(box[0] * width) - left), by0 = Math.max(y0, Math.floor(box[1] * height) - top);
+      const bx1 = Math.min(x1, Math.ceil(box[2] * width) - left), by1 = Math.min(y1, Math.ceil(box[3] * height) - top);
       for (let y = by0; y < by1; y++) for (let x = bx0; x < bx1; x++) {
         const i = y * w + x;
+        if (graphics[i] || accepted[i]) continue;
         const rgb = sample(left + x, top + y);
         if (!coloredPixel(left + x, top + y) && !neighborPixel(left + x, top + y) && !protectedPixel(left + x, top + y)
           && Math.max(...rgb) - Math.min(...rgb) < 45 && rgb.some((value, c) => value < color[c] - 4)) accepted[i] = 1;
       }
-      x0 = Math.min(x0, bx0);y0 = Math.min(y0, by0);x1 = Math.max(x1, bx1);y1 = Math.max(y1, by1);
       for (let i = 0; i < size; i++) if (accepted[i]) for (let c = 0; c < 3; c++) background[i * 3 + c] = color[c];
     }
-    const patch = new Uint8ClampedArray((x1 - x0) * (y1 - y0) * 4), colors = [[], [], []];
+    const patch = new Uint8ClampedArray((x1 - x0) * (y1 - y0) * 4), colors = [[], [], []], darkColors = [[], [], []];
     let changed = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
       const index = y * w + x, at = ((y - y0) * (x1 - x0) + x - x0) * 4, rgb = sample(left + x, top + y);
       for (let c = 0; c < 3; c++) patch[at + c] = accepted[index] ? background[index * 3 + c] : rgb[c];
       patch[at + 3] = 255;
       if (accepted[index]) changed++;
-      if (chosen[index] && rgb.some((value, c) => Math.abs(value - background[index * 3 + c]) > 100)) for (let c = 0; c < 3; c++) colors[c].push(rgb[c]);
+      if (chosen[index] && rgb.some((value, c) => Math.abs(value - background[index * 3 + c]) > 100)) {
+        for (let c = 0; c < 3; c++) colors[c].push(rgb[c]);
+        if (Math.min(...rgb) < 130) for (let c = 0; c < 3; c++) darkColors[c].push(rgb[c]);
+      }
     }
+    const inkColors = darkColors.every(values => values.length) ? darkColors : colors;
     return { pixels: patch, width: x1 - x0, height: y1 - y0, box: [left + x0, top + y0, left + x1, top + y1],
-      color: colors.every(values => values.length) ? colors.map(median) : [20, 20, 20], changed };
+      color: inkColors.every(values => values.length) ? inkColors.map(median) : [20, 20, 20], changed };
   }
 
   function requestPlan(ocr, layout, machine = false, reserved = new Set()) {
@@ -670,7 +709,7 @@
           if (!Array.isArray(entry) || entry.length < 2) continue;
           const [cellIndex, value] = entry;
           const cell = cellByIndex.get(cellIndex);
-          if (!cell || !cell.translate || !L.LayoutTables.validText(cell, value)) continue;
+          if (!cell || !cell.translate || !validImageText(cell, value)) continue;
           direct.set(`${image.requestID}c${cellIndex}`, value);
           if (!byText.has(cell.text)) byText.set(cell.text, value);
         }
@@ -681,7 +720,7 @@
       const values = {};
       for (const cell of image.cells.filter(item => item.translate)) {
         const value = direct.get(`${image.requestID}c${cell.index}`) ?? byText.get(cell.text);
-        if (L.LayoutTables.validText(cell, value)) values[cell.index] = value;
+        if (validImageText(cell, value)) values[cell.index] = value;
       }
       return Object.keys(values).length ? [{ ...image, translations: values }] : [];
     });
@@ -700,7 +739,7 @@
       for (const cell of item?.cells || []) {
         if (!cell?.translate) continue;
         const value = item.translations?.[cell.index];
-        if (L.LayoutTables.validText(cell, value) && !cachedByText.has(cell.text)) cachedByText.set(cell.text, value);
+        if (validImageText(cell, value) && !cachedByText.has(cell.text)) cachedByText.set(cell.text, value);
       }
     }
     if (plan.machine) {
@@ -710,7 +749,7 @@
           const id = `${image.requestID}c${cell.index}`;
           if (plan.ids instanceof Set && !plan.ids.has(id)) continue;
           const value = cached?.translations?.[cell.index] ?? cachedByText.get(cell.text);
-          if (L.LayoutTables.validText(cell, value)) values[id] = value;
+          if (!noTranslation(value) && L.LayoutTables.validText(cell, value)) values[id] = value;
         }
       }
       return values;
@@ -726,7 +765,7 @@
       for (const [cellIndex] of record.cells) {
         const cell = cellByIndex.get(cellIndex);
         const value = cached?.translations?.[cellIndex] ?? (cell ? cachedByText.get(cell.text) : null);
-        if (!cell || !cell.translate || !L.LayoutTables.validText(cell, value)) {
+        if (!cell || !cell.translate || !validImageText(cell, value)) {
           complete = false;
           break;
         }
@@ -737,7 +776,7 @@
     return values;
   }
 
-  function attach(model, cache, parseRevisionID = "", layout = null) {
+  function attach(model, cache, parseRevisionID = "", layout = null, ocr = null) {
     if (!model?.pages) return model;
     // 旧编译模型不保留解析分类；从现有布局恢复保留区域，不改写旧模型缓存。
     const furniture = (layout?.pages || []).map(page => {
@@ -752,27 +791,63 @@
     });
     const active = cache?.version === 1 && cache.sourceFingerprint === model.sourceFingerprint
       && (cache.parseRevisionID || "") === parseRevisionID && Array.isArray(cache.images) && cache.images.length;
-    if (!active && !model.imageTranslationHash && !furniture.some(boxes => boxes.size)) return model;
+    const activeOCR = ocr?.version === 1 && ocr.sourceFingerprint === model.sourceFingerprint
+      && (ocr.parseRevisionID || "") === parseRevisionID && Array.isArray(ocr.images) && ocr.images.length;
+    if (!active && !activeOCR && !model.imageTranslationHash && !furniture.some(boxes => boxes.size)) return model;
     const { imageTranslationHash: _previous, ...base } = model;
     const apply = (block, page) => {
-      const { translatedImageLabels: _labels, imageProtectedBoxes: _protected, ...clean } = block;
+      const { translatedImageLabels: _labels, imageProtectedBoxes: _protected, imageOCRDebugBoxes: _ocrDebug, ...clean } = block;
       if (isPageFurniture(block) || furniture[page]?.has(JSON.stringify(block.bbox))) return { ...clean, sourceOnly: true };
-      if (!active || !["image", "image_body", "chart", "chart_body"].includes(block.type)) return clean;
-      const matches = cache.images.filter(image => image?.page === page && JSON.stringify(image.bbox) === JSON.stringify(block.bbox));
-      if (matches.length !== 1) return clean;
-      const image = matches[0];
+      if ((!active && !activeOCR) || !["image", "image_body", "chart", "chart_body"].includes(block.type)) return clean;
+      const matches = active
+        ? cache.images.filter(image => image?.page === page && JSON.stringify(image.bbox) === JSON.stringify(block.bbox))
+        : [];
+      const ocrMatches = activeOCR
+        ? ocr.images.filter(image => image?.page === page && JSON.stringify(image.bbox) === JSON.stringify(block.bbox))
+        : [];
+      const image = matches.length === 1 ? matches[0] : null;
+      const ocrImage = ocrMatches.length === 1 ? ocrMatches[0] : null;
+      const debugFromImage = () => {
+        if (image && Array.isArray(image.cells) && Array.isArray(image.lines)) {
+          return image.cells.flatMap(cell => {
+            const line = image.lines[cell.index];
+            if (!line || !validBox(line.bbox)) return [];
+            const raw = image.translations?.[cell.index];
+            const isTranslated = cell.translate && !noTranslation(raw) && !unchangedImageText(cell, raw) && L.LayoutTables.validText(cell, raw);
+            let translatedText = "";
+            if (isTranslated) {
+              translatedText = raw;
+              for (const token of cell.tokens) translatedText = translatedText.replace(token.marker, () => token.source);
+            }
+            const status = isTranslated ? "translated" : (cell.translate ? "skipped" : "protected");
+            return [{ bbox: line.bbox, text: line.text || "", status, ...(translatedText ? { translatedText } : {}) }];
+          });
+        }
+        if (ocrImage && Array.isArray(ocrImage.lines)) {
+          return ocrImage.lines.filter(line => validBox(line?.bbox)).map(line => ({ bbox: line.bbox, text: line.text || "", status: "ocr" }));
+        }
+        return [];
+      };
+      const debugBoxes = debugFromImage();
+      const withDebug = debugBoxes.length ? { imageOCRDebugBoxes: debugBoxes } : {};
+      if (!image) return { ...clean, ...withDebug };
       try {
-        const translated = cell => cell.translate && L.LayoutTables.validText(cell, image.translations?.[cell.index]);
+        const translated = cell => cell.translate && !noTranslation(image.translations?.[cell.index]) && !unchangedImageText(cell, image.translations?.[cell.index])
+          && L.LayoutTables.validText(cell, image.translations?.[cell.index]);
         const labels = image.cells.filter(translated).map(cell => {
           let text = image.translations[cell.index];
           for (const token of cell.tokens) text = text.replace(token.marker, () => token.source);
-          return { bbox: image.lines[cell.index].bbox, text, sourceText: image.lines[cell.index].text, rotation: image.lines[cell.index].rotation || 0 };
+          const srcText = String(image.lines[cell.index].text || "");
+          if (/^(?:[\s|·•─━]+|-{2,}|–{2,}|—+|\.(?=\d+[A-Za-z])|-(?=[A-Za-z]))/.test(srcText)) {
+            text = text.replace(/^(?:[\s|·•─━]+|-{2,}|–{2,}|—+|-(?=[A-Za-z0-9])|\.(?=\d+[A-Za-z]))+/, "");
+          }
+          return { bbox: image.lines[cell.index].bbox, text, sourceText: srcText, rotation: image.lines[cell.index].rotation || 0 };
         });
-        if (!labels.length || labels.some(label => !validBox(label.bbox))) return clean;
-        return { ...clean, translatedImageLabels: labels, imageProtectedBoxes: image.cells.filter(cell => !translated(cell)).map(cell => image.lines[cell.index].bbox) };
-      } catch (_) { return clean; }
+        if (!labels.length || labels.some(label => !validBox(label.bbox))) return { ...clean, ...withDebug };
+        return { ...clean, ...withDebug, translatedImageLabels: labels, imageProtectedBoxes: image.cells.filter(cell => !translated(cell)).map(cell => image.lines[cell.index].bbox) };
+      } catch (_) { return { ...clean, ...withDebug }; }
     };
-    return { ...base, ...(active ? { imageTranslationHash: U.hashString(`image-render-centered-v10|${JSON.stringify(cache)}`) } : {}), pages: model.pages.map((page, index) => ({
+    return { ...base, ...(active ? { imageTranslationHash: U.hashString(`image-render-centered-v11|${JSON.stringify(cache)}`) } : {}), pages: model.pages.map((page, index) => ({
       ...page, blocks: (page.blocks || []).map(block => apply(block, index)), restoration: page.restoration ? {
         ...page.restoration, absoluteBlocks: (page.restoration.absoluteBlocks || []).map(block => apply(block, index))
       } : page.restoration
@@ -874,7 +949,7 @@
           emit?.({
             type: "status",
             phase: "local-ocr",
-            message: `正在本地识别图片文字：${done}/${figures.length}（${percent}%）`,
+            message: `正在本地识别图片文字：${done}/${figures.length}`,
             progress: percent
           });
           try {
@@ -1220,6 +1295,7 @@
             { useDocOrientationClassify: false, useDocUnwarping: false, useTextlineOrientation: false,
               textDetLimitSideLen: 2000, textDetLimitType: "max", visualize: false });
           const url = await this.paddle.poll(task, token, async () => {}, { timeoutSeconds: 600 }, imageOCRProgressEmitter(emit), signal);
+          emit?.({ type: "progress", phase: "image-ocr-poll", progress: null, message: "正在下载Paddle图片文字识别结果" });
           const bytes = await L.HTTP.requestBytes(url, { timeout: 90000, maxBytes: 64 * 1024 * 1024, signal });
           const rows = new TextDecoder().decode(bytes).split(/\r?\n/).filter(line => line.trim()).flatMap(line => {
             const response = JSON.parse(line);
@@ -1257,6 +1333,142 @@
     }
   }
 
-  L.LayoutImages = { extract, linesFromOCR, linesFromMinerU, imageTextCandidates, planImageOCRSheets, planPaddleImageSheets, mapPaddleSheetLines, mapPackedImageLines, mergeImageLines, filterRotatedDetections, isColoredCurveCandidate, recognizeLocalImageText, mergeAdjacentRotatedWords, normalizeImageLines, restoreImageLabel, requestPlan, cacheFromRecords, cachedRecords, attach, mineruUseLocalOCR: MINERU_USE_LOCAL_OCR, resolveImageOCRMode, resolveImageOCRModel };
+  function planAlignedImageLabelGroups(items = []) {
+    const candidates = (Array.isArray(items) ? items : [])
+      .filter(item => item && !item.rotated && item.align !== "flex-end" && validBox(item.box) && Number.isFinite(item.fontSize))
+      .sort((a, b) => (a.box[1] + a.box[3]) / 2 - (b.box[1] + b.box[3]) / 2 || a.box[0] - b.box[0]);
+    if (candidates.length < 3) return [];
+    const heights = candidates.map(item => item.box[3] - item.box[1]).sort((a, b) => a - b);
+    const medianH = heights[Math.floor(heights.length / 2)];
+    if (!(medianH > 0)) return [];
+    const leftTol = Math.max(5, Math.min(18, medianH * .55));
+    const gapTol = Math.max(10, medianH * 1.15);
+    const groups = [];
+    for (const item of candidates) {
+      let target = null, bestDistance = Infinity;
+      for (const group of groups) {
+        const last = group[group.length - 1].box;
+        if (item.box[1] - last[3] > gapTol || item.box[3] < last[1]) continue;
+        const overlap = Math.min(item.box[2], last[2]) - Math.max(item.box[0], last[0]);
+        if (overlap <= 0) continue;
+        const xs = group.map(entry => entry.box[0]).sort((a, b) => a - b);
+        const anchor = xs[Math.floor(xs.length / 2)];
+        const distance = Math.abs(item.box[0] - anchor);
+        const minW = Math.min(item.box[2] - item.box[0], last[2] - last[0]);
+        // 左边缘相近直接归组；若某一行左侧误吞了图例短线导致左缘偏左但主体同列重合，也纳入同组等待众数纠偏。
+        if ((distance <= leftTol || (item.box[0] < anchor && overlap >= minW * .55)) && distance < bestDistance) {
+          bestDistance = distance;
+          target = group;
+        }
+      }
+      if (target) target.push(item);
+      else groups.push([item]);
+    }
+    const updates = [];
+    for (const group of groups) {
+      if (group.length < 3) continue;
+      const xs = group.map(item => item.box[0]);
+      const sortedX = [...xs].sort((a, b) => a - b);
+      const medianX0 = sortedX[Math.floor(sortedX.length / 2)];
+      const sigma = Math.max(1.5, medianH * .12);
+      let bestX0 = medianX0, bestScore = -1;
+      for (const candidateX of new Set(xs)) {
+        const score = xs.reduce((sum, x) => sum + Math.exp(-((x - candidateX) ** 2) / (2 * sigma * sigma)), 0);
+        if (score > bestScore + 1e-9 || (Math.abs(score - bestScore) <= 1e-9 && Math.abs(candidateX - medianX0) < Math.abs(bestX0 - medianX0))) {
+          bestScore = score;
+          bestX0 = candidateX;
+        }
+      }
+      const closeCount = xs.filter(x => Math.abs(x - bestX0) <= Math.max(4, medianH * .35)).length;
+      if (closeCount < Math.ceil(group.length * .6)) continue;
+      const members = group.filter(item => item.box[0] <= bestX0 + leftTol
+        && item.box[2] - bestX0 >= Math.max(8, (item.box[2] - item.box[0]) * .4));
+      if (members.length < 3) continue;
+      const alignedBoxes = members.map(item => [bestX0, item.box[1], Math.max(bestX0 + 8, item.box[2]), item.box[3]]);
+      for (let i = 0; i + 1 < alignedBoxes.length; i++) {
+        if (alignedBoxes[i][3] > alignedBoxes[i + 1][1]) {
+          const mid = (alignedBoxes[i][3] + alignedBoxes[i + 1][1]) / 2;
+          if (mid - .25 - alignedBoxes[i][1] >= Math.max(4, medianH * .55)
+            && alignedBoxes[i + 1][3] - (mid + .25) >= Math.max(4, medianH * .55)) {
+            alignedBoxes[i][3] = mid - .25;
+            alignedBoxes[i + 1][1] = mid + .25;
+          }
+        }
+      }
+      const unifiedFontSize = Math.min(...members.map((item, i) => {
+        const oldH = Math.max(1, item.box[3] - item.box[1]);
+        const newH = Math.max(1, alignedBoxes[i][3] - alignedBoxes[i][1]);
+        return item.fontSize * Math.min(1, newH / oldH);
+      }));
+      members.forEach((item, i) => {
+        updates.push({
+          index: item.index,
+          box: alignedBoxes[i],
+          align: "flex-start",
+          fontSize: unifiedFontSize
+        });
+      });
+    }
+    return updates;
+  }
+
+  const MERGED_LEGEND_RE = /^(.+?[A-Za-z\u3400-\u9fff][^\r\n]*?)\s*(?:-{2,}|–{2,}|—+|─+|━+|\.{3,}|…+)\s*([^\r\n]*?[A-Za-z\u3400-\u9fff].*)$/;
+
+  function splitMergedImageLabel(pixels, width, height, box, sourceText, translatedText = sourceText) {
+    if (!pixels || !(width > 0 && height > 0) || !validBox(box)) return null;
+    const srcMatch = MERGED_LEGEND_RE.exec(String(sourceText || "").trim());
+    const trMatch = MERGED_LEGEND_RE.exec(String(translatedText || "").trim());
+    if (!srcMatch || !trMatch) return null;
+    const px0 = Math.max(0, Math.floor(box[0] * width)), py0 = Math.max(0, Math.floor(box[1] * height));
+    const px1 = Math.min(width, Math.ceil(box[2] * width)), py1 = Math.min(height, Math.ceil(box[3] * height));
+    const bw = px1 - px0, bh = py1 - py0;
+    if (bw < 24 || bh < 8) return null;
+    const neutralCols = new Uint8Array(bw);
+    for (let x = 0; x < bw; x++) {
+      let dark = 0;
+      for (let y = py0; y < py1; y++) {
+        const at = (y * width + px0 + x) * 4;
+        if (pixels[at + 3] < 250) continue;
+        const r = pixels[at], g = pixels[at + 1], b = pixels[at + 2];
+        if (Math.max(r, g, b) < 180 && Math.max(r, g, b) - Math.min(r, g, b) < 40) dark++;
+      }
+      if (dark > 0) neutralCols[x] = 1;
+    }
+    let firstInk = -1, lastInk = -1;
+    for (let x = 0; x < bw; x++) if (neutralCols[x]) { if (firstInk < 0) firstInk = x; lastInk = x; }
+    if (firstInk < 0 || lastInk - firstInk < 20) return null;
+    // 寻找中间不含深灰/黑文字笔画、仅余底色或彩色图例线的最宽空隙作为分栏裂点。
+    let bestStart = -1, bestLen = 0, runStart = -1;
+    for (let x = firstInk; x <= lastInk; x++) {
+      if (!neutralCols[x]) {
+        if (runStart < 0) runStart = x;
+      } else {
+        if (runStart >= 0 && x - runStart > bestLen) { bestStart = runStart; bestLen = x - runStart; }
+        runStart = -1;
+      }
+    }
+    const minGap = Math.max(10, Math.round(bh * .55));
+    if (bestStart < 0 || bestLen < minGap) return null;
+    const gapEnd = bestStart + bestLen;
+    if (bestStart - firstInk < 8 || lastInk - gapEnd + 1 < 8) return null;
+    const leftBox = [Math.max(0, px0 + firstInk - 3) / width, box[1], Math.min(width, px0 + bestStart + 2) / width, box[3]];
+    const rightBox = [Math.max(0, px0 + gapEnd - 2) / width, box[1], Math.min(width, px0 + lastInk + 4) / width, box[3]];
+    if (!validBox(leftBox) || !validBox(rightBox)) return null;
+    return [
+      { bbox: leftBox, sourceText: srcMatch[1].trim(), text: trMatch[1].trim() },
+      { bbox: rightBox, sourceText: srcMatch[2].trim(), text: trMatch[2].trim() }
+    ];
+  }
+
+  function splitMergedLegendLines(lines, pixels, width, height) {
+    return (Array.isArray(lines) ? lines : []).flatMap(line => {
+      if (!line || line.rotation || !validBox(line.bbox)) return [line];
+      const parts = splitMergedImageLabel(pixels, width, height, line.bbox, line.text, line.text);
+      if (!parts) return [line];
+      return parts.map(part => ({ ...line, text: part.text, bbox: part.bbox }));
+    });
+  }
+
+  L.LayoutImages = { extract, linesFromOCR, linesFromMinerU, imageTextCandidates, planImageOCRSheets, planPaddleImageSheets, mapPaddleSheetLines, mapPackedImageLines, mergeImageLines, filterRotatedDetections, isColoredCurveCandidate, recognizeLocalImageText, mergeAdjacentRotatedWords, normalizeImageLines, restoreImageLabel, planAlignedImageLabelGroups, splitMergedImageLabel, splitMergedLegendLines, requestPlan, cacheFromRecords, cachedRecords, attach, mineruUseLocalOCR: MINERU_USE_LOCAL_OCR, resolveImageOCRMode, resolveImageOCRModel };
   L.ImageTranslationService = ImageTranslationService;
 })(this);

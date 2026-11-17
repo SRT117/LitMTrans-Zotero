@@ -527,6 +527,126 @@ module.exports = function (env) {
     assert.equal(calls.length, count, "missing images must not fall back to text references");
   }
 
+  function tablePreviewCompare() {
+    const source = fs.readFileSync(path.join(root, "src/workbench.js"), "utf8");
+    const ts = require("typescript");
+    const ast = ts.createSourceFile("workbench.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const wanted = new Set(["tablePreviewData", "setPreviewTableMode", "fitPreviewTableAspect", "syncTablePreviewLayout", "openLayoutTableViewer", "applyPreviewScale", "fitPreviewImage"]);
+    const snippets = [];
+    function visit(node) {
+      if (ts.isFunctionDeclaration(node) && wanted.has(node.name?.text)) snippets.push(node.getText(ast));
+      ts.forEachChild(node, visit);
+    }
+    visit(ast);
+    const { document } = require("linkedom").parseHTML(
+      '<html><body>'
+      + '<div class="layout-table-translation-host" data-block-id="tbl-img" data-table-source-width="400">'
+      + '  <div class="layout-table-original"><img src="original-table.jpg" /></div>'
+      + '  <div class="layout-translated-table"><table><tr><td>译文</td></tr></table></div>'
+      + '</div>'
+      + '<div class="layout-table-translation-host" data-block-id="tbl-html" data-table-source-width="400">'
+      + '  <div class="layout-table-original"><div class="layout-table-wrap"><table><tr><td>Original</td></tr></table></div></div>'
+      + '  <div class="layout-translated-table"><table><tr><td>译文</td></tr></table></div>'
+      + '</div>'
+      + '<div id="source-layout"><div class="layout-table-wrap"><table><tr><td>Untranslated</td></tr></table></div></div>'
+      + '<dialog id="image-preview-dialog"><div class="image-preview-stage">'
+      + '  <div id="image-preview-images"><img id="image-preview-original" hidden /><img id="image-preview-image" /></div>'
+      + '  <div id="table-preview-tables" hidden>'
+      + '    <div id="table-preview-original" hidden>'
+      + '      <img id="table-preview-original-image" hidden />'
+      + '      <div id="table-preview-original-content" hidden><div id="table-preview-original-body"></div></div>'
+      + '    </div>'
+      + '    <div id="table-preview-content"><div id="table-preview-body"></div></div>'
+      + '  </div>'
+      + '</div><div class="image-preview-toolbar">'
+      + '  <output id="image-preview-scale">100%</output>'
+      + '  <button id="image-preview-compare" aria-pressed="false" hidden>对照</button>'
+      + '  <button id="image-preview-reuse"></button><button id="image-preview-copy"></button><button id="image-preview-save"></button>'
+      + '  <button id="table-preview-copy" hidden></button><button id="table-preview-save-html" hidden></button>'
+      + '</div></dialog></body></html>'
+    );
+    const ids = [
+      "image-preview-dialog", "image-preview-images", "image-preview-original", "image-preview-image",
+      "image-preview-compare", "image-preview-scale", "image-preview-reuse", "image-preview-copy", "image-preview-save",
+      "table-preview-tables", "table-preview-original", "table-preview-original-image", "table-preview-original-content",
+      "table-preview-original-body", "table-preview-content", "table-preview-body", "table-preview-copy", "table-preview-save-html"
+    ];
+    const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+    els["image-preview-dialog"].showModal = () => {};
+    Object.defineProperties(els["image-preview-dialog"].querySelector(".image-preview-stage"), {
+      clientWidth: { value: 1000 }, clientHeight: { value: 760 }
+    });
+    Object.defineProperties(els["table-preview-body"], {
+      offsetWidth: { get: () => parseFloat(els["table-preview-body"].style.width) || 640 },
+      clientWidth: { get: () => parseFloat(els["table-preview-body"].style.width) || 640 },
+      scrollWidth: { get: () => parseFloat(els["table-preview-body"].style.width) || 640 },
+      offsetHeight: { get: () => {
+        const pad = parseFloat(els["table-preview-body"].style.getPropertyValue("--table-preview-pad-y"));
+        const lh = parseFloat(els["table-preview-body"].style.lineHeight);
+        if (pad === 2) return 245;
+        if (pad === 3.5 || lh === 1.3) return 275;
+        if (pad > 5) return Math.round(320 + (pad - 5) * 2);
+        return 320;
+      } }
+    });
+    Object.defineProperties(els["table-preview-original-body"], {
+      offsetWidth: { get: () => els["table-preview-original"].hidden ? 0 : 640 },
+      offsetHeight: { get: () => els["table-preview-original"].hidden ? 0 : 300 }
+    });
+    for (const tbl of document.querySelectorAll("table")) {
+      Object.defineProperty(tbl, "rows", { get: () => [...tbl.querySelectorAll("tr")] });
+      for (const tr of tbl.querySelectorAll("tr")) {
+        Object.defineProperty(tr, "cells", { get: () => [...tr.querySelectorAll("td,th")] });
+      }
+    }
+    const hosts = [...document.querySelectorAll(".layout-table-translation-host")];
+    hosts[0].litmtransOriginalTableHTML = "<table><tr><td>Original</td></tr></table>";
+    hosts[1].litmtransOriginalTableHTML = "<table><tr><td>Original HTML</td></tr></table>";
+    Object.defineProperties(hosts[0].querySelector(".layout-table-original img"), { naturalWidth: { value: 800 }, naturalHeight: { value: 250 } });
+    Object.defineProperties(els["table-preview-original-image"], { naturalWidth: { value: 800 }, naturalHeight: { value: 250 } });
+    const state = {};
+    const api = vm.runInNewContext(snippets.join("\n") + "\n({openLayoutTableViewer,fitPreviewImage,applyPreviewScale,syncTablePreviewLayout})", {
+      state, els, safeSetElementHTML: (el, html) => { el.innerHTML = html; }, syncDeepSeekWebBounds() {}
+    });
+    const compareBlock = source.slice(source.indexOf('    els["image-preview-compare"].addEventListener("click", () => {'), source.indexOf('    els["image-preview-reuse"].addEventListener("click", reusePreviewImage);'));
+    const toggleCompare = vm.runInNewContext(
+      `let fn; const elsLocal = { "image-preview-compare": { addEventListener: (_, cb) => { fn = cb; } } };\n`
+      + compareBlock.replace('els["image-preview-compare"].addEventListener', 'elsLocal["image-preview-compare"].addEventListener')
+      + "\nfn",
+      { state, els, fitPreviewImage: api.fitPreviewImage, syncTablePreviewLayout: api.syncTablePreviewLayout }
+    );
+
+    api.openLayoutTableViewer(hosts[0]);
+    assert.equal(els["image-preview-compare"].hidden, false, "带原图的翻译表格应显示对照按钮");
+    assert.equal(els["image-preview-compare"].getAttribute("aria-pressed"), "false");
+    assert.equal(els["table-preview-original"].hidden, true, "默认仅显示译表");
+    assert.equal(els["table-preview-original-image"].src, "original-table.jpg");
+    toggleCompare();
+    assert.equal(els["table-preview-original"].hidden, false, "点击对照后显示原表图片");
+    assert.equal(els["image-preview-compare"].getAttribute("aria-pressed"), "true");
+    assert.equal(els["table-preview-original-content"].hidden, true);
+    assert.ok(state.previewScale < 1 && state.previewScale > 0.7, "双表并排时应自动缩小适配窗口宽度");
+    assert.equal(els["table-preview-original-image"].style.width, els["table-preview-content"].style.width);
+    assert.equal(els["table-preview-original-image"].style.height, els["table-preview-content"].style.height, "并排对照时右侧译表长宽比应与左侧原表对齐");
+    toggleCompare();
+    assert.equal(els["table-preview-original"].hidden, true, "关闭对照后恢复单表布局");
+    assert.equal(state.previewTable.layoutScale, 1);
+    assert.equal(state.previewTable.height, 320);
+
+    api.openLayoutTableViewer(hosts[1]);
+    assert.equal(els["image-preview-compare"].hidden, false, "无原图的HTML翻译表格也应显示对照按钮");
+    assert.equal(els["table-preview-original"].hidden, true);
+    toggleCompare();
+    assert.equal(els["table-preview-original"].hidden, false);
+    assert.equal(els["table-preview-original-image"].hidden, true);
+    assert.equal(els["table-preview-original-content"].hidden, false);
+    assert.ok(els["table-preview-original-body"].style.transform.startsWith("scale("), "原表HTML应与译表同步缩放");
+    assert.equal(els["table-preview-original-content"].style.width, els["table-preview-content"].style.width);
+
+    api.openLayoutTableViewer(document.querySelector("#source-layout table"));
+    assert.equal(els["image-preview-compare"].hidden, true, "未翻译的原文表格不应显示对照按钮");
+  }
+
   async function tableSupplementPreservesPublishedBody() {
     context.DOMParser = DOMParser;
     try {
@@ -840,5 +960,5 @@ module.exports = function (env) {
     assert.deepEqual(Array.from(T.fitColumnWidths([30, 30], [30, 30], 100)), [50, 50]);
   }
 
-  return { gridAndProtection, paddedCachedTableFormulasRender, rejectUncertainStructures, translationAndCache, paddlePreservesStructure, legacyPaddleTablePipeline, batchingAndCancellation, invalidTablesNeverAddRetries, unchangedTableResponsesAreComplete, sharedMachineAndFastGrouping, manualCommandsMergeAndImport, manualBoundariesAndTableOnly, entryPointCoverage, tableOnlyAvailability, tablePreviewExports, tablePreviewImageOnly, tableSupplementPreservesPublishedBody, partialTablesOnlyRetryMissing, tableDialogQueueWaitsForOtherModals, tableOnlyPagesDoNotShowWaitingOverlay, tableOpenCheckResumesDeferredPDF, tableSupplementWithoutPDFAllowsLaterBodyExport, sameDocumentTranslationLock, tableDisplaySwitchRetainsDOMAndMeasurements, tableResponsesBypassBodyRepair, columnAllocation };
+  return { gridAndProtection, paddedCachedTableFormulasRender, rejectUncertainStructures, translationAndCache, paddlePreservesStructure, legacyPaddleTablePipeline, batchingAndCancellation, invalidTablesNeverAddRetries, unchangedTableResponsesAreComplete, sharedMachineAndFastGrouping, manualCommandsMergeAndImport, manualBoundariesAndTableOnly, entryPointCoverage, tableOnlyAvailability, tablePreviewExports, tablePreviewImageOnly, tablePreviewCompare, tableSupplementPreservesPublishedBody, partialTablesOnlyRetryMissing, tableDialogQueueWaitsForOtherModals, tableOnlyPagesDoNotShowWaitingOverlay, tableOpenCheckResumesDeferredPDF, tableSupplementWithoutPDFAllowsLaterBodyExport, sameDocumentTranslationLock, tableDisplaySwitchRetainsDOMAndMeasurements, tableResponsesBypassBodyRepair, columnAllocation };
 };

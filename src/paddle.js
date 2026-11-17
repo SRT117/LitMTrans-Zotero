@@ -67,7 +67,8 @@
     }
 
     async poll(task, token, persist, options, emit, signal) {
-      const deadline = Date.now() + Math.max(1, Number(options.timeoutSeconds || 900)) * 1000;
+      const startedAt = Date.now();
+      const deadline = startedAt + Math.max(1, Number(options.timeoutSeconds || 900)) * 1000;
       let pendingSince = null;
       while (Date.now() < deadline) {
         U.throwIfAborted(signal);
@@ -85,10 +86,12 @@
         const total = Number(progress.totalPages || 0);
         if (task.state === "pending") pendingSince ??= Date.now();
         else pendingSince = null;
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        const waitDetail = `${task.state === "pending" ? "排队中" : "处理中"}，已等待 ${elapsed} 秒`;
         const hint = pendingSince !== null && Date.now() - pendingSince >= 120000
           ? "；等待时间较长，可能处于Paddle服务器不稳定或拥挤时段，可以尝试切换为MinerU解析服务" : "";
         emit?.({ type: "progress", phase: "paddle-poll", progress: total ? 15 + Math.min(60, Number(progress.extractedPages || 0) / total * 60) : null,
-          message: (total ? `Paddle解析中：${Number(progress.extractedPages || 0)}/${total} 页` : "正在等待Paddle解析结果") + hint });
+          message: (total ? `Paddle解析中：${Number(progress.extractedPages || 0)}/${total} 页` : `正在等待Paddle解析结果（${waitDetail}）`) + hint });
         await U.sleep(options.pollIntervalMs ?? 3000, signal);
       }
       throw new Error(`Paddle等待超时，可重试以继续查询任务 ${task.jobID}`);

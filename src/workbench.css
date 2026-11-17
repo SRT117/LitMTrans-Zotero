@@ -428,6 +428,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-debug .layout-flow-stream.layout-overflow { outline: 1px solid #b42318; background: rgba(248,232,230,.42); }
 .layout-line-debug-box { position: absolute; z-index: 5; display: none; pointer-events: none; border: 1px solid rgba(220, 38, 38, .72); background: rgba(250, 204, 21, .08); }
 .layout-debug .layout-line-debug-box { display: block; }
+.layout-image-ocr-debug-box { position: absolute; z-index: 5; display: none; box-sizing: border-box; pointer-events: none; border: 1px dashed rgba(124, 58, 237, .82); background: rgba(124, 58, 237, .06); }
+.layout-debug .layout-image-ocr-debug-box { display: block; pointer-events: auto; }
+.layout-image-ocr-debug-box[data-ocr-status="translated"] { border-style: solid; border-color: rgba(22, 163, 74, .88); background: rgba(34, 197, 94, .08); }
+.layout-image-ocr-debug-box[data-ocr-status="skipped"] { border-style: dashed; border-color: rgba(217, 119, 6, .92); background: rgba(245, 158, 11, .09); }
+.layout-image-ocr-debug-box[data-ocr-status="protected"] { border-style: dashed; border-color: rgba(124, 58, 237, .82); background: rgba(139, 92, 246, .06); }
+.layout-image-ocr-debug-box[data-ocr-status="ocr"] { border-style: dotted; border-color: rgba(2, 132, 199, .88); background: rgba(14, 165, 233, .06); }
 /* These attributes are transient measurement metadata, never reader content.
    Expose their labels only in the explicit inspection view. */
 .layout-debug .layout-flow-stream[data-debug-label]::after,
@@ -467,6 +473,20 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .layout-block a, .layout-flow-stream a { color: var(--layout-link, #0645ad); font: inherit; text-decoration: none; cursor: pointer; }
 .layout-block a:hover, .layout-flow-stream a:hover { text-decoration: underline; }
 .layout-reference-focus { background: rgba(250, 204, 21, .28); outline: 2px solid rgba(216, 148, 0, .7); border-radius: 2px; }
+.layout-link-preview { position: fixed; z-index: 10010; max-width: min(560px, calc(100vw - var(--sidebar-width) - 24px)); max-height: min(460px, 56vh); overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); pointer-events: auto; }
+.layout-link-preview-image { display: block; max-width: min(460px, 100%); max-height: min(340px, 42vh); width: auto; height: auto; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 3px; align-self: center; }
+.layout-link-preview-table-wrap { max-width: min(540px, 100%); max-height: min(340px, 42vh); overflow: auto; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-2); padding: 4px; }
+.layout-link-preview-table-wrap table { width: max-content; min-width: 100%; border-collapse: collapse; color: var(--ink); font: 11.5px/1.35 var(--serif); }
+.layout-link-preview-table-wrap th, .layout-link-preview-table-wrap td { border: 1px solid var(--line-strong); padding: 3px 6px; vertical-align: middle; }
+.layout-link-preview-table-wrap th { background: var(--surface-3); font-weight: 700; }
+.layout-link-preview-table-wrap .katex { font-size: 95%; }
+.layout-link-preview-caption { max-height: 4.8em; overflow: auto; color: var(--ink-2); font: 11.5px/1.45 var(--sans); word-break: break-word; }
+.layout-link-preview-equations { display: flex; flex-direction: column; gap: 6px; max-width: min(540px, 100%); max-height: min(360px, 46vh); overflow: auto; }
+.layout-link-preview-equation-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-2); }
+.layout-link-preview-equation-math { flex: 1 1 auto; min-width: 0; overflow-x: auto; font-size: 13.5px; color: var(--ink); }
+.layout-link-preview-equation-math .katex-display { margin: 0; }
+.layout-link-preview-equation-num { flex: 0 0 auto; color: var(--ink-2); font: 12px/1.2 "Times New Roman", serif; white-space: nowrap; }
+.layout-link-preview-equation-image { display: block; max-width: min(440px, 100%); max-height: 140px; width: auto; height: auto; object-fit: contain; background: #fff; border-radius: 2px; }
 .translation-media-toggles { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
 .layout-block.type-table_caption,
 .layout-block.type-table_footnote,
@@ -1508,9 +1528,13 @@ button.chat-document-record:hover { border-color: var(--accent); background: var
 
 .parser-provider-fields { min-width: 0; display: grid; gap: 7px; }
 
-#table-preview-content { position: relative; margin: auto; flex: none; overflow: hidden; }
+.table-preview-tables { margin: auto; flex: none; display: flex; align-items: center; justify-content: center; gap: 16px; }
+.table-preview-tables[hidden], .table-preview-original[hidden], #table-preview-original-image[hidden], #table-preview-original-content[hidden] { display: none !important; }
+.table-preview-original { flex: none; }
+#table-preview-original-image { display: block; background: #fff; }
+#table-preview-content, #table-preview-original-content { position: relative; flex: none; overflow: hidden; }
 .image-preview-stage.table-preview-stage { display: flex; padding: 16px; }
-#table-preview-body { position: absolute; top: 0; left: 0; transform-origin: top left; background: #fff; color: #222; padding: 12px; font: 16px/1.4 var(--serif); }
-#table-preview-body table { width: 100%; border-collapse: collapse; }
-#table-preview-body td, #table-preview-body th { border: 1px solid #999; padding: 5px 8px; vertical-align: middle; overflow-wrap: anywhere; }
-#table-preview-body .layout-table-fixed-cell { white-space: nowrap; }
+#table-preview-body, #table-preview-original-body { position: absolute; top: 0; left: 0; transform-origin: top left; background: #fff; color: #222; padding: 12px; font: 16px/1.4 var(--serif); }
+#table-preview-body table, #table-preview-original-body table { width: 100%; border-collapse: collapse; }
+#table-preview-body td, #table-preview-body th, #table-preview-original-body td, #table-preview-original-body th { border: 1px solid #999; padding: var(--table-preview-pad-y, 5px) 8px; vertical-align: middle; overflow-wrap: anywhere; }
+#table-preview-body .layout-table-fixed-cell, #table-preview-original-body .layout-table-fixed-cell { white-space: nowrap; }

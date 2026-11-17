@@ -6430,6 +6430,20 @@
           const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
           const anchorRatio = .35;
           let locationFrame = 0;
+          let lastEmittedLocation = null;
+          const pageContentBox = pageView => {
+            const div = pageView?.div;
+            if (!div) return null;
+            const rect = div.getBoundingClientRect?.();
+            if (!rect || !(rect.height > 0)) return null;
+            const borderTop = Number(div.clientTop || 0);
+            const contentHeight = Number(div.clientHeight || 0) > 0 ? Number(div.clientHeight) : rect.height;
+            return {
+              top: rect.top + borderTop,
+              bottom: rect.top + borderTop + contentHeight,
+              height: contentHeight
+            };
+          };
           const zoomOriginalPDF = event => {
             if (!event.ctrlKey || !event.deltaY) return;
             // Keep the source PDF's Ctrl+wheel behavior inside the embedded
@@ -6443,22 +6457,67 @@
           };
           const emitLocation = event => {
             if (locationFrame) return;
+            const fromPageChanging = Boolean(event?.pageNumber);
             locationFrame = pdfWindow.requestAnimationFrame(() => {
               locationFrame = 0;
-              const page = Math.max(1, Number(event?.pageNumber || pdfViewer.currentPageNumber || 1));
-              const pageView = pdfViewer.getPageView?.(page - 1);
-              const pageRect = pageView?.div?.getBoundingClientRect?.();
+              const currentTop = Number(viewerContainer?.scrollTop || 0);
+              const suppression = runtime.pdfSyncSuppression;
+              if (suppression && Date.now() < suppression.until) {
+                if (fromPageChanging || suppression.targetTop == null || Math.abs(currentTop - suppression.targetTop) <= 4) {
+                  return;
+                }
+              }
+              const hintPage = Math.max(1, Number(event?.pageNumber || pdfViewer.currentPageNumber || 1));
+              const pagesCount = Math.max(hintPage, Number(pdfViewer.pagesCount || hintPage));
               const viewerRect = viewerContainer?.getBoundingClientRect?.();
               const focusY = (viewerRect?.top || 0) + Number(viewerContainer?.clientHeight || 0) * anchorRatio;
-              const pageRatio = pageRect
-                ? Math.max(0, Math.min(1, (focusY - pageRect.top) / Math.max(1, pageRect.height)))
-                : 0;
+              // 根据锚点线实际命中的页面计算页码与页内比例，避免 currentPageNumber 跨页滞后导致比率被钳位在 0/1。
+              let page = hintPage;
+              let bestBox = pageContentBox(pdfViewer.getPageView?.(hintPage - 1));
+              const candidates = [];
+              for (let candidate = Math.max(1, hintPage - 2); candidate <= Math.min(pagesCount, hintPage + 2); candidate++) {
+                const box = pageContentBox(pdfViewer.getPageView?.(candidate - 1));
+                if (box) candidates.push({ page: candidate, box });
+              }
+              if (candidates.length) {
+                const containing = candidates.find(item => item.box.top <= focusY && item.box.bottom >= focusY);
+                if (containing) {
+                  page = containing.page;
+                  bestBox = containing.box;
+                } else {
+                  let chosen = candidates[0];
+                  let bestDistance = Infinity;
+                  for (const item of candidates) {
+                    const distance = focusY < item.box.top
+                      ? item.box.top - focusY
+                      : (focusY > item.box.bottom ? focusY - item.box.bottom : 0);
+                    if (distance < bestDistance) {
+                      bestDistance = distance;
+                      chosen = item;
+                    }
+                  }
+                  page = chosen.page;
+                  bestBox = chosen.box;
+                }
+              }
+              const rawRatio = bestBox ? (focusY - bestBox.top) / Math.max(1, bestBox.height) : 0;
+              const pageRatio = Math.max(-0.15, Math.min(1.15, rawRatio));
+              if (lastEmittedLocation
+                  && lastEmittedLocation.page === page
+                  && Math.abs(lastEmittedLocation.scrollTop - currentTop) < 0.5
+                  && Math.abs(lastEmittedLocation.pageRatio - pageRatio) < 0.0005) {
+                return;
+              }
+              lastEmittedLocation = { page, scrollTop: currentTop, pageRatio };
               this.sendToPage(runtime, { type: "event", payload: { type: "reader-location", page, pageRatio, anchorRatio } });
             });
           };
           const readerScroll = () => emitLocation();
           const readerUserScroll = event => {
-            if (!event.ctrlKey) this.sendToPage(runtime, { type: "event", payload: { type: "reader-user-scroll" } });
+            if (event?.ctrlKey) return;
+            runtime.pdfSyncSuppression = null;
+            lastEmittedLocation = null;
+            this.sendToPage(runtime, { type: "event", payload: { type: "reader-user-scroll" } });
           };
           let selectionFrame = 0;
           const emitSelection = () => {
@@ -6511,6 +6570,8 @@
             viewerContainer.addEventListener("scroll", readerScroll, { passive: true });
             viewerContainer.addEventListener("wheel", readerUserScroll, { passive: true });
             viewerContainer.addEventListener("pointerdown", readerUserScroll, { passive: true });
+            viewerContainer.addEventListener("touchstart", readerUserScroll, { passive: true });
+            pdfWindow.document.addEventListener("keydown", readerUserScroll, { passive: true });
             pdfWindow.document.addEventListener("selectionchange", emitSelection);
             // Capture before PDF.js handles the wheel event so it cannot
             // escape the iframe as an application/browser zoom gesture.
@@ -6525,6 +6586,8 @@
               try { viewerContainer?.removeEventListener("scroll", readerScroll); } catch (_) {}
               try { viewerContainer?.removeEventListener("wheel", readerUserScroll); } catch (_) {}
               try { viewerContainer?.removeEventListener("pointerdown", readerUserScroll); } catch (_) {}
+              try { viewerContainer?.removeEventListener("touchstart", readerUserScroll); } catch (_) {}
+              try { pdfWindow.document.removeEventListener("keydown", readerUserScroll); } catch (_) {}
               try { pdfWindow.document.removeEventListener("selectionchange", emitSelection); } catch (_) {}
               try { viewerContainer?.removeEventListener("wheel", zoomOriginalPDF, true); } catch (_) {}
               try { pdfWindow.removeEventListener("resize", fitPDFToWidth); } catch (_) {}
@@ -6532,6 +6595,7 @@
               try { if (selectionFrame) pdfWindow.cancelAnimationFrame(selectionFrame); } catch (_) {}
               try { readerStyle?.remove(); } catch (_) {}
               try { popupset?.remove(); } catch (_) {}
+              runtime.pdfSyncSuppression = null;
               runtime.pdfPreviewCleanup = null;
             };
           }
@@ -6564,16 +6628,31 @@
           const pdfViewer = pdfWindow?.PDFViewerApplication?.pdfViewer;
           if (!pdfViewer) throw new Error("Zotero PDF阅读器尚未准备好");
           const page = Math.max(1, Math.min(Number(pdfViewer.pagesCount || Infinity), Math.trunc(Number(payload.page || 1))));
-          const pageRatio = Math.max(0, Math.min(1, Number(payload.pageRatio || 0)));
+          const pageRatio = Math.max(-0.15, Math.min(1.15, Number(payload.pageRatio || 0)));
           const anchorRatio = Math.max(0, Math.min(1, Number(payload.anchorRatio ?? .5)));
+          const pageContentMetrics = div => {
+            if (!div) return null;
+            const clientHeight = Number(div.clientHeight || 0);
+            const height = clientHeight > 0 ? clientHeight : Number(div.offsetHeight || 0);
+            if (!(height > 0)) return null;
+            return {
+              top: Number(div.offsetTop || 0) + Number(div.clientTop || 0),
+              height
+            };
+          };
           if (payload.syncScroll) {
             const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
             const pageView = pdfViewer.getPageView?.(page - 1);
-            if (viewerContainer && pageView?.div?.offsetHeight) {
-              const top = pageView.div.offsetTop + pageView.div.offsetHeight * pageRatio - viewerContainer.clientHeight * anchorRatio;
+            const metrics = pageContentMetrics(pageView?.div);
+            if (viewerContainer && metrics) {
+              const top = metrics.top + metrics.height * pageRatio - viewerContainer.clientHeight * anchorRatio;
               const range = Math.max(0, viewerContainer.scrollHeight - viewerContainer.clientHeight);
               const target = Math.max(0, Math.min(range, top));
-              if (Math.abs(viewerContainer.scrollTop - target) > 1) viewerContainer.scrollTop = target;
+              runtime.pdfSyncSuppression = {
+                until: Date.now() + 260,
+                targetTop: target
+              };
+              if (Math.abs(viewerContainer.scrollTop - target) > 0.5) viewerContainer.scrollTop = target;
               return { available: true, page, pageRatio, anchorRatio };
             }
           }
@@ -6596,10 +6675,16 @@
           pdfWindow.requestAnimationFrame(() => {
             const viewerContainer = pdfWindow.document.getElementById("viewerContainer");
             const pageView = pdfViewer.getPageView?.(page - 1);
-            if (!viewerContainer || !pageView?.div) return;
-            const top = pageView.div.offsetTop + pageView.div.offsetHeight * pageRatio - viewerContainer.clientHeight * anchorRatio;
+            const metrics = pageContentMetrics(pageView?.div);
+            if (!viewerContainer || !metrics) return;
+            const top = metrics.top + metrics.height * pageRatio - viewerContainer.clientHeight * anchorRatio;
             const range = Math.max(0, viewerContainer.scrollHeight - viewerContainer.clientHeight);
-            viewerContainer.scrollTop = Math.max(0, Math.min(range, top));
+            const target = Math.max(0, Math.min(range, top));
+            runtime.pdfSyncSuppression = {
+              until: Date.now() + 260,
+              targetTop: target
+            };
+            viewerContainer.scrollTop = target;
             const drawHighlight = (attempt = 0) => {
               pdfWindow.document.getElementById("litmtrans-pdf-reference-focus")?.remove();
               const pageViewport = pageView?.viewport;

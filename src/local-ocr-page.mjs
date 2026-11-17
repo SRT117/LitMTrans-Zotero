@@ -201,7 +201,8 @@ function lines(result, rotated) {
     const box = [Math.max(0, Math.min(...xs) / width), Math.max(0, Math.min(...ys) / height),
       Math.min(1, Math.max(...xs) / width), Math.min(1, Math.max(...ys) / height)];
     if (!item.text.trim() || item.score < .5 || box[2] <= box[0] || box[3] <= box[1]
-      || (box[2] - box[0]) * width < (box[3] - box[1]) * height * 1.2) return [];
+      || (box[2] - box[0]) * width < (box[3] - box[1]) * height * 1.2
+      || Math.abs(item.poly[1][1] - item.poly[0][1]) > (box[3] - box[1]) * height * .15) return [];
     return [{ text: item.text.trim(), score: item.score,
       bbox: rotated ? [box[1], 1 - box[2], box[3], 1 - box[0]] : box, ...(rotated ? { rotation: -90 } : {}) }];
   });
@@ -228,11 +229,13 @@ window.LitMTransLocalOCR = {
     try {
       const result = await window.LitMTrans.LayoutImages.recognizeLocalImageText(state.model, normalCanvas, rotatedCanvas,
         { textDetLimitSideLen: 1024, textDetLimitType: "max", textRecScoreThresh: .5, rotatedHorizontalOnly: true });
-      const rows = window.LitMTrans.LayoutImages.mergeImageLines(lines(result.normal, false), lines(result.rotated, true));
-      if (rows.some(line => !line.rotation && line.score < .7 && line.bbox[2] - line.bbox[0] >= .4 && line.bbox[3] - line.bbox[1] >= .12)) {
+      let rows = window.LitMTrans.LayoutImages.mergeImageLines(lines(result.normal, false), lines(result.rotated, true));
+      const needsPixelScan = rows.some(line => (!line.rotation && line.score < .7 && line.bbox[2] - line.bbox[0] >= .4 && line.bbox[3] - line.bbox[1] >= .12)
+        || (!line.rotation && /-{2,}|–{2,}|—+|─+|━+|\.{3,}|…+/.test(line.text)));
+      if (needsPixelScan) {
         const pixels = normalContext.getImageData(0, 0, w, h).data;
-        const accepted = rows.filter(line => !window.LitMTrans.LayoutImages.isColoredCurveCandidate(line, pixels, w, h));
-        return JSON.stringify(accepted);
+        rows = rows.filter(line => !window.LitMTrans.LayoutImages.isColoredCurveCandidate(line, pixels, w, h));
+        rows = window.LitMTrans.LayoutImages.splitMergedLegendLines?.(rows, pixels, w, h) || rows;
       }
       return JSON.stringify(rows);
     } finally { image.close(); }
