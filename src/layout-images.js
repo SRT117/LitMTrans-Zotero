@@ -1043,10 +1043,15 @@
     return useLocal ? "local" : "mineru-api";
   }
 
+  function resolvePaddleOCRModel(options = {}) {
+    const model = String(options.paddleOCRModel || U.getPref?.("paddleOCRModel", "PP-OCRv6") || "PP-OCRv6").trim();
+    return model || "PP-OCRv6";
+  }
+
   function resolveImageOCRModel(parseProvider = "mineru", options = {}) {
     const mode = resolveImageOCRMode(parseProvider, options);
     if (mode === "local") return "local-ppocr-v6-tiny";
-    return mode === "paddle-api" ? "PP-OCRv6" : "mineru-pipeline";
+    return mode === "paddle-api" ? resolvePaddleOCRModel(options) : "mineru-pipeline";
   }
 
   class ImageTranslationService {
@@ -1409,7 +1414,8 @@
         }
       }
       const local = mode === "local";
-      const providerModel = local ? "local-ppocr-v6-tiny" : provider === "paddle" ? "PP-OCRv6" : "mineru-pipeline";
+      const paddleOCRModel = resolvePaddleOCRModel(options);
+      const providerModel = local ? "local-ppocr-v6-tiny" : provider === "paddle" ? paddleOCRModel : "mineru-pipeline";
       result.model = providerModel;
       const supplement = validCache && cached.model !== providerModel && cached.images.some(image => !image.lines?.length);
       const localRetry = local && validCache && cached.model === providerModel && cached.images.some(image => image.ocrFailed);
@@ -1471,7 +1477,7 @@
         for (const [index, request] of requests.entries()) {
           U.throwIfAborted(signal);
           emit?.({ type: "status", message: `正在识别图片文字：${batch.length} 张图片，共 ${sheets.length} 页${requests.length > 1 ? `，第 ${index + 1}/${requests.length} 个任务` : ""}` });
-          const task = await this.paddle.submit(request.bytes, "PP-OCRv6", token, signal,
+          const task = await this.paddle.submit(request.bytes, paddleOCRModel, token, signal,
             { useDocOrientationClassify: false, useDocUnwarping: false, useTextlineOrientation: false,
               textDetLimitSideLen: 2000, textDetLimitType: "max", visualize: false });
           const url = await this.paddle.poll(task, token, async () => {}, { timeoutSeconds: 600 }, imageOCRProgressEmitter(emit), signal);

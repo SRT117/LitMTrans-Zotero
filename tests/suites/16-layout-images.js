@@ -1670,6 +1670,12 @@ module.exports = function (env) {
   async function parserRoutingAndLocalOCRReadinessChecks() {
     assert.equal(I.resolveImageOCRMode("paddle"), "paddle-api");
     assert.equal(I.resolveImageOCRModel("paddle"), "PP-OCRv6");
+    context.LitMTrans.Utils.setPref("paddleOCRModel", "PP-OCRv7");
+    try {
+      assert.equal(I.resolveImageOCRModel("paddle"), "PP-OCRv7", "Paddle 图片 OCR 模型应跟随远端更新的 paddleOCRModel 首选项");
+    } finally {
+      context.LitMTrans.Utils.setPref("paddleOCRModel", "PP-OCRv6");
+    }
     assert.equal(I.resolveImageOCRMode("mineru"), "local");
     assert.equal(I.resolveImageOCRModel("mineru"), "local-ppocr-v6-tiny");
     assert.equal(I.resolveImageOCRMode("mineru", { mineruUseLocal: false }), "mineru-api");
@@ -1747,6 +1753,19 @@ module.exports = function (env) {
       assert.equal(switched, 1);
       assert.equal(paddleCalls, 1);
       assert.equal(switchedResult.model, "PP-OCRv6", "选择切换为 Paddle 时本次识别直接走 Paddle API");
+
+      // 验证远端同步升级 paddleOCRModel 后，图片 OCR 提交与结果模型同步切换且已识别图片缓存保留
+      const submittedModels = [];
+      paddle.submit = async (_bytes, model) => { submittedModels.push(model); return {}; };
+      storage.json.delete(storage.path(documentID, "image-ocr.v1.json"));
+      context.LitMTrans.Utils.setPref("paddleOCRModel", "PP-OCRv7");
+      try {
+        const upgradedResult = await ocr.ensure(documentID, layout, null, null, { parseProvider: "paddle" });
+        assert.deepEqual(submittedModels, ["PP-OCRv7"]);
+        assert.equal(upgradedResult.model, "PP-OCRv7");
+      } finally {
+        context.LitMTrans.Utils.setPref("paddleOCRModel", "PP-OCRv6");
+      }
 
       storage.hasLocalOCRModels = async () => true;
       storage.json.delete(storage.path(documentID, "image-ocr.v1.json"));
