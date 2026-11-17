@@ -6,6 +6,58 @@
 
   const PAGE_CACHE_ALERT_THRESHOLD_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
   const PAGE_CACHE_ALERT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000; // 3 天
+  // 与当前内置镜像清单对应的基线版本号；每次在代码中更新 LOCAL_OCR_DEFAULTS 时应同步递增
+  const LOCAL_OCR_BUILTIN_REVISION = 3;
+  const LOCAL_OCR_DEFAULTS = Object.freeze({
+    version: "v1",
+    files: {
+      "ort-wasm-simd-threaded.jsep.mjs": {
+        size: 47250,
+        sha256: "7838b4b2e77d6f1a739cd0de800e7f18a089328b365e6af4d416a88a94fd7fd3",
+        urls: [
+          "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.mjs",
+          "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.mjs",
+          "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.mjs"
+        ]
+      },
+      "ort-wasm-simd-threaded.jsep.wasm": {
+        size: 29520971,
+        sha256: "5ab8361783822d02a57d1e97cf2514bceb451a628f2b29ae0d7b6e618201ff8f",
+        urls: [
+          "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.wasm",
+          "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.wasm",
+          "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.wasm"
+        ]
+      },
+      "PP-OCRv6_tiny_det_onnx_infer.tar": {
+        size: 1792000,
+        sha256: "ff6ab415b0a6e0c488550f2fb5d5046f1719848df220b2dc21b56402a65bc05d",
+        urls: [
+          "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar",
+          "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar",
+          "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar"
+        ]
+      },
+      "PP-OCRv6_tiny_rec_onnx_infer.tar": {
+        size: 4526080,
+        sha256: "1e13b22717b1edd89d4cde4fda272b6c17d5b505c97c2baea99da1a3a2d54b29",
+        urls: [
+          "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_rec_onnx_infer.tar",
+          "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar",
+          "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_rec_onnx_infer.tar"
+        ]
+      }
+    }
+  });
+  const LOCAL_OCR_DEFAULTS_DIGEST = (() => {
+    const text = JSON.stringify(LOCAL_OCR_DEFAULTS);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  })();
 
   function classifyDocumentRootFile(name) {
     if (name === "document.json" || name === "generated-pdfs.json" || name === "parser-publication.json") return "metadata";
@@ -1077,56 +1129,25 @@
     }
 
     getLocalOCRConfig() {
-      const defaults = {
-        version: "v1",
-        files: {
-          "ort-wasm-simd-threaded.jsep.mjs": {
-            size: 47250,
-            sha256: "7838b4b2e77d6f1a739cd0de800e7f18a089328b365e6af4d416a88a94fd7fd3",
-            urls: [
-              "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.mjs",
-              "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.mjs",
-              "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.mjs"
-            ]
-          },
-          "ort-wasm-simd-threaded.jsep.wasm": {
-            size: 29520971,
-            sha256: "5ab8361783822d02a57d1e97cf2514bceb451a628f2b29ae0d7b6e618201ff8f",
-            urls: [
-              "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.wasm",
-              "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.wasm",
-              "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.wasm"
-            ]
-          },
-          "PP-OCRv6_tiny_det_onnx_infer.tar": {
-            size: 1792000,
-            sha256: "ff6ab415b0a6e0c488550f2fb5d5046f1719848df220b2dc21b56402a65bc05d",
-            urls: [
-              "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar",
-              "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar",
-              "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar"
-            ]
-          },
-          "PP-OCRv6_tiny_rec_onnx_infer.tar": {
-            size: 4526080,
-            sha256: "1e13b22717b1edd89d4cde4fda272b6c17d5b505c97c2baea99da1a3a2d54b29",
-            urls: [
-              "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_rec_onnx_infer.tar",
-              "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar",
-              "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_rec_onnx_infer.tar"
-            ]
-          }
-        }
-      };
+      const defaults = LOCAL_OCR_DEFAULTS;
       let override = null;
       try {
         const raw = U.getPref?.("localOCRCatalog", "");
         if (raw) override = JSON.parse(raw);
       } catch (_) {}
-      const version = /^v?\d+(?:\.\d+)*$/.test(String(override?.version || "")) ? String(override.version) : defaults.version;
+      const overrideRevision = Number(U.getPref?.("localOCRCatalogRevision", 0)) || 0;
+      const overrideDigest = String(U.getPref?.("localOCRCatalogDefaultsDigest", "") || "");
+      // 旧版本插件遗留或滞后的缓存不得覆盖当前代码自带的更新镜像清单
+      const allowOverride = Boolean(override)
+        && overrideRevision >= LOCAL_OCR_BUILTIN_REVISION
+        && overrideDigest === LOCAL_OCR_DEFAULTS_DIGEST;
+      const activeOverride = allowOverride ? override : null;
+      const version = /^v?\d+(?:\.\d+)*$/.test(String(activeOverride?.version || ""))
+        ? String(activeOverride.version)
+        : defaults.version;
       const assets = {};
       for (const [name, fallback] of Object.entries(defaults.files)) {
-        const remote = override?.files?.[name];
+        const remote = activeOverride?.files?.[name];
         const urls = Array.isArray(remote?.urls)
           ? remote.urls.map(url => String(url || "").trim()).filter(url => /^https:\/\//i.test(url))
           : [];
@@ -1525,5 +1546,7 @@
     };
   }
 
+  Storage.LOCAL_OCR_BUILTIN_REVISION = LOCAL_OCR_BUILTIN_REVISION;
+  Storage.LOCAL_OCR_DEFAULTS_DIGEST = LOCAL_OCR_DEFAULTS_DIGEST;
   LitMTrans.Storage = Storage;
 })(this);

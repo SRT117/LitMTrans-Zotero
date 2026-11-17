@@ -1791,6 +1791,54 @@ module.exports = function (env) {
     const badManifest = JSON.parse(JSON.stringify(published));
     badManifest.localOCR.files["ort-wasm-simd-threaded.jsep.mjs"].urls = ["https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/x.mjs"];
     assert.equal(context.LitMTrans.Updater.normalizeParserModels(badManifest)?.localOCR, undefined);
+
+    // 验证旧版插件残留或旧版 revision 的 localOCRCatalog 不会反向覆盖新版内置 Gitee 默认源；高 revision 热更可正常生效
+    const localStorage = new context.LitMTrans.Storage();
+    const legacyCatalog = JSON.parse(JSON.stringify(published.localOCR));
+    legacyCatalog.files["PP-OCRv6_tiny_det_onnx_infer.tar"].urls = [
+      "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar"
+    ];
+    const ctl = Object.create(context.LitMTrans.Controller.prototype);
+    ctl.version = "2.1.6";
+    const oldSaved = {
+      catalog: context.LitMTrans.Utils.getPref("localOCRCatalog", ""),
+      rev: context.LitMTrans.Utils.getPref("localOCRCatalogRevision", 0),
+      digest: context.LitMTrans.Utils.getPref("localOCRCatalogDefaultsDigest", "")
+    };
+    try {
+      // 1) 无 digest 的历史残留缓存必须回落到新版内置默认值
+      context.LitMTrans.Utils.setPref("localOCRCatalog", JSON.stringify(legacyCatalog));
+      context.LitMTrans.Utils.setPref("localOCRCatalogRevision", 3);
+      context.LitMTrans.Utils.setPref("localOCRCatalogDefaultsDigest", "stale-old-digest");
+      assert(
+        localStorage.getLocalOCRConfig().assets["PP-OCRv6_tiny_det_onnx_infer.tar"].urls[0].startsWith("https://gitee.com/"),
+        "旧版本残留的 localOCRCatalog 不得覆盖新版代码自带的国内主源"
+      );
+
+      // 2) 滞后的远端 revision (如 revision=1) 不得覆盖当前基线版本
+      context.LitMTrans.Utils.setPref("localOCRCatalog", "");
+      context.LitMTrans.Utils.setPref("localOCRCatalogRevision", 0);
+      context.LitMTrans.Utils.setPref("localOCRCatalogDefaultsDigest", "");
+      ctl.syncPaddleModel({ revision: 1, localOCR: legacyCatalog });
+      assert(
+        localStorage.getLocalOCRConfig().assets["PP-OCRv6_tiny_det_onnx_infer.tar"].urls[0].startsWith("https://gitee.com/"),
+        "滞后的远端 revision=1 目录不得降级当前基线源"
+      );
+
+      // 3) 更高 revision (如 revision=4) 应正常同步生效
+      const hotfixCatalog = JSON.parse(JSON.stringify(published.localOCR));
+      hotfixCatalog.files["PP-OCRv6_tiny_det_onnx_infer.tar"].urls.unshift("https://mirror.example.test/det.tar");
+      ctl.syncPaddleModel({ revision: 4, localOCR: hotfixCatalog });
+      assert.equal(
+        localStorage.getLocalOCRConfig().assets["PP-OCRv6_tiny_det_onnx_infer.tar"].urls[0],
+        "https://mirror.example.test/det.tar",
+        "更高 revision 的远端热更镜像目录应正常生效"
+      );
+    } finally {
+      context.LitMTrans.Utils.setPref("localOCRCatalog", oldSaved.catalog);
+      context.LitMTrans.Utils.setPref("localOCRCatalogRevision", oldSaved.rev);
+      context.LitMTrans.Utils.setPref("localOCRCatalogDefaultsDigest", oldSaved.digest);
+    }
   }
 
   return { OCRCoordinatesAndUncertainInput, imageAIKeepsUnneededLabelsUntouched, pageFurnitureSkipsOCRTranslationAndCachedOverlay, sharedBatchCacheAndImageOnlyCompletion, missingImageResponseRetainsBodyAndPriorImageCache,

@@ -1410,6 +1410,67 @@ async function testAnnouncementStartupScheduling() {
   controller.scheduleAutoUpdateCheck();
   assert(!timers.has(oldStartup) && !timers.has(oldInterval), "rescheduling must clear both old timers");
   assert.equal(timers.size, 2, "startup scheduling must not leak timers");
+
+  // 启动同步失败后，即便关闭自动更新或距上次检查未满一天，也应在重试/周期触发时补同步模型目录
+  const retryValues = new Map([["autoUpdate", false], ["lastUpdateCheckTime", String(now)]]);
+  const retryTimers = new Map();
+  let retryTimerID = 0;
+  let retryFetches = 0;
+  let retryFail = true;
+  const retrySandbox = {
+    LitMTrans: {
+      Utils: { getPref: (key, fallback) => retryValues.has(key) ? retryValues.get(key) : fallback, setPref: (key, value) => retryValues.set(key, value) },
+      DiagramCache: { TASK_TYPES: [], MAX_CHARS: 10000 }
+    },
+    Zotero: { debug: () => {} },
+    setTimeout: (callback, delay) => { const id = ++retryTimerID; retryTimers.set(id, { callback, delay }); return id; },
+    clearTimeout: id => retryTimers.delete(id),
+    setInterval: (callback, delay) => { const id = ++retryTimerID; retryTimers.set(id, { callback, delay }); return id; },
+    clearInterval: id => retryTimers.delete(id),
+    fetch: async () => {
+      retryFetches++;
+      if (retryFail) throw new Error("离线");
+      return { ok: true, json: async () => ({
+        addons: { "litmtrans@srt117.github.io": { updates: [{ version: "2.2.0", update_hash: `sha256:${"a".repeat(64)}`, update_link: "https://example.com/plugin.xpi" }] } },
+        announcements: [],
+        parserModels: {
+          revision: 9,
+          paddle: { model: "PaddleOCR-VL-2.0", minPluginVersion: "2.1.3", apiProtocol: "aistudio-jobs-v2", resultSchema: "paddle-layout-blocks-v1" }
+        }
+      }) };
+    }
+  };
+  vm.createContext(retrySandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, "src", "updater.js"), "utf8"), retrySandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, "src", "controller.js"), "utf8"), retrySandbox);
+  const retryController = Object.create(retrySandbox.LitMTrans.Controller.prototype);
+  retryController.version = "2.1.6";
+  retryController.tabs = new Map();
+  retryController.scheduleAutoUpdateCheck();
+  const bootId = retryController.autoUpdateStartupTimer;
+  const bootCb = retryTimers.get(bootId).callback;
+  retryTimers.delete(bootId);
+  bootCb();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retryFetches, 2, "failed startup manifest check tries Gitee then GitHub fallback");
+  assert(retryController.autoUpdateRetryTimer && retryTimers.get(retryController.autoUpdateRetryTimer).delay === 120000,
+    "failed startup sync must schedule a non-blocking short retry");
+  // 若短重试仍失败，交由周期定时器继续补同步，直到拿到一次成功清单
+  const shortId = retryController.autoUpdateRetryTimer;
+  const shortCb = retryTimers.get(shortId).callback;
+  retryTimers.delete(shortId);
+  shortCb();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retryFetches, 4);
+  retryFail = false;
+  retryTimers.get(retryController.autoUpdateTimer).callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retryFetches, 5);
+  assert.equal(retryValues.get("paddleModel"), "PaddleOCR-VL-2.0", "recovered retry must sync remote model even when autoUpdate=false");
+  // 成功同步后再次触发周期检查且 autoUpdate=false，不得多余拉取
+  retryTimers.get(retryController.autoUpdateTimer).callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retryFetches, 5, "once initial sync succeeds, autoUpdate=false must stay quiet");
 }
 
 async function testSettingsAutoSaveIsolationAndFailure() {

@@ -646,6 +646,14 @@
         clearTimeout(this.autoUpdateStartupTimer);
         this.autoUpdateStartupTimer = null;
       }
+      if (this.autoUpdateRetryTimer) {
+        clearTimeout(this.autoUpdateRetryTimer);
+        this.autoUpdateRetryTimer = null;
+      }
+      if (this.autoUpdateRetryTimer) {
+        clearTimeout(this.autoUpdateRetryTimer);
+        this.autoUpdateRetryTimer = null;
+      }
       if (this.autoUpdateTimer) {
         clearInterval(this.autoUpdateTimer);
         this.autoUpdateTimer = null;
@@ -658,15 +666,25 @@
         const oneDayMs = 24 * 60 * 60 * 1000;
         // Every Zotero startup must compare plugin versions; the daily interval
         // applies only while Zotero stays open.
+        const needsInitialManifestSync = this._startupManifestSynced !== true;
         const updateDue = U.getPref("autoUpdate", true) && (startup || Date.now() - lastCheck >= oneDayMs);
-        if (!startup && !updateDue) return;
+        if (!startup && !updateDue && !needsInitialManifestSync) return;
 
         checking = true;
         try {
           // 启动时始终同步公告与模型目录；版本检查到期时复用同一次清单请求。
           await this.checkForUpdates({ announcementsOnly: !updateDue });
         }
-        catch (error) { this.log(`公告或更新检查失败：${error?.message || error}`); }
+        catch (error) {
+          this.log(`公告或更新检查失败：${error?.message || error}`);
+          // 启动期若遇网络刚恢复前的瞬时失败，排一次 2 分钟后台补同步（不阻塞任何解析或识别任务）
+          if (startup && this._startupManifestSynced !== true && !this._cajShuttingDown && !this.autoUpdateRetryTimer) {
+            this.autoUpdateRetryTimer = setTimeout(() => {
+              this.autoUpdateRetryTimer = null;
+              void runCheckIfDue(false);
+            }, 120000);
+          }
+        }
         finally { checking = false; }
       };
 
@@ -687,6 +705,11 @@
         ? await LitMTrans.Updater.fetchUpdateManifest()
         : await LitMTrans.Updater.checkUpdate(this.version, progressHandler);
       if (this._cajShuttingDown) return result;
+      this._startupManifestSynced = true;
+      if (this.autoUpdateRetryTimer) {
+        clearTimeout(this.autoUpdateRetryTimer);
+        this.autoUpdateRetryTimer = null;
+      }
       this.syncPaddleModel(result?.parserModels);
       if (!announcementsOnly) U.setPref("lastUpdateCheckTime", String(Date.now()));
       if (!announcementsOnly) {
@@ -717,14 +740,18 @@
         if (U.getPref(pref, fallback) !== entry.model) { U.setPref(pref, entry.model); changed = true; }
         U.setPref(revision, models.revision);
       }
+      const builtinRevision = Number(LitMTrans.Storage?.LOCAL_OCR_BUILTIN_REVISION || 0);
+      const builtinDigest = String(LitMTrans.Storage?.LOCAL_OCR_DEFAULTS_DIGEST || "");
+      const minAcceptedRevision = Math.max(Number(U.getPref("localOCRCatalogRevision", 0)), builtinRevision);
       if (models.localOCR && LitMTrans.Updater.compareVersions(this.version, models.localOCR.minPluginVersion || "0") >= 0
-        && models.revision >= Number(U.getPref("localOCRCatalogRevision", 0))) {
+        && models.revision >= minAcceptedRevision) {
         const serialized = JSON.stringify(models.localOCR);
         if (U.getPref("localOCRCatalog", "") !== serialized) {
           U.setPref("localOCRCatalog", serialized);
           changed = true;
         }
         U.setPref("localOCRCatalogRevision", models.revision);
+        U.setPref("localOCRCatalogDefaultsDigest", builtinDigest);
       }
       return changed;
     }
@@ -807,6 +834,10 @@
       if (this.autoUpdateStartupTimer) {
         clearTimeout(this.autoUpdateStartupTimer);
         this.autoUpdateStartupTimer = null;
+      }
+      if (this.autoUpdateRetryTimer) {
+        clearTimeout(this.autoUpdateRetryTimer);
+        this.autoUpdateRetryTimer = null;
       }
       await this.webMachine?.shutdown?.();
       this.storage.shutdown();
