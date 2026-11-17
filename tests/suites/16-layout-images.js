@@ -1759,9 +1759,16 @@ module.exports = function (env) {
       context.LitMTrans.HTTP.requestBytes = oldRequest;
     }
 
-    // 验证 localOCR 更新清单校验会拒绝非 HTTPS 或被禁公共 CDN
+    // 验证 localOCR 更新清单校验会拒绝非 HTTPS 或被禁公共 CDN，且优先使用 Gitee 国内加速通道
     const published = JSON.parse(fs.readFileSync(path.join(root, "docs/parser-models.json"), "utf8"));
     assert(context.LitMTrans.Updater.normalizeParserModels(published)?.localOCR);
+    for (const [name, entry] of Object.entries(published.localOCR.files)) {
+      assert(entry.urls[0].startsWith("https://gitee.com/"), `${name} 应优先配置 Gitee 国内下载通道`);
+      assert(entry.urls.length >= 2, `${name} 应保留备用下载镜像`);
+    }
+    const localPageSource = fs.readFileSync(path.join(root, "src/local-ocr-page.mjs"), "utf8");
+    assert(localPageSource.includes("https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/")
+      && localPageSource.includes("attemptController"), "local-ocr-page.mjs 应优先尝试 Gitee 并在超时时自动切换镜像");
     const badManifest = JSON.parse(JSON.stringify(published));
     badManifest.localOCR.files["ort-wasm-simd-threaded.jsep.mjs"].urls = ["https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/x.mjs"];
     assert.equal(context.LitMTrans.Updater.normalizeParserModels(badManifest)?.localOCR, undefined);

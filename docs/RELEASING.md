@@ -135,3 +135,10 @@ https://github.com/syt2/zotero-addons-scraper
 7. 检查 GitHub Actions 创建的 Draft Release，确认后再正式发布；发布后等待 Gitee 同步工作流完成。
 
 保留旧 Release 和旧 XPI，不要覆盖已经发布的文件。发布后确认 `releases/latest/download/update.json` 指向最新正式版本。
+
+## 7. 本地图片识别模型包（`local-ocr-v1`）
+
+`PP-OCRv6 tiny` 模型与 ONNX Runtime WASM 资源未直接打入 XPI（约 36 MB），而是在用户首次开启“翻译图片”时按 `docs/parser-models.json` 中的渠道顺序自动下载并做 SHA-256 校验（优先 Gitee Release `local-ocr-v1`，失败时自动回退国内镜像与 GitHub Release）：
+
+- 4 个模型组件已校验整理于本地 `dist/local-ocr-v1/`（不入 Git）：`ort-wasm-simd-threaded.jsep.mjs`、`ort-wasm-simd-threaded.jsep.wasm`、`PP-OCRv6_tiny_det_onnx_infer.tar`、`PP-OCRv6_tiny_rec_onnx_infer.tar`。
+- 请确保 Gitee 与 GitHub 仓库的 `local-ocr-v1` Release 下已上传上述 4 个附件，国内用户即可优先走 Gitee 通道稳定下载；若 Gitee 通道暂未就绪或不可达，客户端会自动切换至 `npmmirror` / `bcebos` 等国内镜像完成下载。

@@ -5,22 +5,38 @@ const defaultAssets = {
   "ort-wasm-simd-threaded.jsep.mjs": {
     size: 47250,
     sha256: "7838b4b2e77d6f1a739cd0de800e7f18a089328b365e6af4d416a88a94fd7fd3",
-    urls: ["https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.mjs"]
+    urls: [
+      "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.mjs",
+      "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.mjs",
+      "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.mjs"
+    ]
   },
   "ort-wasm-simd-threaded.jsep.wasm": {
     size: 29520971,
     sha256: "5ab8361783822d02a57d1e97cf2514bceb451a628f2b29ae0d7b6e618201ff8f",
-    urls: ["https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.wasm"]
+    urls: [
+      "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.wasm",
+      "https://registry.npmmirror.com/onnxruntime-web/1.31.1/files/dist/ort-wasm-simd-threaded.jsep.wasm",
+      "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/ort-wasm-simd-threaded.jsep.wasm"
+    ]
   },
   "PP-OCRv6_tiny_det_onnx_infer.tar": {
     size: 1792000,
     sha256: "ff6ab415b0a6e0c488550f2fb5d5046f1719848df220b2dc21b56402a65bc05d",
-    urls: ["https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar"]
+    urls: [
+      "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar",
+      "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar",
+      "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_det_onnx_infer.tar"
+    ]
   },
   "PP-OCRv6_tiny_rec_onnx_infer.tar": {
     size: 4526080,
     sha256: "1e13b22717b1edd89d4cde4fda272b6c17d5b505c97c2baea99da1a3a2d54b29",
-    urls: ["https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar"]
+    urls: [
+      "https://gitee.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_rec_onnx_infer.tar",
+      "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar",
+      "https://github.com/SRT117/LitMTrans-Zotero/releases/download/local-ocr-v1/PP-OCRv6_tiny_rec_onnx_infer.tar"
+    ]
   }
 };
 
@@ -89,10 +105,20 @@ async function downloadFileFromMirrors(name, entry, tracker, signal) {
   let lastError = null;
   for (const url of entry.urls) {
     if (signal?.aborted) throw new Error("操作已取消");
+    const attemptController = new AbortController();
+    const onUserAbort = () => attemptController.abort(signal.reason || "操作已取消");
+    signal?.addEventListener("abort", onUserAbort, { once: true });
+    let timer = setTimeout(() => attemptController.abort("下载超时"), 20000);
+    const refreshWatchdog = (ms = 30000) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => attemptController.abort("下载停滞超时"), ms);
+    };
     try {
-      const response = await fetch(url, { signal });
+      const response = await fetch(url, { signal: attemptController.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      refreshWatchdog(30000);
       const bytes = await readResponseBytes(response, entry.size, loaded => {
+        refreshWatchdog(30000);
         if (!tracker) return;
         tracker.received.set(name, Math.min(entry.size, loaded));
         const sum = [...tracker.received.values()].reduce((acc, value) => acc + value, 0);
@@ -109,9 +135,13 @@ async function downloadFileFromMirrors(name, entry, tracker, signal) {
       await IOUtils.move(partPath, path);
       return bytes;
     } catch (error) {
+      if (tracker) tracker.received.set(name, 0);
       await IOUtils.remove(partPath, { ignoreAbsent: true }).catch(() => {});
-      if (signal?.aborted || error?.name === "AbortError") throw error;
+      if (signal?.aborted) throw error;
       lastError = error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onUserAbort);
     }
   }
   throw lastError || new Error(`本地图片识别组件下载失败：${name}`);
