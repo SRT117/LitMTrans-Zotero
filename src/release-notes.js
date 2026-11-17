@@ -18,6 +18,12 @@
   });
 
   LitMTrans.ReleaseNotes = Object.freeze({
+    "2.1.8": Object.freeze({
+      title: "LitMTrans 2.1.8",
+      entries: Object.freeze([
+        Object.freeze({ title: "排版与 PDF 导出修复", detail: "修复排版翻译完成后触发二次重渲染导致挂载 PDF 生成冲突及失败锁死的问题。" })
+      ])
+    }),
     "2.1.7": Object.freeze({
       title: "LitMTrans 2.1.7",
       entries: Object.freeze([
